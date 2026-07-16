@@ -372,6 +372,25 @@ func TestHandleRegister(t *testing.T) {
 		assert.True(t, found, "session cookie must be set on register")
 	})
 
+	t.Run("name field is persisted", func(t *testing.T) {
+		h := newHarness(t)
+		rr := h.do("POST", "/api/v1/auth/register", "", jsonBody(RegisterRequest{
+			Email:    "named@example.com",
+			Name:     "Jane Doe",
+			Password: "longpassword",
+		}))
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var resp LoginResponse
+		decodeJSON(t, rr, &resp)
+		assert.Equal(t, "Jane Doe", resp.User.Name, "name provided at register must be returned in the response")
+
+		// Verify the name is persisted in the store.
+		u, err := h.store.GetUserByEmail(context.Background(), "named@example.com")
+		require.NoError(t, err)
+		assert.Equal(t, "Jane Doe", u.Name, "name must be stored in the user record")
+	})
+
 	t.Run("second user is regular", func(t *testing.T) {
 		h := newHarness(t)
 		h.mustCreateAdmin(t)

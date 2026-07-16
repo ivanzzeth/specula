@@ -80,6 +80,8 @@ func (c *publicChecker) probe(ctx context.Context, ref repoRef) (bool, error) {
 		return c.probeGitHub(ctx, ref)
 	case "gitlab.com":
 		return c.probeGitLab(ctx, ref)
+	case "gitee.com":
+		return c.probeGitee(ctx, ref)
 	default:
 		return false, fmt.Errorf("git: public visibility probe not supported for host %q", ref.Host)
 	}
@@ -152,4 +154,45 @@ func (c *publicChecker) probeGitLab(ctx context.Context, ref repoRef) (bool, err
 		return false, err
 	}
 	return strings.EqualFold(body.Visibility, "public"), nil
+}
+
+// probeGitee probes Gitee's API v5 to determine whether a repository is
+// anonymously readable. The Gitee API returns a "private" boolean field;
+// unauthenticated requests to private or non-existent repos receive 404 or
+// 401, which we treat as non-public (fail-closed).
+func (c *publicChecker) probeGitee(ctx context.Context, ref repoRef) (bool, error) {
+	parts := strings.SplitN(ref.ProjectPath, "/", 2)
+	if len(parts) != 2 {
+		return false, nil
+	}
+	u := fmt.Sprintf("https://gitee.com/api/v5/repos/%s/%s",
+		url.PathEscape(parts[0]), url.PathEscape(parts[1]))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("User-Agent", "specula-git-handler/v0.2")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusUnauthorized {
+		return false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("gitee api: %s", resp.Status)
+	}
+	var body struct {
+		Private *bool `json:"private"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return false, err
+	}
+	if body.Private == nil {
+		return false, nil
+	}
+	return !*body.Private, nil
 }

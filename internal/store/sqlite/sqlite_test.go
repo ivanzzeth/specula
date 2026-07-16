@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/store/sqlite"
 )
 
@@ -351,4 +352,225 @@ func TestMultiProtocol_Isolation(t *testing.T) {
 		require.NotNil(t, got, "entry for protocol %s must exist", p)
 		assert.Equal(t, "sha256:"+p, got.Digest)
 	}
+}
+
+// ---- user store (auth.UserStore) -------------------------------------------
+
+func newTestUser(email, name string) auth.User {
+	return auth.User{
+		Email:        email,
+		Name:         name,
+		PasswordHash: "bcrypt-placeholder",
+		SystemRole:   "user",
+	}
+}
+
+func TestUserStore_CreateGetByEmail(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, newTestUser("alice@example.com", "Alice"))
+	require.NoError(t, err)
+	assert.NotZero(t, u.ID)
+	assert.Equal(t, "alice@example.com", u.Email)
+	assert.Equal(t, "Alice", u.Name)
+	assert.Equal(t, "user", u.SystemRole)
+
+	got, err := s.GetUserByEmail(ctx, "alice@example.com")
+	require.NoError(t, err)
+	assert.Equal(t, u.ID, got.ID)
+	assert.Equal(t, "Alice", got.Name)
+}
+
+func TestUserStore_GetByID_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.GetUserByID(context.Background(), 9999)
+	require.ErrorIs(t, err, auth.ErrUserNotFound)
+}
+
+func TestUserStore_CreateUser_PersistsName(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, auth.User{
+		Email:        "named@example.com",
+		Name:         "Registered Name",
+		PasswordHash: "hash",
+		SystemRole:   "admin",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "Registered Name", u.Name)
+
+	// Reload from store and verify name is persisted.
+	got, err := s.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Registered Name", got.Name)
+}
+
+func TestUserStore_EmailTaken(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := s.CreateUser(ctx, newTestUser("dup@example.com", ""))
+	require.NoError(t, err)
+
+	_, err = s.CreateUser(ctx, newTestUser("dup@example.com", ""))
+	require.ErrorIs(t, err, auth.ErrEmailTaken)
+}
+
+func TestUserStore_FirstUserAdmin(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	count, err := s.CountUsers(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, count)
+}
+
+func TestUserStore_UpdateUserRole(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, newTestUser("role@example.com", ""))
+	require.NoError(t, err)
+
+	require.NoError(t, s.UpdateUserRole(ctx, u.ID, "admin"))
+
+	got, err := s.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "admin", got.SystemRole)
+}
+
+func TestUserStore_UpdateUserRole_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	err := s.UpdateUserRole(context.Background(), 9999, "admin")
+	require.ErrorIs(t, err, auth.ErrUserNotFound)
+}
+
+func TestUserStore_UpdateUserFields_Name(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, newTestUser("fields@example.com", "Original"))
+	require.NoError(t, err)
+
+	newName := "Updated Name"
+	require.NoError(t, s.UpdateUserFields(ctx, u.ID, &newName, nil))
+
+	got, err := s.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Updated Name", got.Name)
+	assert.Equal(t, "bcrypt-placeholder", got.PasswordHash, "password must be unchanged")
+}
+
+func TestUserStore_UpdateUserFields_PasswordHash(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, newTestUser("pw@example.com", ""))
+	require.NoError(t, err)
+
+	newHash := "new-bcrypt-hash"
+	require.NoError(t, s.UpdateUserFields(ctx, u.ID, nil, &newHash))
+
+	got, err := s.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-bcrypt-hash", got.PasswordHash)
+	assert.Empty(t, got.Name, "name must be unchanged")
+}
+
+func TestUserStore_UpdateUserFields_Both(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, newTestUser("both@example.com", "Old Name"))
+	require.NoError(t, err)
+
+	newName := "New Name"
+	newHash := "refreshed-hash"
+	require.NoError(t, s.UpdateUserFields(ctx, u.ID, &newName, &newHash))
+
+	got, err := s.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "New Name", got.Name)
+	assert.Equal(t, "refreshed-hash", got.PasswordHash)
+}
+
+func TestUserStore_UpdateUserFields_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	newName := "Ghost"
+	err := s.UpdateUserFields(context.Background(), 9999, &newName, nil)
+	require.ErrorIs(t, err, auth.ErrUserNotFound)
+}
+
+func TestUserStore_UpdateUserFields_Noop(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, newTestUser("noop@example.com", "Stable"))
+	require.NoError(t, err)
+
+	// Passing nil, nil is a no-op but must not error for an existing user.
+	require.NoError(t, s.UpdateUserFields(ctx, u.ID, nil, nil))
+
+	got, err := s.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Stable", got.Name)
+}
+
+func TestUserStore_DeleteUser(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, newTestUser("del@example.com", ""))
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteUser(ctx, u.ID))
+
+	_, err = s.GetUserByID(ctx, u.ID)
+	require.ErrorIs(t, err, auth.ErrUserNotFound)
+}
+
+func TestUserStore_DeleteUser_NotFound(t *testing.T) {
+	s := newTestStore(t)
+	err := s.DeleteUser(context.Background(), 9999)
+	require.ErrorIs(t, err, auth.ErrUserNotFound)
+}
+
+func TestUserStore_ListUsers(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	for _, email := range []string{"a@x.com", "b@x.com", "c@x.com"} {
+		_, err := s.CreateUser(ctx, newTestUser(email, ""))
+		require.NoError(t, err)
+	}
+
+	users, total, err := s.ListUsers(ctx, 0, 0)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), total)
+	assert.Len(t, users, 3)
+
+	// Pagination.
+	page, total2, err := s.ListUsers(ctx, 2, 1)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), total2)
+	assert.Len(t, page, 2)
+}
+
+func TestUserStore_BumpTokenGen(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := s.CreateUser(ctx, newTestUser("bump@example.com", ""))
+	require.NoError(t, err)
+	assert.Zero(t, u.TokenGen)
+
+	newGen, err := s.BumpTokenGen(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), newGen)
+
+	got, err := s.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), got.TokenGen)
 }

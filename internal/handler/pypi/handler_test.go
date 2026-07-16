@@ -594,6 +594,191 @@ func TestHEAD_CacheHit(t *testing.T) {
 	assert.Empty(t, body2)
 }
 
+// ── tests: dependency-confusion guard (Depconf / Confusion) ──────────────────
+
+// TestDepconfGuard_IsPrivate_PypiNameNorm verifies that the wired guard performs
+// PEP 503 normalisation on both the configured name and the incoming project so
+// variants like "Corp_Internal" and "corp-internal" are treated identically.
+func TestDepconfGuard_IsPrivate_PypiNameNorm(t *testing.T) {
+	h := NewHandler(newPypiTestCache(),
+		WithPrivateNames([]string{"Corp_Internal", "mycompany-*"}),
+	)
+	require.NotNil(t, h.guard, "guard must be wired when private names are set")
+
+	tests := []struct {
+		project string
+		want    bool
+	}{
+		{"corp-internal", true},        // PEP 503 normalised match
+		{"Corp_Internal", true},        // raw name also normalised
+		{"mycompany-foo", true},        // glob match
+		{"mycompany-bar", true},        // glob match (second pattern)
+		{"flask", false},               // public
+		{"corp-internal-extra", false}, // no prefix-only match
+	}
+	for _, tc := range tests {
+		t.Run(tc.project, func(t *testing.T) {
+			assert.Equal(t, tc.want, h.isPrivate(tc.project))
+		})
+	}
+}
+
+// TestDepconfPypi_PrivateNameServedFromPrivateOnly verifies that a private name
+// is routed exclusively to the private upstream and the public mirror is NEVER
+// contacted, even when the public mirror would serve it.
+func TestDepconfPypi_PrivateNameServedFromPrivateOnly(t *testing.T) {
+	const privatePkg = "corp-internal"
+	privateBody := []byte(`<html><body><a href="corp_internal-1.0.whl">corp_internal-1.0.whl</a></body></html>`)
+	publicBody := []byte(`<html><body><a href="corp_internal-2.0.whl">corp_internal-2.0.whl</a></body></html>`)
+
+	// Private upstream — the only one that should be contacted.
+	prvSrv := fakePyPIServer(t,
+		map[string][]byte{privatePkg: privateBody},
+		nil,
+	)
+	defer prvSrv.Close()
+
+	// Public upstream — has "higher" version but must NEVER be used.
+	var publicHits int
+	pubSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicHits++
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(publicBody)
+	}))
+	defer pubSrv.Close()
+
+	cm := newPypiTestCache()
+	h := NewHandler(cm,
+		WithPrivateNames([]string{privatePkg}),
+		WithPrivateUpstream(upstream.Upstream{Name: "private", BaseURL: prvSrv.URL, Priority: 0}),
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{
+			{Name: "public", BaseURL: pubSrv.URL, Priority: 1},
+		}),
+		WithMutableTTL(300),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/simple/corp-internal/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	got, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, privateBody, got, "response must be from private upstream, not public")
+	assert.Zero(t, publicHits, "public upstream must never be contacted for a private name")
+}
+
+// TestDepconfPypi_PublicHigherVersionIgnored verifies that a public index offering
+// a higher version is ignored for a private package: the private upstream's
+// response is served and the public mirror receives no requests.
+func TestDepconfPypi_PublicHigherVersionIgnored(t *testing.T) {
+	const privatePkg = "acme-sdk"
+	privateIndex := []byte(`<html><body><a href="acme_sdk-1.0.0.whl">acme_sdk-1.0.0.whl</a></body></html>`)
+	publicIndex := []byte(`<html><body><a href="acme_sdk-9.9.9.whl">acme_sdk-9.9.9.whl</a></body></html>`)
+
+	prvSrv := fakePyPIServer(t, map[string][]byte{privatePkg: privateIndex}, nil)
+	defer prvSrv.Close()
+
+	publicHits := 0
+	pubSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicHits++
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(publicIndex)
+	}))
+	defer pubSrv.Close()
+
+	cm := newPypiTestCache()
+	h := NewHandler(cm,
+		WithPrivateNames([]string{privatePkg}),
+		WithPrivateUpstream(upstream.Upstream{Name: "private", BaseURL: prvSrv.URL}),
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{{Name: "public", BaseURL: pubSrv.URL}}),
+		WithMutableTTL(300),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/simple/" + privatePkg + "/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	got, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, privateIndex, got, "private index must be served (not public higher-version)")
+	assert.Zero(t, publicHits, "public mirror must receive zero requests for private names")
+}
+
+// TestDepconfPypi_PrivateDown_FailClosed verifies that when the private upstream
+// is unreachable, Specula returns 5xx and NEVER falls through to the public mirror.
+func TestDepconfPypi_PrivateDown_FailClosed(t *testing.T) {
+	const privatePkg = "corp-lib"
+	publicBody := []byte(`<html><body><a href="corp_lib-1.0.whl">corp_lib-1.0.whl</a></body></html>`)
+
+	// Public upstream is healthy and would serve the package — but must NEVER be used.
+	pubSrv := fakePyPIServer(t, map[string][]byte{privatePkg: publicBody}, nil)
+	defer pubSrv.Close()
+
+	cm := newPypiTestCache()
+	h := NewHandler(cm,
+		WithPrivateNames([]string{privatePkg}),
+		WithPrivateUpstream(upstream.Upstream{
+			Name:    "private",
+			BaseURL: "http://127.0.0.1:0", // nothing listening → connection refused
+		}),
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{
+			{Name: "public", BaseURL: pubSrv.URL},
+		}),
+		WithFailClosed(true),
+		WithMutableTTL(0), // always revalidate so upstream is contacted
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/simple/corp-lib/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Must NOT be 200 from the public mirror.
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode,
+		"private-upstream-down must not return 200 from public (dep-confusion protection)")
+	assert.GreaterOrEqual(t, resp.StatusCode, 500,
+		"response must be a 5xx error, not a redirect to the public mirror")
+}
+
+// TestDepconfPypi_PrivateNamed_NoPublicFallthrough_EvenWithFailClosedFalse ensures
+// that the "public fallthrough" bug is fixed: even when failClosed=false, a private
+// name with a DOWN private upstream must NOT serve from the public mirror (only
+// stale cache or 5xx is permitted).
+func TestDepconfPypi_PrivateNamed_NoPublicFallthrough_EvenWithFailClosedFalse(t *testing.T) {
+	const privatePkg = "internal-pkg"
+	publicBody := []byte(`<html><body>public version 2.0</body></html>`)
+
+	// Public upstream has the package — but must NEVER be consulted for private names.
+	pubSrv := fakePyPIServer(t, map[string][]byte{privatePkg: publicBody}, nil)
+	defer pubSrv.Close()
+
+	cm := newPypiTestCache()
+	h := NewHandler(cm,
+		WithPrivateNames([]string{privatePkg}),
+		// No private upstream → used to fall through to public when failClosed=false.
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{
+			{Name: "public", BaseURL: pubSrv.URL},
+		}),
+		WithFailClosed(false), // previously caused the public fallthrough bug
+		WithMutableTTL(0),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/simple/" + privatePkg + "/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// The fix: selectUpstreams error → always fail, never fall to public.
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode,
+		"private name with no private upstream must NEVER return 200 from public (dep-confusion)")
+}
+
 // ── tests: JSON index (PEP 691 Accept header) ─────────────────────────────────
 
 func TestSimpleIndex_JSONAccept_CacheHit(t *testing.T) {

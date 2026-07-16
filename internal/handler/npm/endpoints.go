@@ -13,6 +13,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/upstream"
+	"github.com/ivanzzeth/specula/internal/verify"
 )
 
 // staler is an optional extension of CacheManager for serve-stale-on-upstream-failure.
@@ -39,9 +40,12 @@ func npmMutableKey(ref artifact.ArtifactRef) string {
 // --------------------------------------------------------------------------
 
 // isPrivatePkg reports whether pkg must be routed exclusively to the private
-// upstream. Scoped packages (@scope/name) are checked against privateScopes;
-// unscoped packages are checked against privateUnscoped.
+// upstream (DESIGN-REVIEW §4). The dependency-confusion guard is the authoritative
+// source when wired; the inline logic is a backward-compat fallback.
 func (h *Handler) isPrivatePkg(pkg string) bool {
+	if h.guard != nil {
+		return h.guard.IsPrivate(pkg)
+	}
 	if strings.HasPrefix(pkg, "@") {
 		// Scoped: "@scope/name" — extract the scope portion.
 		if i := strings.IndexByte(pkg, '/'); i > 0 {
@@ -63,12 +67,25 @@ func (h *Handler) isPrivatePkg(pkg string) bool {
 	return false
 }
 
+// privateDownServeStale reports whether the handler should serve a stale (local
+// cache) copy when the private upstream fails. Never returns true when failClosed
+// is set; uses the guard as the canonical source when wired.
+func (h *Handler) privateDownServeStale() bool {
+	if h.guard != nil {
+		return h.guard.ResolvePrivate(verify.OutcomeDown) == verify.ActionServeStale
+	}
+	return !h.failClosed
+}
+
 // selectUpstreams returns the upstream list to use for pkg, applying
 // dependency-confusion rules:
 //   - Private pkg + private upstream configured → [private]
-//   - Private pkg + no private upstream + failClosed → error (never fall back to public)
-//   - Private pkg + no private upstream + !failClosed → public (unsafe; log warn in production)
+//   - Private pkg + no private upstream → error (never fall back to public, ever)
 //   - Public pkg → h.upstreams (public mirror pool)
+//
+// A public fallback for private packages is never permitted regardless of the
+// failClosed flag: the "no private upstream" window is exactly when an attacker's
+// public copy would win (DESIGN-REVIEW §4 H3).
 func (h *Handler) selectUpstreams(pkg string) ([]upstream.Upstream, error) {
 	if !h.isPrivatePkg(pkg) {
 		return h.upstreams, nil
@@ -76,12 +93,8 @@ func (h *Handler) selectUpstreams(pkg string) ([]upstream.Upstream, error) {
 	if h.privateUpstream != nil {
 		return []upstream.Upstream{*h.privateUpstream}, nil
 	}
-	if h.failClosed {
-		return nil, fmt.Errorf("npm: dep-confusion guard: no private upstream configured for private pkg %q (failClosed=true)", pkg)
-	}
-	// Non-fail-closed: fall back to public (unusual in production; permitted for
-	// tests that set failClosed=false).
-	return h.upstreams, nil
+	// Private name with no private upstream — always fail (never fall through to public).
+	return nil, fmt.Errorf("npm: dep-confusion guard: no private upstream configured for private pkg %q", pkg)
 }
 
 // --------------------------------------------------------------------------
@@ -180,6 +193,19 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	// 4. Fresh fetch.
 	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, ups)
 	if fetchErr != nil {
+		if h.isPrivatePkg(ref.Name) {
+			// Private upstream failed — guard decides action (never public).
+			if h.privateDownServeStale() && staleEntry != nil {
+				h.log.Warn("npm: private upstream failed; serving stale packument",
+					"ref", ref, "err", fetchErr)
+				h.serveFromCache(w, r, ref, staleEntry, ct)
+				return
+			}
+			h.log.Error("npm: private upstream failed (fail-closed)", "ref", ref, "err", fetchErr)
+			writeError(w, http.StatusServiceUnavailable, "npm: private upstream unavailable")
+			return
+		}
+		// Non-private: serve stale if available, else 502.
 		if staleEntry != nil {
 			h.log.Warn("npm: upstream failed; serving stale packument", "ref", ref, "err", fetchErr)
 			h.serveFromCache(w, r, ref, staleEntry, ct)

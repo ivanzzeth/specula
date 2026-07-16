@@ -73,11 +73,11 @@
 | apt | **signed** | 发行版 keyring（预置，离线可验） | 端到端金标准 |
 | Go | **signed** | sumdb Ed25519 签名 tree head + Merkle 证明 | 经代理透传仍可验 |
 | Helm (repo) | **signed** | `.prov` GPG 签名 + keyring | 无 .prov 降级 |
-| OCI | **signed**（需配公钥） | cosign keyed（关闭 tlog）；否则 consensus/tofu | keyless 在 CN 默认不可用 |
+| OCI | **signed**（需配公钥） | cosign keyed（关闭 tlog）；否则 consensus/tofu | keyless 在 CN 默认不可用；已接线：cosign keyed 校验 + go-containerregistry 发现签名 |
 | git | **signed**（可选） | 签名 tag/commit（配 allowed-signers）；否则 tofu | git 对象天然 Merkle |
-| npm | **consensus / tofu** | provenance CN 不可用且覆盖 ~3–12% | 实务上共识 + TOFU |
-| PyPI | **consensus / tofu** | PEP 740 CN 不可用且覆盖 ~5% | 实务上共识 + TOFU |
-| tarball | **consensus / tofu** | 无原生签名 | 可配官方源比对 |
+| npm | **consensus / tofu** | provenance CN 不可用且覆盖 ~3–12% | 实务上 TOFU + 依赖混淆 guard；metadata 仅暴露 sha512 integrity/sha1 shasum，metadata-only 的 sha256 跨源共识不可用，故默认停在 tofu |
+| PyPI | **consensus / tofu** | PEP 740 CN 不可用且覆盖 ~5% | 已接线：consensus（PEP 503 simple-index `#sha256=` 跨源 quorum 比对，metadata-only）+ TOFU |
+| tarball | **consensus / tofu** | 无原生签名 | metadata 无 sha256，metadata-only 共识不可用，默认停在 tofu；可配官方源比对 |
 
 其余供应链控制：
 - **Allowlist / denylist** — 每协议策略
@@ -282,14 +282,16 @@ protocols:
 
 ## 9. Milestones
 
-| Phase | Scope |
-|---|---|
-| **v0.1** | OCI proxy + **CAS blob store** + 二层缓存 + verify-on-write + checksum/tofu 档 |
-| **v0.2** | 管理平面：内嵌 WebUI + 邮箱认证（首个=admin）+ 缓存统计仪表盘 |
-| **v0.3** | Go module proxy（sumdb 透传验证）+ PyPI（单 index + 共识 + dep-confusion）|
-| **v0.4** | npm（scope 绑定 + 共识）+ apt（GPG 端到端验证）|
-| **v0.5** | cosign keyed（OCI signed 档）+ Helm（.prov signed 档）|
-| **v0.6** | git clone 加速（bare mirror + 签名 ref 验证 + force-push 告警）|
-| **v0.7** | PostgreSQL HA + 分布式 stampede 锁 + 跨节点统计聚合 |
-| **v0.8** | tarball + consensus 档（多镜像 quorum + origin-check）+ CN mirror profile |
-| **v1.0** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）|
+| Phase | Scope | Status |
+|---|---|---|
+| **v0.1** | OCI proxy + **CAS blob store** + 二层缓存 + verify-on-write + checksum/tofu 档 | ✅ done |
+| **v0.2** | 管理平面：内嵌 WebUI + 邮箱认证（首个=admin）+ 缓存统计仪表盘 | ✅ done |
+| **v0.3** | Go module proxy（sumdb 透传验证）+ PyPI（单 index + 共识 + dep-confusion）| ✅ done（PyPI consensus 已接线，metadata-only sha256）|
+| **v0.4** | npm（scope 绑定 + 共识）+ apt（GPG 端到端验证）| ✅ done（npm scope/dep-confusion + apt GPG；npm consensus 受 sha512-only metadata 限制停在 tofu）|
+| **v0.5** | cosign keyed（OCI signed 档）+ Helm（.prov signed 档）| ✅ done（cosign keyed 校验 + 签名发现均已接线）|
+| **v0.6** | git clone 加速（bare mirror + 签名 ref 验证 + force-push 告警）| ✅ done |
+| **v0.7** | PostgreSQL HA + 分布式 stampede 锁 + 跨节点统计聚合 | ◐ partial（PG + coalesce 已落地）|
+| **v0.8** | tarball + consensus 档（多镜像 quorum + origin-check）+ CN mirror profile | ◐ partial（tarball + consensus 引擎已落地；tarball metadata-only 共识不可用停在 tofu）|
+| **v1.0** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）| ☐ planned |
+
+> v0.2-hardening 分支说明：8 协议数据面 + 四档诚实信任模型（checksum/tofu/consensus/signed）已端到端接线。consensus 引擎（quorum + origin-check + 并行取 digest）与 cosign keyed 锚均已实现并从 config 自动装配、按协议自门控。metadata-only 的 sha256 跨源共识当前仅对 OCI（Docker-Content-Digest）与 PyPI（PEP 503 `#sha256=`）可用；npm/tarball 因 metadata 不暴露 sha256 默认停在 tofu，绝不 fail-close 真实拉取。

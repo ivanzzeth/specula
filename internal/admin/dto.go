@@ -103,9 +103,11 @@ type PatchUserRequest struct {
 // ---- auth (POST /api/v1/auth/{register,login,logout}, GET /api/v1/me) ---------
 
 // RegisterRequest is the public self-registration body. The first account ever
-// registered is promoted to system_role="admin".
+// registered is promoted to system_role="admin". Name is optional; it is
+// persisted as the user's display name when non-empty.
 type RegisterRequest struct {
 	Email    string `json:"email"`
+	Name     string `json:"name,omitempty"`
 	Password string `json:"password"`
 }
 

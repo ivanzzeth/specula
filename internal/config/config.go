@@ -240,12 +240,24 @@ type VerificationConfig struct {
 
 	// Quorum is the minimum number of independent upstreams that must
 	// agree on a digest for the "consensus" tier to pass. Must be >= 1
-	// when "consensus" is in Tiers.
+	// when "consensus" is in Tiers. Superseded by Consensus.Quorum when the
+	// structured Consensus block is present; retained for back-compat.
 	Quorum int `koanf:"quorum"`
 
+	// Consensus configures the cross-source consensus tier (TierConsensus):
+	// independent mirrors polled for a digest + optional official-source
+	// witness. nil disables it. (DESIGN-REVIEW §1.2 cross-source consensus.)
+	Consensus *ConsensusConfig `koanf:"consensus"`
+
 	// CosignKey is the path to a cosign public key (PEM format) for
-	// keyed OCI image verification (--insecure-ignore-tlog).
+	// keyed OCI image verification (--insecure-ignore-tlog). Superseded by the
+	// structured Cosign block when present; retained for back-compat.
 	CosignKey string `koanf:"cosign_key"`
+
+	// Cosign configures keyed cosign OCI image verification with the
+	// transparency log disabled (CN-offline). Only meaningful for "oci"; nil
+	// disables it. (DESIGN-REVIEW §1.1 cosign keyed anchor.)
+	Cosign *CosignConfig `koanf:"cosign"`
 
 	// Keyring is the path to a GPG keyring for apt InRelease / Helm .prov
 	// signature verification.
@@ -284,6 +296,51 @@ type VerificationConfig struct {
 	// for flat-or-scoped ecosystems (pypi, npm). nil disables it. (PRD §6
 	// pypi/npm blocks; DESIGN-REVIEW §4.)
 	DependencyConfusion *DependencyConfusionConfig `koanf:"dependency_confusion"`
+}
+
+// ConsensusConfig is the cross-source consensus block (DESIGN-REVIEW §1.2). It
+// polls independent mirrors for a digest/manifest (HEAD/metadata only, never the
+// full blob) and passes when >= Quorum agree. An optional official-source
+// witness fails closed on disagreement.
+type ConsensusConfig struct {
+	// Quorum is the minimum number of independent mirrors that must agree on the
+	// artifact digest for a PASS. Must be >= 1.
+	Quorum int `koanf:"quorum"`
+	// Mirrors is the set of independent (distinct CDN/operator) mirrors to poll.
+	Mirrors []ConsensusMirrorConfig `koanf:"mirrors"`
+	// OriginCheck optionally consults the official source directly (through an
+	// egress proxy) as an authoritative witness. nil disables it.
+	OriginCheck *OriginCheckConfig `koanf:"origin_check"`
+}
+
+// ConsensusMirrorConfig is one independent mirror consulted for a digest.
+type ConsensusMirrorConfig struct {
+	// Name is a logical identifier used in logs/messages.
+	Name string `koanf:"name"`
+	// BaseURL is the mirror base URL.
+	BaseURL string `koanf:"base_url"`
+}
+
+// OriginCheckConfig configures the authoritative official-source witness.
+type OriginCheckConfig struct {
+	// URL is the official source base (pypi.org / registry.npmjs.org /
+	// registry-1.docker.io). Empty disables the origin check.
+	URL string `koanf:"url"`
+	// ViaProxy is the egress HTTP proxy URL used to reach the official source
+	// from a restricted network. Empty means reach it directly.
+	ViaProxy string `koanf:"via_proxy"`
+}
+
+// CosignConfig is the keyed-cosign OCI verification block with the transparency
+// log disabled (DESIGN-REVIEW §1.1). Keyless/tlog verification is unsupported
+// (Rekor/Fulcio are CN-blocked), so Tlog must be false.
+type CosignConfig struct {
+	// Keys are filesystem paths to long-lived cosign PUBLIC keys (PEM). A
+	// signature verifying against any listed key passes (supports key rotation).
+	Keys []string `koanf:"keys"`
+	// Tlog MUST be false: keyless/transparency-log verification is unsupported.
+	// Validate rejects a true value.
+	Tlog bool `koanf:"tlog"`
 }
 
 // GPGConfig is the apt GPG chain-verification block (PRD §6 apt).

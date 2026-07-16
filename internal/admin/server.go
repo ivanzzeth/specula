@@ -19,26 +19,6 @@ type BlobUsageReporter interface {
 	UsageBytes(ctx context.Context) (int64, error)
 }
 
-// UserUpdater is an optional extension to auth.UserStore used by the PATCH
-// /api/v1/admin/users/{id} handler to update display name and password hash.
-// If the injected UserStore also satisfies this interface the handler applies
-// name/password patches; otherwise those fields return 501 while role changes
-// via auth.UserStore.UpdateUserRole still succeed.
-//
-// NOTE: This interface is not yet part of auth.UserStore — it is defined here
-// because UpdateUserFields is currently absent from both auth.UserStore and the
-// concrete store implementations (SQLiteStore, PostgresStore). Until it is
-// added to those packages, callers that need name/password patching must
-// provide a UserStore that also implements UserUpdater (e.g. test fakes or a
-// wrapper). This is a known missing-dep — tracked as TODO.
-type UserUpdater interface {
-	// UpdateUserFields sets zero or more mutable user fields identified by id.
-	// Nil pointer means "leave unchanged". passwordHash, when non-nil, must
-	// already be a bcrypt hash (the caller is responsible for hashing first).
-	// Returns auth.ErrUserNotFound when no row matches id.
-	UpdateUserFields(ctx context.Context, id int64, name, passwordHash *string) error
-}
-
 // Deps is the explicit dependency set for the admin Server. Every field is an
 // interface (or a read-only config snapshot) so the server is trivially
 // testable with fakes and so the WebUI/backend can evolve behind the contract.

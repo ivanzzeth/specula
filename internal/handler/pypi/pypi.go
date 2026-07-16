@@ -36,6 +36,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
+	"github.com/ivanzzeth/specula/internal/verify"
 )
 
 // Protocol is the ArtifactRef.Protocol value for PyPI (matches upstream.buildPath
@@ -66,11 +67,14 @@ type Handler struct {
 	mutableTTLSec int64               // TTL for /simple/ index entries (seconds)
 	quarantineDir string              // directory for on-disk quarantine temp files
 
-	// Dependency-confusion seam (DESIGN-REVIEW §4). Populated via options; the
-	// guard logic is implemented by the leaf agent.
+	// Dependency-confusion seam (DESIGN-REVIEW §4). Populated via options.
 	privateNames    []string           // exact private-name patterns (flat namespace)
 	privateUpstream *upstream.Upstream // private index; nil = none configured
 	failClosed      bool               // private name + private down → 5xx, never public
+
+	// guard is the wired DependencyConfusionGuard built from the private-name
+	// configuration in NewHandler. It is nil when no private names are configured.
+	guard *verify.DependencyConfusionGuard
 
 	log *slog.Logger
 }
@@ -141,6 +145,16 @@ func NewHandler(cm cache.CacheManager, opts ...Option) *Handler {
 	}
 	for _, opt := range opts {
 		opt(h)
+	}
+	// Wire the dependency-confusion guard from the handler's private-name config.
+	// The guard is the canonical decision authority for IsPrivate and private-down
+	// actions; the handler fields are kept for backward-compat option wiring.
+	if len(h.privateNames) > 0 {
+		h.guard = verify.NewDependencyConfusionGuard(verify.DepConfusionConfig{
+			Protocol:     "pypi",
+			PrivateNames: h.privateNames,
+			FailClosed:   h.failClosed,
+		})
 	}
 	return h
 }

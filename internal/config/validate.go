@@ -124,9 +124,34 @@ func Validate(cfg *Config) error {
 				hasConsensus = true
 			}
 		}
-		if hasConsensus && proto.Verification.Quorum < 1 {
+		// Effective quorum comes from the structured Consensus block when
+		// present, else the flat Quorum field (back-compat).
+		effectiveQuorum := proto.Verification.Quorum
+		if proto.Verification.Consensus != nil {
+			effectiveQuorum = proto.Verification.Consensus.Quorum
+		}
+		if hasConsensus && effectiveQuorum < 1 {
 			add("protocols.%s.verification.quorum: must be >= 1 when "+
-				"\"consensus\" tier is enabled, got %d", name, proto.Verification.Quorum)
+				"\"consensus\" tier is enabled, got %d", name, effectiveQuorum)
+		}
+		// Structured consensus block: quorum must be >= 1 whenever it is set.
+		if cc := proto.Verification.Consensus; cc != nil && cc.Quorum < 1 {
+			add("protocols.%s.verification.consensus.quorum: must be >= 1, got %d",
+				name, cc.Quorum)
+		}
+
+		// cosign block (only meaningful for "oci"): tlog must be false
+		// (keyless/transparency-log verification is unsupported) and at least
+		// one public key is required.
+		if cs := proto.Verification.Cosign; cs != nil {
+			if cs.Tlog {
+				add("protocols.%s.verification.cosign.tlog: must be false "+
+					"(keyless/transparency-log verification is unsupported)", name)
+			}
+			if len(cs.Keys) == 0 {
+				add("protocols.%s.verification.cosign.keys: at least one public "+
+					"key is required when the cosign block is set", name)
+			}
 		}
 
 		// Per-protocol mutable TTL: -1/0/positive are valid sentinels.

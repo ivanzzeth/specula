@@ -131,6 +131,35 @@ func (s *SQLiteStore) UpdateUserRole(ctx context.Context, id int64, role string)
 	return affectedOrNotFound(res)
 }
 
+// UpdateUserFields updates zero or more mutable fields on the user identified
+// by id. A nil pointer means "leave this field unchanged". passwordHash, when
+// non-nil, must already be a bcrypt hash. Returns auth.ErrUserNotFound when no
+// row matches id. Returns nil (no-op) when both pointers are nil.
+func (s *SQLiteStore) UpdateUserFields(ctx context.Context, id int64, name, passwordHash *string) error {
+	if name == nil && passwordHash == nil {
+		// Verify user exists and return ErrUserNotFound if absent.
+		_, err := s.GetUserByID(ctx, id)
+		return err
+	}
+	var setClauses []string
+	var args []any
+	if name != nil {
+		setClauses = append(setClauses, "name = ?")
+		args = append(args, *name)
+	}
+	if passwordHash != nil {
+		setClauses = append(setClauses, "password_hash = ?")
+		args = append(args, *passwordHash)
+	}
+	args = append(args, id)
+	q := "UPDATE users SET " + strings.Join(setClauses, ", ") + " WHERE id = ?"
+	res, err := s.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("sqlite: update user fields (id=%d): %w", id, err)
+	}
+	return affectedOrNotFound(res)
+}
+
 // DeleteUser removes the user row. Returns auth.ErrUserNotFound when absent.
 func (s *SQLiteStore) DeleteUser(ctx context.Context, id int64) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)

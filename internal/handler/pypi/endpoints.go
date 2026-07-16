@@ -19,6 +19,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/upstream"
+	"github.com/ivanzzeth/specula/internal/verify"
 )
 
 // Content-type constants for PyPI HTTP responses.
@@ -83,10 +84,15 @@ func pypiMutableKey(ref artifact.ArtifactRef) string {
 // isPrivate / selectUpstreams — dependency-confusion guard (DESIGN-REVIEW §4)
 // --------------------------------------------------------------------------
 
-// isPrivate reports whether the PEP 503-normalised project name appears in
-// h.privateNames. Private names must resolve only from the private upstream;
-// they are never queried against the public mirrors.
+// isPrivate reports whether the PEP 503-normalised project name is org-owned
+// and must resolve ONLY from the private upstream (DESIGN-REVIEW §4). The
+// dependency-confusion guard is the authoritative source when wired; the inline
+// manifest walk is a backward-compat fallback for handlers built without private
+// names (e.g. pure public-mirror deployments).
 func (h *Handler) isPrivate(project string) bool {
+	if h.guard != nil {
+		return h.guard.IsPrivate(project)
+	}
 	norm := normalizeProject(project)
 	for _, n := range h.privateNames {
 		if normalizeProject(n) == norm {
@@ -94,6 +100,17 @@ func (h *Handler) isPrivate(project string) bool {
 		}
 	}
 	return false
+}
+
+// privateDownServeStale reports whether the handler should serve a stale (local
+// cache) copy when the private upstream fails for a private name. It is never
+// true when no stale entry is available; it is always false when FailClosed=true.
+// The guard is the canonical source; inline failClosed is used as a fallback.
+func (h *Handler) privateDownServeStale() bool {
+	if h.guard != nil {
+		return h.guard.ResolvePrivate(verify.OutcomeDown) == verify.ActionServeStale
+	}
+	return !h.failClosed
 }
 
 // selectUpstreams returns the upstream list for the given project name.
@@ -121,16 +138,15 @@ func (h *Handler) selectUpstreams(project string) ([]upstream.Upstream, error) {
 func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, project string) {
 	ups, err := h.selectUpstreams(project)
 	if err != nil {
-		// Private name but no private upstream configured.
-		if h.failClosed {
-			h.log.Warn("pypi: private name — no private upstream configured (fail-closed)",
-				"project", project)
-			writeError(w, http.StatusServiceUnavailable,
-				"private package source not available")
-			return
-		}
-		// failClosed=false: fall through to the public mirror list.
-		ups = h.upstreams
+		// Private name with no private upstream configured — always fail regardless
+		// of failClosed. A public fallback here is the confusion attack vector:
+		// the window when the private upstream is misconfigured is exactly when an
+		// attacker's public copy would win (DESIGN-REVIEW §4 H3).
+		h.log.Warn("pypi: private name — no private upstream configured (fail-closed)",
+			"project", project)
+		writeError(w, http.StatusServiceUnavailable,
+			"private package source not available")
+		return
 	}
 
 	ref := indexRefForRequest(project, r)
@@ -199,13 +215,22 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	// 4. Fresh fetch.
 	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, ups)
 	if fetchErr != nil {
-		// Private name + private upstream down → fail-closed (DESIGN-REVIEW §4).
-		if h.isPrivate(ref.Name) && h.failClosed {
+		if h.isPrivate(ref.Name) {
+			// Private upstream failed — guard decides action (never public).
+			// ActionServeStale: serve from local cache only if a stale copy exists.
+			// ActionFailClosed (or no stale): 5xx.
+			if h.privateDownServeStale() && staleEntry != nil {
+				h.log.Warn("pypi: private upstream failed; serving stale",
+					"project", ref.Name, "err", fetchErr)
+				h.serveFromCache(w, r, ref, staleEntry, ct)
+				return
+			}
 			h.log.Error("pypi: private upstream failed (fail-closed)",
 				"project", ref.Name, "err", fetchErr)
 			writeError(w, http.StatusServiceUnavailable, "private upstream unavailable")
 			return
 		}
+		// Non-private: serve stale if available, else 502.
 		if staleEntry != nil {
 			h.log.Warn("pypi: upstream failed; serving stale", "ref", ref, "err", fetchErr)
 			h.serveFromCache(w, r, ref, staleEntry, ct)
@@ -237,22 +262,20 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 // content (DESIGN-REVIEW §5).
 func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, name, file string) {
 	// Dependency-confusion guard: parse the project name from the filename and
-	// apply private-upstream routing when it matches h.privateNames.
+	// route private names exclusively to the private upstream (DESIGN-REVIEW §4).
 	project := extractProjectFromFile(file)
 	ups := h.upstreams
 	if project != "" && h.isPrivate(project) {
 		if h.privateUpstream == nil {
-			if h.failClosed {
-				h.log.Warn("pypi: private name — no private upstream (fail-closed)",
-					"project", project)
-				writeError(w, http.StatusServiceUnavailable,
-					"private package source not available")
-				return
-			}
-			// failClosed=false: fall through to public mirrors.
-		} else {
-			ups = []upstream.Upstream{*h.privateUpstream}
+			// Private name with no private upstream — always fail. A public
+			// fallback here is the dependency-confusion attack path (H3).
+			h.log.Warn("pypi: private name — no private upstream (fail-closed)",
+				"project", project)
+			writeError(w, http.StatusServiceUnavailable,
+				"private package source not available")
+			return
 		}
+		ups = []upstream.Upstream{*h.privateUpstream}
 	}
 
 	ref := fileRef(name, file)

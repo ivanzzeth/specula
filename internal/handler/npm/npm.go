@@ -36,6 +36,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
+	"github.com/ivanzzeth/specula/internal/verify"
 )
 
 // Protocol is the ArtifactRef.Protocol value for npm.
@@ -73,6 +74,11 @@ type Handler struct {
 	privateUnscoped []string           // unscoped names that must never be queried upstream
 	privateUpstream *upstream.Upstream // private registry; nil = none configured
 	failClosed      bool               // private + private down → 5xx, never public
+
+	// guard is the wired DependencyConfusionGuard built from the private
+	// scope/name configuration in NewHandler. It is nil when neither
+	// privateScopes nor privateUnscoped are configured.
+	guard *verify.DependencyConfusionGuard
 
 	log *slog.Logger
 }
@@ -140,6 +146,17 @@ func NewHandler(cm cache.CacheManager, opts ...Option) *Handler {
 	}
 	for _, opt := range opts {
 		opt(h)
+	}
+	// Wire the dependency-confusion guard from the handler's private-scope/name
+	// configuration. The guard is the canonical decision authority; handler fields
+	// are kept for backward-compat option wiring only.
+	if len(h.privateScopes) > 0 || len(h.privateUnscoped) > 0 {
+		h.guard = verify.NewDependencyConfusionGuard(verify.DepConfusionConfig{
+			Protocol:        "npm",
+			PrivateScopes:   h.privateScopes,
+			PrivateUnscoped: h.privateUnscoped,
+			FailClosed:      h.failClosed,
+		})
 	}
 	return h
 }

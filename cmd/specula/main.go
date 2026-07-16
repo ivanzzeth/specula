@@ -131,6 +131,31 @@ func run() error {
 	if gitSignedV != nil {
 		verifiers = append(verifiers, gitSignedV)
 	}
+
+	// ── Cross-source consensus (TierConsensus, DESIGN-REVIEW §1.2) ────────────
+	// Each configured protocol gets its OWN protocol-scoped consensus verifier so
+	// one protocol's mirror set never acts on another's artifacts (the shared
+	// chain would otherwise let it). The digest fetcher is metadata-only (HEAD /
+	// index page, never the blob) and returns sha256 — so consensus is wired for
+	// the ecosystems whose metadata publishes a sha256 (oci, pypi). npm (sha512
+	// integrity) and tarball (no advertised digest) cannot be cross-checked
+	// metadata-only, so their consensus request is logged and left at tofu rather
+	// than fail-closing every real fetch.
+	mirrorFetcher := verify.NewHTTPMirrorDigestFetcher(0)
+	for _, protocol := range []string{"oci", "pypi", "npm", "tarball"} {
+		if cv := buildConsensusVerifier(protocol, cfg, mirrorFetcher, log); cv != nil {
+			verifiers = append(verifiers, cv)
+		}
+	}
+
+	// ── cosign keyed signed anchor for OCI (TierSigned, DESIGN-REVIEW §1.1) ────
+	// Registered only when the oci protocol configures cosign public keys. The
+	// verifier self-gates to resolved oci images; discovery uses go-container-
+	// registry (the sha256-<hex>.sig companion tag), transparency log disabled.
+	if cosignV := buildCosignVerifier(cfg, log); cosignV != nil {
+		verifiers = append(verifiers, cosignV)
+	}
+
 	chain := verify.NewChain(verifiers...)
 
 	// ── Cache manager: two-tier CAS + verify-on-write quarantine ─────────────
@@ -598,6 +623,159 @@ func policyOrWarn(p string) string {
 		return "warn"
 	}
 	return p
+}
+
+// consensusMetadataProtocols is the set of protocols for which a mirror's
+// sha256 digest is obtainable metadata-only (HEAD / index page) and therefore
+// directly comparable to the artifact's CAS digest. pypi publishes a PEP 503
+// "#sha256=" per file; oci returns Docker-Content-Digest on a manifest/blob
+// HEAD. npm (sha512 integrity) and generic tarballs (no advertised digest)
+// cannot be cross-checked without downloading the blob, so consensus is not
+// enabled for them (it would fail-close every real fetch).
+var consensusMetadataProtocols = map[string]bool{"oci": true, "pypi": true}
+
+// consensusEnabled reports whether a protocol's verification config asks for the
+// consensus tier — either via the tiers list or a structured consensus block.
+func consensusEnabled(vc config.VerificationConfig) bool {
+	if vc.Consensus != nil {
+		return true
+	}
+	for _, t := range vc.Tiers {
+		if t == "consensus" {
+			return true
+		}
+	}
+	return false
+}
+
+// buildConsensusVerifier constructs a protocol-scoped cross-source consensus
+// verifier for the named protocol from its config, or returns nil when consensus
+// is not enabled or not achievable metadata-only for that protocol. Mirrors come
+// from the structured consensus block when present, else are derived from the
+// protocol upstreams (non-official = independent mirrors; the official upstream
+// becomes the authoritative origin witness). The returned verifier is scoped so
+// it only acts on its own protocol within the shared chain.
+func buildConsensusVerifier(protocol string, cfg *config.Config, fetcher verify.MirrorDigestFetcher, log *slog.Logger) verify.Verifier {
+	pc, ok := cfg.Protocols[protocol]
+	if !ok {
+		return nil
+	}
+	vc := pc.Verification
+	if !consensusEnabled(vc) {
+		return nil
+	}
+	if !consensusMetadataProtocols[protocol] {
+		log.Warn("specula: consensus requested but not achievable metadata-only — staying at tofu",
+			"protocol", protocol,
+			"reason", "mirror metadata advertises no sha256 (npm uses sha512 integrity; tarball advertises none)")
+		return nil
+	}
+
+	quorum := vc.Quorum
+	var mirrors []verify.ConsensusMirror
+	var origin verify.OriginCheck
+
+	if vc.Consensus != nil {
+		quorum = vc.Consensus.Quorum
+		for _, m := range vc.Consensus.Mirrors {
+			mirrors = append(mirrors, verify.ConsensusMirror{Name: m.Name, BaseURL: m.BaseURL})
+		}
+		if oc := vc.Consensus.OriginCheck; oc != nil {
+			origin = verify.OriginCheck{URL: oc.URL, ViaProxy: oc.ViaProxy}
+		}
+	}
+	if len(mirrors) == 0 {
+		// Derive mirrors from the protocol upstreams: independent (non-official)
+		// mirrors vote; the first official upstream is the origin witness.
+		for _, u := range pc.Upstreams {
+			if u.Official && origin.URL == "" {
+				origin.URL = u.BaseURL
+				continue
+			}
+			mirrors = append(mirrors, verify.ConsensusMirror{Name: u.Name, BaseURL: u.BaseURL})
+		}
+	}
+	if quorum < 1 {
+		quorum = 1
+	}
+
+	cv := verify.NewConsensusVerifier(verify.ConsensusConfig{
+		Quorum:      quorum,
+		Mirrors:     mirrors,
+		OriginCheck: origin,
+	}, fetcher)
+	log.Info("specula: cross-source consensus enabled",
+		"protocol", protocol, "quorum", quorum, "mirrors", len(mirrors), "origin_check", origin.URL != "")
+	return newProtocolScopedVerifier(cv, protocol)
+}
+
+// buildCosignVerifier constructs the keyed cosign verifier for the oci protocol
+// from configured public keys (structured cosign.keys, or the flat cosign_key
+// back-compat field), or returns nil when no keys are set. The transparency log
+// is always disabled (CN-offline keyed mode). Signature discovery is wired to
+// go-containerregistry over the configured oci registries. A key load failure
+// warns and downgrades oci to consensus/tofu rather than crashing.
+func buildCosignVerifier(cfg *config.Config, log *slog.Logger) *verify.CosignVerifier {
+	pc, ok := cfg.Protocols["oci"]
+	if !ok {
+		return nil
+	}
+	vc := pc.Verification
+	var keys []string
+	if vc.Cosign != nil {
+		keys = vc.Cosign.Keys
+	}
+	if len(keys) == 0 && strings.TrimSpace(vc.CosignKey) != "" {
+		keys = []string{vc.CosignKey}
+	}
+	if len(keys) == 0 {
+		log.Warn("specula: oci cosign keys not configured — oci tops out at consensus/tofu tier")
+		return nil
+	}
+
+	registries := make([]string, 0, len(pc.Upstreams))
+	for _, u := range pc.Upstreams {
+		registries = append(registries, u.BaseURL)
+	}
+	fetcher := verify.NewOCISignatureFetcher(registries)
+
+	v, err := verify.NewCosignVerifier(verify.CosignConfig{Keys: keys, Tlog: false}, fetcher)
+	if err != nil {
+		log.Warn("specula: oci cosign verifier disabled (key load failed) — downgrading oci to consensus/tofu",
+			"keys", len(keys), "err", err)
+		return nil
+	}
+	log.Info("specula: oci cosign keyed signed verification enabled",
+		"keys", len(keys), "registries", len(registries), "tlog", false)
+	return v
+}
+
+// protocolScopedVerifier wraps a Verifier so it only acts on artifacts of a
+// single protocol. For any other protocol it returns a no-op StatusPass at
+// TierChecksum, exactly like the built-in per-protocol verifiers' self-gate, so
+// a single shared chain can carry protocol-specific verifiers (e.g. the
+// protocol-blind consensus verifier) without one acting on another's artifacts.
+type protocolScopedVerifier struct {
+	inner    verify.Verifier
+	protocol string
+}
+
+func newProtocolScopedVerifier(inner verify.Verifier, protocol string) *protocolScopedVerifier {
+	return &protocolScopedVerifier{inner: inner, protocol: protocol}
+}
+
+func (p *protocolScopedVerifier) Name() string        { return p.inner.Name() }
+func (p *protocolScopedVerifier) Tier() artifact.Tier { return p.inner.Tier() }
+
+func (p *protocolScopedVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
+	if ref.Protocol != p.protocol {
+		return artifact.Result{
+			Status:  artifact.StatusPass,
+			Tier:    artifact.TierChecksum,
+			Message: fmt.Sprintf("%s: skipped (protocol %q out of scope)", p.inner.Name(), ref.Protocol),
+		}, nil
+	}
+	return p.inner.Verify(ctx, ref, art)
 }
 
 // onPrivateDownOrDefault renders the effective dependency-confusion fail behaviour

@@ -57,6 +57,12 @@ type UserStore interface {
 	// UpdateUserRole sets the user's system_role ("admin" | "user"). Returns
 	// ErrUserNotFound when no row matches id.
 	UpdateUserRole(ctx context.Context, id int64, role string) error
+	// UpdateUserFields sets zero or more mutable user fields identified by id.
+	// A nil pointer means "leave this field unchanged". passwordHash, when
+	// non-nil, must already be a bcrypt hash (the caller is responsible for
+	// hashing the plaintext first). Returns ErrUserNotFound when no row
+	// matches id.
+	UpdateUserFields(ctx context.Context, id int64, name, passwordHash *string) error
 	// DeleteUser removes the user row. Returns ErrUserNotFound when absent.
 	DeleteUser(ctx context.Context, id int64) error
 }
@@ -92,8 +98,9 @@ func (s *Service) Secure() bool { return s.secure }
 // immediate control-plane access without any out-of-band seeding step.
 //
 // The email is normalised to lower-case and trimmed before storage. Passwords
-// shorter than MinPasswordLen are rejected before hashing.
-func (s *Service) Register(ctx context.Context, email, password string) (*User, error) {
+// shorter than MinPasswordLen are rejected before hashing. name is stored as
+// the user's display name; an empty string is accepted (name is optional).
+func (s *Service) Register(ctx context.Context, email, password, name string) (*User, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 	if email == "" {
 		return nil, ErrEmailRequired
@@ -125,6 +132,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (*User, 
 
 	u, err := s.store.CreateUser(ctx, User{
 		Email:        email,
+		Name:         name,
 		PasswordHash: hash,
 		SystemRole:   role,
 	})

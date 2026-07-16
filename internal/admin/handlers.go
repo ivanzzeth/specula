@@ -51,7 +51,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := s.auth.Register(r.Context(), req.Email, req.Password)
+	u, err := s.auth.Register(r.Context(), req.Email, req.Password, req.Name)
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrEmailTaken):
@@ -360,8 +360,8 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 // Returns UserDTO.
 //
 // Role changes are handled via auth.UserStore.UpdateUserRole.
-// Name and password changes require the UserStore to also implement
-// admin.UserUpdater; otherwise those fields are reported as unsupported.
+// Name and password changes are handled via auth.UserStore.UpdateUserFields.
+// Last-admin and self-modification guards are enforced before any mutation.
 func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseUserID(w, r)
 	if !ok {
@@ -430,37 +430,27 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Name / password changes: require the optional UserUpdater extension.
+	// Name / password changes: call UpdateUserFields directly (now part of
+	// auth.UserStore so all concrete stores implement it).
 	if req.Name != nil || req.Password != nil {
-		updater, hasUpdater := s.users.(UserUpdater)
-		if !hasUpdater {
-			// Role was already committed (if any). Name/password change unsupported.
-			if req.SystemRole == nil {
-				writeError(w, http.StatusNotImplemented,
-					"name/password update not supported by this store implementation")
+		var hashPtr *string
+		if req.Password != nil {
+			h, hashErr := s.hasher.Hash(*req.Password)
+			if hashErr != nil {
+				s.log.Error("admin: patch user hash password", "err", hashErr)
+				writeError(w, http.StatusInternalServerError, "failed to update password")
 				return
 			}
-			// Partial success: role updated, name/password silently skipped.
-		} else {
-			var hashPtr *string
-			if req.Password != nil {
-				h, hashErr := s.hasher.Hash(*req.Password)
-				if hashErr != nil {
-					s.log.Error("admin: patch user hash password", "err", hashErr)
-					writeError(w, http.StatusInternalServerError, "failed to update password")
-					return
-				}
-				hashPtr = &h
-			}
-			if updErr := updater.UpdateUserFields(ctx, id, req.Name, hashPtr); updErr != nil {
-				if errors.Is(updErr, auth.ErrUserNotFound) {
-					writeError(w, http.StatusNotFound, "user not found")
-					return
-				}
-				s.log.Error("admin: patch user fields", "err", updErr, "id", id)
-				writeError(w, http.StatusInternalServerError, "failed to update user")
+			hashPtr = &h
+		}
+		if updErr := s.users.UpdateUserFields(ctx, id, req.Name, hashPtr); updErr != nil {
+			if errors.Is(updErr, auth.ErrUserNotFound) {
+				writeError(w, http.StatusNotFound, "user not found")
 				return
 			}
+			s.log.Error("admin: patch user fields", "err", updErr, "id", id)
+			writeError(w, http.StatusInternalServerError, "failed to update user")
+			return
 		}
 	}
 

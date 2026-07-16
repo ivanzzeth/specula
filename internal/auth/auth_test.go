@@ -152,6 +152,28 @@ func (f *fakeStore) UpdateUserRole(_ context.Context, id int64, role string) err
 	return nil
 }
 
+func (f *fakeStore) UpdateUserFields(_ context.Context, id int64, name, passwordHash *string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.byID[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	if name != nil {
+		u.Name = *name
+		if byEmail, ok2 := f.users[u.Email]; ok2 {
+			byEmail.Name = *name
+		}
+	}
+	if passwordHash != nil {
+		u.PasswordHash = *passwordHash
+		if byEmail, ok2 := f.users[u.Email]; ok2 {
+			byEmail.PasswordHash = *passwordHash
+		}
+	}
+	return nil
+}
+
 func (f *fakeStore) DeleteUser(_ context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -382,16 +404,19 @@ func TestService_FirstUserAdmin(t *testing.T) {
 	ctx := context.Background()
 
 	// The very first registered account must receive system_role="admin".
-	u1, err := svc.Register(ctx, "admin@example.com", "password123!")
+	u1, err := svc.Register(ctx, "admin@example.com", "password123!", "Admin User")
 	if err != nil {
 		t.Fatalf("Register first user: %v", err)
 	}
 	if u1.SystemRole != "admin" {
 		t.Fatalf("first user SystemRole=%q, want admin", u1.SystemRole)
 	}
+	if u1.Name != "Admin User" {
+		t.Fatalf("first user Name=%q, want Admin User", u1.Name)
+	}
 
 	// All subsequent accounts must be plain users.
-	u2, err := svc.Register(ctx, "user@example.com", "password123!")
+	u2, err := svc.Register(ctx, "user@example.com", "password123!", "")
 	if err != nil {
 		t.Fatalf("Register second user: %v", err)
 	}
@@ -404,10 +429,10 @@ func TestService_Register_DuplicateEmail(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 
-	if _, err := svc.Register(ctx, "dup@example.com", "password123!"); err != nil {
+	if _, err := svc.Register(ctx, "dup@example.com", "password123!", ""); err != nil {
 		t.Fatalf("first register: %v", err)
 	}
-	_, err := svc.Register(ctx, "dup@example.com", "password123!")
+	_, err := svc.Register(ctx, "dup@example.com", "password123!", "")
 	if !errors.Is(err, ErrEmailTaken) {
 		t.Fatalf("duplicate email: got %v, want ErrEmailTaken", err)
 	}
@@ -415,7 +440,7 @@ func TestService_Register_DuplicateEmail(t *testing.T) {
 
 func TestService_Register_PasswordTooShort(t *testing.T) {
 	svc, _ := newTestService(t)
-	_, err := svc.Register(context.Background(), "x@example.com", "short")
+	_, err := svc.Register(context.Background(), "x@example.com", "short", "")
 	if !errors.Is(err, ErrPasswordTooShort) {
 		t.Fatalf("short password: got %v, want ErrPasswordTooShort", err)
 	}
@@ -428,7 +453,7 @@ func TestService_Register_ExactMinLength(t *testing.T) {
 	for i := range pw {
 		pw[i] = 'x'
 	}
-	if _, err := svc.Register(context.Background(), "exact@example.com", string(pw)); err != nil {
+	if _, err := svc.Register(context.Background(), "exact@example.com", string(pw), ""); err != nil {
 		t.Fatalf("password of exactly MinPasswordLen: got %v, want nil", err)
 	}
 }
@@ -437,7 +462,7 @@ func TestService_Register_EmailRequired(t *testing.T) {
 	svc, _ := newTestService(t)
 	cases := []string{"", "   ", "\t"}
 	for _, email := range cases {
-		if _, err := svc.Register(context.Background(), email, "password123!"); !errors.Is(err, ErrEmailRequired) {
+		if _, err := svc.Register(context.Background(), email, "password123!", ""); !errors.Is(err, ErrEmailRequired) {
 			t.Errorf("blank email %q: got %v, want ErrEmailRequired", email, err)
 		}
 	}
@@ -447,7 +472,7 @@ func TestService_Register_EmailNormalised(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
 	// Emails are lower-cased and trimmed before storage/duplicate checks.
-	u, err := svc.Register(ctx, "  Alice@Example.COM  ", "password123!")
+	u, err := svc.Register(ctx, "  Alice@Example.COM  ", "password123!", "")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -455,7 +480,7 @@ func TestService_Register_EmailNormalised(t *testing.T) {
 		t.Fatalf("email not normalised: got %q, want alice@example.com", u.Email)
 	}
 	// Re-registering the same email in different case must be detected as dup.
-	if _, err := svc.Register(ctx, "ALICE@EXAMPLE.COM", "password123!"); !errors.Is(err, ErrEmailTaken) {
+	if _, err := svc.Register(ctx, "ALICE@EXAMPLE.COM", "password123!", ""); !errors.Is(err, ErrEmailTaken) {
 		t.Fatalf("case-insensitive dup: got %v, want ErrEmailTaken", err)
 	}
 }
@@ -465,7 +490,7 @@ func TestService_Register_EmailNormalised(t *testing.T) {
 func TestService_Login_Success(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
-	if _, err := svc.Register(ctx, "carol@example.com", "carolspassword1"); err != nil {
+	if _, err := svc.Register(ctx, "carol@example.com", "carolspassword1", ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	tok, u, err := svc.Login(ctx, "carol@example.com", "carolspassword1")
@@ -483,7 +508,7 @@ func TestService_Login_Success(t *testing.T) {
 func TestService_Login_WrongPassword(t *testing.T) {
 	svc, _ := newTestService(t)
 	ctx := context.Background()
-	if _, err := svc.Register(ctx, "dave@example.com", "correctpass1"); err != nil {
+	if _, err := svc.Register(ctx, "dave@example.com", "correctpass1", ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if _, _, err := svc.Login(ctx, "dave@example.com", "wrongpass"); !errors.Is(err, ErrInvalidCredentials) {
@@ -503,7 +528,7 @@ func TestService_Login_NotFound_TimingSafe(t *testing.T) {
 
 	// Create a real user so the "user not found" path can be compared against
 	// the "wrong password" path (both must return ErrInvalidCredentials).
-	if _, err := svc.Register(ctx, "real@example.com", "realpassword1"); err != nil {
+	if _, err := svc.Register(ctx, "real@example.com", "realpassword1", ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
@@ -532,7 +557,7 @@ func TestService_TokenGenRevocation(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
 
-	if _, err := svc.Register(ctx, "eve@example.com", "evepassword1"); err != nil {
+	if _, err := svc.Register(ctx, "eve@example.com", "evepassword1", ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	tok, u, err := svc.Login(ctx, "eve@example.com", "evepassword1")
@@ -592,7 +617,7 @@ func TestMiddleware_InvalidToken_Returns401(t *testing.T) {
 func TestMiddleware_ValidCookie_SetsContext(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
-	if _, err := svc.Register(ctx, "frank@example.com", "frankpass1"); err != nil {
+	if _, err := svc.Register(ctx, "frank@example.com", "frankpass1", ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	tok, _, err := svc.Login(ctx, "frank@example.com", "frankpass1")
@@ -622,7 +647,7 @@ func TestMiddleware_ValidCookie_SetsContext(t *testing.T) {
 func TestMiddleware_ValidBearerToken(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
-	if _, err := svc.Register(ctx, "grace@example.com", "gracepass1"); err != nil {
+	if _, err := svc.Register(ctx, "grace@example.com", "gracepass1", ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	tok, _, err := svc.Login(ctx, "grace@example.com", "gracepass1")
@@ -646,7 +671,7 @@ func TestMiddleware_ValidBearerToken(t *testing.T) {
 func TestMiddleware_TokenGenRevocation(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
-	if _, err := svc.Register(ctx, "henry@example.com", "henrypass1"); err != nil {
+	if _, err := svc.Register(ctx, "henry@example.com", "henrypass1", ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	tok, u, err := svc.Login(ctx, "henry@example.com", "henrypass1")
@@ -673,7 +698,7 @@ func TestAdminRequired_Admin_Passes(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
 	// First user = admin.
-	if _, err := svc.Register(ctx, "admin@example.com", "adminpass1"); err != nil {
+	if _, err := svc.Register(ctx, "admin@example.com", "adminpass1", ""); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	tok, _, err := svc.Login(ctx, "admin@example.com", "adminpass1")
@@ -695,10 +720,10 @@ func TestAdminRequired_NonAdmin_Returns403(t *testing.T) {
 	svc, store := newTestService(t)
 	ctx := context.Background()
 	// Register admin (to ensure the next user is "user").
-	if _, err := svc.Register(ctx, "admin@example.com", "adminpass1"); err != nil {
+	if _, err := svc.Register(ctx, "admin@example.com", "adminpass1", ""); err != nil {
 		t.Fatalf("Register admin: %v", err)
 	}
-	if _, err := svc.Register(ctx, "plain@example.com", "plainpass1"); err != nil {
+	if _, err := svc.Register(ctx, "plain@example.com", "plainpass1", ""); err != nil {
 		t.Fatalf("Register plain user: %v", err)
 	}
 	tok, _, err := svc.Login(ctx, "plain@example.com", "plainpass1")

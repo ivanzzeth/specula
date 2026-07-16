@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/auth"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -511,4 +512,175 @@ func TestPGAdvisoryLocker_DifferentKeys_Independent(t *testing.T) {
 	defer lock2.Release(ctx) //nolint:errcheck
 
 	assert.NotEqual(t, lock1.Token(), lock2.Token(), "tokens must differ")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integration: user store (auth.UserStore)
+// ─────────────────────────────────────────────────────────────────────────────
+
+func newTestPGUser(email, name string) auth.User {
+	return auth.User{
+		Email:        email,
+		Name:         name,
+		PasswordHash: "bcrypt-placeholder",
+		SystemRole:   "user",
+	}
+}
+
+func TestPostgresUserStore_CreateGet(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := store.CreateUser(ctx, newTestPGUser("pg-alice@example.com", "Alice"))
+	require.NoError(t, err)
+	assert.NotZero(t, u.ID)
+	assert.Equal(t, "Alice", u.Name)
+	assert.Equal(t, "user", u.SystemRole)
+
+	got, err := store.GetUserByEmail(ctx, "pg-alice@example.com")
+	require.NoError(t, err)
+	assert.Equal(t, u.ID, got.ID)
+	assert.Equal(t, "Alice", got.Name)
+}
+
+func TestPostgresUserStore_CreateUser_PersistsName(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := store.CreateUser(ctx, auth.User{
+		Email:        "pg-named@example.com",
+		Name:         "Registered Name",
+		PasswordHash: "hash",
+		SystemRole:   "admin",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "Registered Name", u.Name)
+
+	got, err := store.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Registered Name", got.Name)
+}
+
+func TestPostgresUserStore_EmailTaken(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	_, err := store.CreateUser(ctx, newTestPGUser("pg-dup@example.com", ""))
+	require.NoError(t, err)
+
+	_, err = store.CreateUser(ctx, newTestPGUser("pg-dup@example.com", ""))
+	require.ErrorIs(t, err, auth.ErrEmailTaken)
+}
+
+func TestPostgresUserStore_UpdateUserRole(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := store.CreateUser(ctx, newTestPGUser("pg-role@example.com", ""))
+	require.NoError(t, err)
+
+	require.NoError(t, store.UpdateUserRole(ctx, u.ID, "admin"))
+
+	got, err := store.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "admin", got.SystemRole)
+}
+
+func TestPostgresUserStore_UpdateUserFields_Name(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := store.CreateUser(ctx, newTestPGUser("pg-fields@example.com", "Original"))
+	require.NoError(t, err)
+
+	newName := "Updated Name"
+	require.NoError(t, store.UpdateUserFields(ctx, u.ID, &newName, nil))
+
+	got, err := store.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "Updated Name", got.Name)
+	assert.Equal(t, "bcrypt-placeholder", got.PasswordHash, "password unchanged")
+}
+
+func TestPostgresUserStore_UpdateUserFields_PasswordHash(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := store.CreateUser(ctx, newTestPGUser("pg-pw@example.com", ""))
+	require.NoError(t, err)
+
+	newHash := "new-bcrypt-hash"
+	require.NoError(t, store.UpdateUserFields(ctx, u.ID, nil, &newHash))
+
+	got, err := store.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "new-bcrypt-hash", got.PasswordHash)
+}
+
+func TestPostgresUserStore_UpdateUserFields_Both(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := store.CreateUser(ctx, newTestPGUser("pg-both@example.com", "Old"))
+	require.NoError(t, err)
+
+	newName := "New Name"
+	newHash := "refreshed"
+	require.NoError(t, store.UpdateUserFields(ctx, u.ID, &newName, &newHash))
+
+	got, err := store.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "New Name", got.Name)
+	assert.Equal(t, "refreshed", got.PasswordHash)
+}
+
+func TestPostgresUserStore_UpdateUserFields_NotFound(t *testing.T) {
+	store := newTestStore(t)
+	newName := "Ghost"
+	err := store.UpdateUserFields(context.Background(), 9999, &newName, nil)
+	require.ErrorIs(t, err, auth.ErrUserNotFound)
+}
+
+func TestPostgresUserStore_DeleteUser(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := store.CreateUser(ctx, newTestPGUser("pg-del@example.com", ""))
+	require.NoError(t, err)
+
+	require.NoError(t, store.DeleteUser(ctx, u.ID))
+
+	_, err = store.GetUserByID(ctx, u.ID)
+	require.ErrorIs(t, err, auth.ErrUserNotFound)
+}
+
+func TestPostgresUserStore_BumpTokenGen(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	u, err := store.CreateUser(ctx, newTestPGUser("pg-bump@example.com", ""))
+	require.NoError(t, err)
+
+	newGen, err := store.BumpTokenGen(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), newGen)
+
+	got, err := store.GetUserByID(ctx, u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), got.TokenGen)
+}
+
+func TestPostgresUserStore_ListUsers(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	for _, email := range []string{"pg-a@x.com", "pg-b@x.com", "pg-c@x.com"} {
+		_, err := store.CreateUser(ctx, newTestPGUser(email, ""))
+		require.NoError(t, err)
+	}
+
+	users, total, err := store.ListUsers(ctx, 0, 0)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), total)
+	assert.Len(t, users, 3)
 }

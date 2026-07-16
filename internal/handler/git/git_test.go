@@ -1,6 +1,8 @@
 package git
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,6 +20,7 @@ func TestParseProxyPath(t *testing.T) {
 	allowed := map[string]struct{}{
 		"github.com": {},
 		"gitlab.com": {},
+		"gitee.com":  {},
 	}
 
 	tests := []struct {
@@ -58,6 +61,14 @@ func TestParseProxyPath(t *testing.T) {
 			wantOK:   true,
 			wantHost: "github.com",
 			wantProj: "group/sub/repo",
+			wantTail: "/info/refs",
+		},
+		{
+			name:     "gitee.com host allowed",
+			path:     "/gitee.com/owner/repo.git/info/refs",
+			wantOK:   true,
+			wantHost: "gitee.com",
+			wantProj: "owner/repo",
 			wantTail: "/info/refs",
 		},
 		{
@@ -333,4 +344,141 @@ func TestServeHTTPDisallowedHost(t *testing.T) {
 
 	assert.Equal(t, http.StatusNotFound, w.Code,
 		"disallowed host must return 404")
+}
+
+// ─── publicChecker.probeGitee ────────────────────────────────────────────────
+
+// testRoundTripper captures requests and responds using the provided handler
+// function. Used to unit-test probe logic without real network calls.
+type testRoundTripper struct {
+	fn func(*http.Request) (*http.Response, error)
+}
+
+func (rt *testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return rt.fn(req)
+}
+
+// probeCheckerWithServer constructs a publicChecker whose HTTP client is
+// redirected to srv instead of making real network calls. The transport
+// rewrites every outbound URL so that it hits srv.URL instead of the real
+// host, preserving the path and query so the checker can still parse them.
+func probeCheckerWithServer(srv *httptest.Server) *publicChecker {
+	rt := &testRoundTripper{
+		fn: func(req *http.Request) (*http.Response, error) {
+			// Rewrite the host/scheme to the test server while keeping path.
+			redirected := req.Clone(req.Context())
+			redirected.URL.Scheme = "http"
+			redirected.URL.Host = srv.Listener.Addr().String()
+			return srv.Client().Transport.RoundTrip(redirected)
+		},
+	}
+	return newPublicChecker(0, rt)
+}
+
+func TestProbeGitee_PublicRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		priv := false
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(struct {
+			Private *bool `json:"private"`
+		}{Private: &priv})
+	}))
+	defer srv.Close()
+
+	checker := probeCheckerWithServer(srv)
+	ref := repoRef{Host: "gitee.com", ProjectPath: "owner/public-repo"}
+	pub, err := checker.probe(context.Background(), ref)
+	require.NoError(t, err)
+	assert.True(t, pub, "public repo (private=false) must return true")
+}
+
+func TestProbeGitee_PrivateRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Private repos return 404 from the unauthenticated Gitee API.
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	checker := probeCheckerWithServer(srv)
+	ref := repoRef{Host: "gitee.com", ProjectPath: "owner/private-repo"}
+	pub, err := checker.probe(context.Background(), ref)
+	require.NoError(t, err)
+	assert.False(t, pub, "404 must result in not-public")
+}
+
+func TestProbeGitee_ExplicitPrivateFlag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		priv := true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(struct {
+			Private *bool `json:"private"`
+		}{Private: &priv})
+	}))
+	defer srv.Close()
+
+	checker := probeCheckerWithServer(srv)
+	ref := repoRef{Host: "gitee.com", ProjectPath: "owner/explicit-private"}
+	pub, err := checker.probe(context.Background(), ref)
+	require.NoError(t, err)
+	assert.False(t, pub, "private=true must return false")
+}
+
+func TestProbeGitee_UnauthorizedTreatedAsNonPublic(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	checker := probeCheckerWithServer(srv)
+	ref := repoRef{Host: "gitee.com", ProjectPath: "owner/restricted"}
+	pub, err := checker.probe(context.Background(), ref)
+	require.NoError(t, err)
+	assert.False(t, pub, "401 must result in not-public (fail-closed)")
+}
+
+func TestProbeGitee_APIErrorPropagate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	checker := probeCheckerWithServer(srv)
+	ref := repoRef{Host: "gitee.com", ProjectPath: "owner/repo"}
+	_, err := checker.probe(context.Background(), ref)
+	require.Error(t, err, "5xx must propagate as error")
+}
+
+func TestProbeGitee_CachesResult(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		priv := false
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(struct {
+			Private *bool `json:"private"`
+		}{Private: &priv})
+	}))
+	defer srv.Close()
+
+	checker := probeCheckerWithServer(srv)
+	// Use a long TTL so the second call hits the cache.
+	checker.ttl = 5 * time.Minute
+
+	ref := repoRef{Host: "gitee.com", ProjectPath: "cached/repo"}
+	_, err := checker.IsPublic(context.Background(), ref)
+	require.NoError(t, err)
+	_, err = checker.IsPublic(context.Background(), ref)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, callCount, "second IsPublic call must hit the cache, not the API")
+}
+
+func TestProbeUnsupportedHost(t *testing.T) {
+	checker := newPublicChecker(0, nil)
+	ref := repoRef{Host: "bitbucket.org", ProjectPath: "owner/repo"}
+	_, err := checker.probe(context.Background(), ref)
+	require.Error(t, err, "unsupported host must return an error")
 }

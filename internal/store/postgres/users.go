@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -132,6 +133,40 @@ func (s *PostgresStore) UpdateUserRole(ctx context.Context, id int64, role strin
 	tag, err := s.pool.Exec(ctx, `UPDATE users SET system_role = $1 WHERE id = $2`, role, id)
 	if err != nil {
 		return fmt.Errorf("postgres: update user role (id=%d): %w", id, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return auth.ErrUserNotFound
+	}
+	return nil
+}
+
+// UpdateUserFields updates zero or more mutable fields on the user identified
+// by id. A nil pointer means "leave this field unchanged". passwordHash, when
+// non-nil, must already be a bcrypt hash. Returns auth.ErrUserNotFound when no
+// row matches id. Returns nil (no-op) when both pointers are nil.
+func (s *PostgresStore) UpdateUserFields(ctx context.Context, id int64, name, passwordHash *string) error {
+	if name == nil && passwordHash == nil {
+		_, err := s.GetUserByID(ctx, id)
+		return err
+	}
+	var setClauses []string
+	var args []any
+	i := 1
+	if name != nil {
+		setClauses = append(setClauses, fmt.Sprintf("name = $%d", i))
+		args = append(args, *name)
+		i++
+	}
+	if passwordHash != nil {
+		setClauses = append(setClauses, fmt.Sprintf("password_hash = $%d", i))
+		args = append(args, *passwordHash)
+		i++
+	}
+	args = append(args, id)
+	q := "UPDATE users SET " + strings.Join(setClauses, ", ") + fmt.Sprintf(" WHERE id = $%d", i)
+	tag, err := s.pool.Exec(ctx, q, args...)
+	if err != nil {
+		return fmt.Errorf("postgres: update user fields (id=%d): %w", id, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return auth.ErrUserNotFound

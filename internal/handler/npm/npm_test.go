@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -617,4 +618,146 @@ func TestDepConfusion_PrivateUnscoped_ServedFromPrivateUpstream(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	got, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, internalPackument, got)
+}
+
+// ── tests: wired guard + additional dep-confusion cases ──────────────────────
+
+// TestDepConfusion_GuardWired verifies that NewHandler wires the
+// DependencyConfusionGuard when scopes or unscoped names are configured.
+func TestDepConfusion_GuardWired(t *testing.T) {
+	h := NewHandler(newNpmTestCache(),
+		WithPrivateScopes([]string{"@corp"}),
+		WithPrivateUnscoped([]string{"internal-lib"}),
+	)
+	assert.NotNil(t, h.guard, "guard must be non-nil when private config is present")
+
+	hNoPrivate := NewHandler(newNpmTestCache())
+	assert.Nil(t, hNoPrivate.guard, "guard must be nil when no private config is set")
+}
+
+// TestDepConfusion_ScopeServedFromPrivateOnly verifies that a scoped private
+// package is routed only to the private upstream and the public mirror receives
+// no requests, even when it holds a "higher" version.
+func TestDepConfusion_ScopeServedFromPrivateOnly(t *testing.T) {
+	const pkg = "@corp/sdk"
+	privatePackument := []byte(`{"name":"@corp/sdk","dist-tags":{"latest":"1.0.0"},"versions":{}}`)
+	publicPackument := []byte(`{"name":"@corp/sdk","dist-tags":{"latest":"9.9.9"},"versions":{}}`)
+
+	privateReg, _, _ := fakeNpmRegistry(t, map[string][]byte{pkg: privatePackument}, nil)
+
+	var publicHits int64
+	pubSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&publicHits, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(publicPackument)
+	}))
+	defer pubSrv.Close()
+
+	cm := newNpmTestCache()
+	h := NewHandler(cm,
+		WithPrivateScopes([]string{"@corp"}),
+		WithPrivateUpstream(upstream.Upstream{Name: "private", BaseURL: privateReg.URL}),
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{{Name: "public", BaseURL: pubSrv.URL}}),
+		WithMutableTTL(300),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/@corp/sdk")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	got, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, privatePackument, got, "response must be from private upstream")
+	assert.Zero(t, atomic.LoadInt64(&publicHits), "public mirror must receive zero requests for @corp scoped pkg")
+}
+
+// TestDepConfusion_PrivateDown_FailClosed verifies that a private upstream that
+// is unreachable results in 5xx and the public mirror is never consulted.
+func TestDepConfusion_PrivateDown_FailClosed(t *testing.T) {
+	const pkg = "acme-internal"
+	publicPackument := []byte(`{"name":"acme-internal","dist-tags":{"latest":"2.0.0"},"versions":{}}`)
+
+	// Public upstream is healthy and would serve the package.
+	pubReg, _, _ := fakeNpmRegistry(t, map[string][]byte{pkg: publicPackument}, nil)
+
+	cm := newNpmTestCache()
+	h := NewHandler(cm,
+		WithPrivateUnscoped([]string{pkg}),
+		WithPrivateUpstream(upstream.Upstream{
+			Name:    "private",
+			BaseURL: "http://127.0.0.1:0", // nothing listening → refused
+		}),
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{{Name: "public", BaseURL: pubReg.URL}}),
+		WithFailClosed(true),
+		WithMutableTTL(0),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/" + pkg)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode,
+		"private-upstream-down must not return 200 from public (dep-confusion protection)")
+	assert.GreaterOrEqual(t, resp.StatusCode, 500,
+		"response must be a 5xx error when private upstream is down and failClosed=true")
+}
+
+// TestDepConfusion_NoPublicFallthrough_WithoutPrivateUpstream verifies the fix
+// for the former bug where failClosed=false caused a public fallback for private
+// names with no private upstream configured.
+func TestDepConfusion_NoPublicFallthrough_WithoutPrivateUpstream(t *testing.T) {
+	const pkg = "corp-secret"
+	publicPackument := []byte(`{"name":"corp-secret","dist-tags":{"latest":"1.0.0"},"versions":{}}`)
+
+	pubReg, _, _ := fakeNpmRegistry(t, map[string][]byte{pkg: publicPackument}, nil)
+
+	cm := newNpmTestCache()
+	h := NewHandler(cm,
+		WithPrivateUnscoped([]string{pkg}),
+		// No private upstream configured — previously caused public fallthrough.
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{{Name: "public", BaseURL: pubReg.URL}}),
+		WithFailClosed(false), // the old buggy path required failClosed=false
+		WithMutableTTL(0),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/" + pkg)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// selectUpstreams returns an error → must fail, NEVER return public 200.
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode,
+		"private name without private upstream must NEVER fall through to public")
+}
+
+// TestDepConfusion_UnscopedGlob verifies that unscoped glob patterns in the
+// private denylist are matched by the guard's IsPrivate logic.
+func TestDepConfusion_UnscopedGlob(t *testing.T) {
+	h := NewHandler(newNpmTestCache(),
+		WithPrivateUnscoped([]string{"acme-*", "internal-lib"}),
+	)
+	require.NotNil(t, h.guard)
+
+	tests := []struct {
+		pkg  string
+		want bool
+	}{
+		{"acme-core", true},
+		{"acme-utils", true},
+		{"acme-", true},        // path.Match("acme-*","acme-"): * matches empty string
+		{"internal-lib", true}, // exact match
+		{"react", false},
+		{"@corp/pkg", false}, // scoped without a configured scope
+	}
+	for _, tc := range tests {
+		t.Run(tc.pkg, func(t *testing.T) {
+			got := h.isPrivatePkg(tc.pkg)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
