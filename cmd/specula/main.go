@@ -29,10 +29,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/ivanzzeth/specula/internal/admin"
+	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/config"
+	"github.com/ivanzzeth/specula/internal/grant"
 	apthandler "github.com/ivanzzeth/specula/internal/handler/apt"
 	githandler "github.com/ivanzzeth/specula/internal/handler/git"
 	"github.com/ivanzzeth/specula/internal/handler/gomod"
@@ -41,6 +43,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/handler/oci"
 	"github.com/ivanzzeth/specula/internal/handler/pypi"
 	tarballhandler "github.com/ivanzzeth/specula/internal/handler/tarball"
+	"github.com/ivanzzeth/specula/internal/org"
 	"github.com/ivanzzeth/specula/internal/stats"
 	blobstore "github.com/ivanzzeth/specula/internal/store/blob"
 	"github.com/ivanzzeth/specula/internal/store/local"
@@ -101,6 +104,19 @@ func run() error {
 	defer closeMeta()
 	log.Info("specula: storage ready",
 		"blob_driver", cfg.Storage.Blob.Driver, "meta_driver", cfg.Storage.Meta.Driver)
+
+	// ── Multi-tenant kernel (R1): org / apikey / grant stores ────────────────
+	// Constructed on the same database as the metadata store. For sqlite the
+	// 0002_multitenant migration already ran inside NewSQLiteStore; for postgres
+	// the embedded migrations are applied here against a stdlib handle. The org
+	// store also drives the first-user bootstrap (default org + owner) via the
+	// auth service below.
+	orgStore, keyStore, grantStore, closeMT, err := buildMultiTenantStores(cfg, metaStore)
+	if err != nil {
+		return fmt.Errorf("build multi-tenant stores: %w", err)
+	}
+	defer closeMT()
+	log.Info("specula: multi-tenant kernel ready", "meta_driver", cfg.Storage.Meta.Driver)
 
 	// ── Protocol-native signed verifiers ────────────────────────────────────
 	// Each is built from config paths and self-gates by ref.Protocol (like the Go
@@ -194,17 +210,22 @@ func run() error {
 		return fmt.Errorf("meta store %T does not implement auth.UserStore", metaStore)
 	}
 	tokens := auth.NewHS256Verifier(resolveJWTSecret(cfg, log))
-	authSvc := auth.NewService(userStore, auth.NewBcryptHasher(), tokens, cfg.Auth.CookieSecure)
+	// Passing orgStore enables the first-user-admin bootstrap to also seed the
+	// default org and make the first user its owner (auth.Service.Register).
+	authSvc := auth.NewService(userStore, auth.NewBcryptHasher(), tokens, cfg.Auth.CookieSecure, orgStore)
 	adminSrv := admin.New(admin.Deps{
-		Stats:  collector,
-		Meta:   metaStore,
-		Users:  userStore,
-		Auth:   authSvc,
-		Tokens: tokens,
-		Config: cfg,
-		Blobs:  blobs,
-		Secure: cfg.Auth.CookieSecure,
-		Logger: log.With("component", "admin"),
+		Stats:      collector,
+		Meta:       metaStore,
+		Users:      userStore,
+		Auth:       authSvc,
+		Tokens:     tokens,
+		Config:     cfg,
+		Blobs:      blobs,
+		Secure:     cfg.Auth.CookieSecure,
+		Logger:     log.With("component", "admin"),
+		OrgStore:   orgStore,
+		KeyStore:   keyStore,
+		GrantStore: grantStore,
 	})
 	adminSrv.RegisterRoutes(ctrlMux)
 	log.Info("specula: mounted Admin API", "base", "/api/v1")
@@ -273,6 +294,41 @@ func buildMetaStore(ctx context.Context, cfg *config.Config) (metastore.Metadata
 		return st, st.Close, nil
 	default:
 		return nil, func() {}, fmt.Errorf("unknown meta driver %q (want \"sqlite\" or \"postgres\")", cfg.Storage.Meta.Driver)
+	}
+}
+
+// buildMultiTenantStores constructs the R1 org / apikey / grant stores on the
+// same database backing the metadata store. The returned close func is always
+// non-nil.
+//
+//   - sqlite   — reuses the *sql.DB already opened + migrated by NewSQLiteStore
+//     (the 0002_multitenant migration is embedded and auto-applied there), so no
+//     second connection or migration pass is needed; closeMT is a no-op.
+//   - postgres — opens a stdlib *sql.DB against the same DSN and applies the
+//     embedded goose migrations before constructing the stores; closeMT closes
+//     that handle. (Placeholder-dialect rebind for these "?"-based stores on
+//     PostgreSQL is a known R2 hardening item — see postgres.OpenSQLDB.)
+func buildMultiTenantStores(cfg *config.Config, metaStore metastore.MetadataStore) (org.Store, apikey.Store, grant.Store, func(), error) {
+	switch cfg.Storage.Meta.Driver {
+	case "sqlite":
+		st, ok := metaStore.(*sqlite.SQLiteStore)
+		if !ok {
+			return nil, nil, nil, func() {}, fmt.Errorf("sqlite meta store has unexpected type %T", metaStore)
+		}
+		db := st.DB()
+		return org.NewSQLStore(db), apikey.NewSQLStore(db), grant.NewSQLStore(db), func() {}, nil
+	case "postgres":
+		db, err := postgres.OpenSQLDB(cfg.Storage.Meta.DSN)
+		if err != nil {
+			return nil, nil, nil, func() {}, err
+		}
+		if err := postgres.Migrate(db); err != nil {
+			_ = db.Close()
+			return nil, nil, nil, func() {}, err
+		}
+		return org.NewSQLStore(db), apikey.NewSQLStore(db), grant.NewSQLStore(db), func() { _ = db.Close() }, nil
+	default:
+		return nil, nil, nil, func() {}, fmt.Errorf("unknown meta driver %q (want \"sqlite\" or \"postgres\")", cfg.Storage.Meta.Driver)
 	}
 }
 

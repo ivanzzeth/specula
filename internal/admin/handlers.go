@@ -12,7 +12,9 @@ import (
 
 	diskutil "github.com/shirou/gopsutil/v3/disk"
 
+	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/auth"
+	"github.com/ivanzzeth/specula/internal/org"
 )
 
 // writeJSON serialises v as JSON with the given status code.
@@ -120,14 +122,46 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 // ---- me (authenticated) ------------------------------------------------------
 
-// handleMe → GET /api/v1/me. Returns MeResponse for the authenticated user.
+// handleMe → GET /api/v1/me. Returns MeResponse for the authenticated user,
+// extended with org context when an org store is wired in.
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	u, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	writeJSON(w, http.StatusOK, MeResponse{User: toUserDTO(u)})
+
+	resp := MeResponse{
+		User:    toUserDTO(u),
+		IsAdmin: u.SystemRole == "admin",
+	}
+
+	if s.orgs != nil {
+		// Resolve active org: prefer PrincipalMiddleware context, then header,
+		// then DefaultOrgID.
+		orgID, hasOrg := auth.OrgFromContext(r.Context())
+		if !hasOrg {
+			orgID = r.Header.Get("X-Org-Id")
+			if orgID == "" {
+				orgID = org.DefaultOrgID
+			}
+		}
+		resp.ActiveOrgID = orgID
+
+		mem, err := s.orgs.GetOrgMember(r.Context(), orgID, u.Email)
+		if err == nil {
+			resp.ActiveOrgRole = mem.Role
+		}
+
+		orgs, _ := s.orgs.ListOrgsForEmail(r.Context(), u.Email)
+		resp.Orgs = make([]OrgDTO, 0, len(orgs))
+		for _, o := range orgs {
+			dto := toOrgDTO(*o)
+			resp.Orgs = append(resp.Orgs, dto)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // ---- stats (admin) -----------------------------------------------------------
@@ -603,4 +637,600 @@ func (s *Server) isLastAdmin(ctx context.Context, id int64) (bool, error) {
 	}
 	// If there is only one admin, that must be the user we were called with.
 	return adminCount <= 1, nil
+}
+
+// ---- DTO converters ----------------------------------------------------------
+
+// toOrgDTO converts an org.Org to its client-facing projection.
+func toOrgDTO(o org.Org) OrgDTO {
+	return OrgDTO{
+		ID:        o.ID,
+		Name:      o.Name,
+		Slug:      o.Slug,
+		Status:    o.Status,
+		CreatedBy: o.CreatedBy,
+		CreatedAt: o.CreatedAt,
+		Role:      o.Role,
+	}
+}
+
+// toMemberDTO converts an org.Member to its client-facing projection.
+func toMemberDTO(m org.Member) MemberDTO {
+	return MemberDTO{
+		ID:        m.ID,
+		OrgID:     m.OrgID,
+		Email:     m.Email,
+		Role:      m.Role,
+		InvitedBy: m.InvitedBy,
+		CreatedAt: m.CreatedAt,
+	}
+}
+
+// toInvitationDTO converts an org.Invitation to its client-facing projection.
+func toInvitationDTO(inv org.Invitation) InvitationDTO {
+	return InvitationDTO{
+		ID:        inv.ID,
+		OrgID:     inv.OrgID,
+		Email:     inv.Email,
+		Role:      inv.Role,
+		InvitedBy: inv.InvitedBy,
+		Token:     inv.Token,
+		Status:    inv.Status,
+		ExpiresAt: inv.ExpiresAt,
+		CreatedAt: inv.CreatedAt,
+	}
+}
+
+// toKeyDTO converts an apikey.KeyInfo to its client-facing projection.
+func toKeyDTO(k apikey.KeyInfo, rawKey string) KeyDTO {
+	return KeyDTO{
+		ID:         k.ID,
+		OrgID:      k.OrgID,
+		Label:      k.Label,
+		Prefix:     k.Prefix,
+		CreatedAt:  k.CreatedAt,
+		LastUsedAt: k.LastUsedAt,
+		ExpiresAt:  k.ExpiresAt,
+		Revoked:    k.Revoked,
+		RawKey:     rawKey,
+	}
+}
+
+// ---- api keys ----------------------------------------------------------------
+
+// handleCreateKey → POST /api/v1/keys.
+// Creates an API key for the active org of the caller. The raw plaintext key
+// is returned exactly once in the response body.
+func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
+	if s.keys == nil {
+		writeError(w, http.StatusNotImplemented, "key store not configured")
+		return
+	}
+
+	var req CreateKeyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	orgID, _ := auth.OrgFromContext(r.Context())
+	if orgID == "" {
+		orgID = apikey.DefaultOrgID
+	}
+
+	subj, _ := auth.SubjectFromContext(r.Context())
+	var id, rawKey string
+	var err error
+
+	if subj.UserID != "" {
+		id, rawKey, err = s.keys.CreateOwned(orgID, subj.UserID, req.Label)
+	} else {
+		id, rawKey, err = s.keys.Create(orgID, req.Label)
+	}
+	if err != nil {
+		s.log.Error("admin: create key", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to create key")
+		return
+	}
+
+	info, ok := s.keys.Get(orgID, id)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "key created but not found")
+		return
+	}
+	writeJSON(w, http.StatusCreated, toKeyDTO(info, rawKey))
+}
+
+// handleListKeys → GET /api/v1/keys.
+// Returns all keys for the active org.
+func (s *Server) handleListKeys(w http.ResponseWriter, r *http.Request) {
+	if s.keys == nil {
+		writeError(w, http.StatusNotImplemented, "key store not configured")
+		return
+	}
+
+	orgID, _ := auth.OrgFromContext(r.Context())
+	if orgID == "" {
+		orgID = apikey.DefaultOrgID
+	}
+
+	infos, err := s.keys.List(orgID)
+	if err != nil {
+		s.log.Error("admin: list keys", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to list keys")
+		return
+	}
+	dtos := make([]KeyDTO, 0, len(infos))
+	for _, k := range infos {
+		dtos = append(dtos, toKeyDTO(k, ""))
+	}
+	writeJSON(w, http.StatusOK, KeysResponse{Keys: dtos})
+}
+
+// handleRevokeKey → DELETE /api/v1/keys/{id}.
+// Soft-deletes a key; the key is rejected immediately on subsequent lookups.
+func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
+	if s.keys == nil {
+		writeError(w, http.StatusNotImplemented, "key store not configured")
+		return
+	}
+
+	keyID := r.PathValue("id")
+	if keyID == "" {
+		writeError(w, http.StatusBadRequest, "key id required")
+		return
+	}
+
+	orgID, _ := auth.OrgFromContext(r.Context())
+	if orgID == "" {
+		orgID = apikey.DefaultOrgID
+	}
+
+	found, err := s.keys.Revoke(orgID, keyID)
+	if err != nil {
+		s.log.Error("admin: revoke key", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to revoke key")
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "key not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- orgs --------------------------------------------------------------------
+
+// handleListOrgs → GET /api/v1/orgs.
+// For session users: returns the orgs they belong to. For system admins: also
+// returns all orgs (same as ListOrgs). For API key callers: returns the key's
+// pinned org only.
+func (s *Server) handleListOrgs(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+
+	u, isUser := auth.UserFromContext(r.Context())
+	subj, _ := auth.SubjectFromContext(r.Context())
+
+	var orgList []*org.Org
+	var err error
+
+	if isUser {
+		orgList, err = s.orgs.ListOrgsForEmail(r.Context(), u.Email)
+		if err != nil {
+			s.log.Error("admin: list orgs for email", "err", err)
+			writeError(w, http.StatusInternalServerError, "failed to list orgs")
+			return
+		}
+	} else if subj.OrgID != "" {
+		// API-key caller: return just the key's pinned org.
+		o, getErr := s.orgs.GetOrg(r.Context(), subj.OrgID)
+		if getErr == nil {
+			orgList = []*org.Org{o}
+		}
+	}
+
+	dtos := make([]OrgDTO, 0, len(orgList))
+	for _, o := range orgList {
+		dtos = append(dtos, toOrgDTO(*o))
+	}
+	writeJSON(w, http.StatusOK, OrgsResponse{Orgs: dtos})
+}
+
+// handleCreateOrg → POST /api/v1/orgs.
+// Creates a new org; the caller becomes the org owner.
+func (s *Server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+
+	var req CreateOrgRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if strings.TrimSpace(req.Slug) == "" {
+		writeError(w, http.StatusBadRequest, "slug is required")
+		return
+	}
+
+	subj, _ := auth.SubjectFromContext(r.Context())
+	now := time.Now().UTC()
+	newOrg := &org.Org{
+		Name:      req.Name,
+		Slug:      req.Slug,
+		Status:    org.StatusActive,
+		CreatedBy: subj.UserID,
+		CreatedAt: now,
+	}
+
+	if err := s.orgs.CreateOrg(r.Context(), newOrg); err != nil {
+		s.log.Error("admin: create org", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to create org")
+		return
+	}
+
+	// Add the creator as org owner if we have a session user.
+	u, isUser := auth.UserFromContext(r.Context())
+	if isUser && newOrg.ID != "" {
+		_ = s.orgs.AddOrgMember(r.Context(), &org.Member{
+			OrgID:     newOrg.ID,
+			Email:     u.Email,
+			Role:      org.RoleOwner,
+			CreatedAt: now,
+		})
+	}
+
+	writeJSON(w, http.StatusCreated, toOrgDTO(*newOrg))
+}
+
+// handleGetOrg → GET /api/v1/orgs/{id}.
+// Returns an org the caller is a member of (or any org for system admins).
+func (s *Server) handleGetOrg(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+
+	orgID := r.PathValue("id")
+	if orgID == "" {
+		writeError(w, http.StatusBadRequest, "org id required")
+		return
+	}
+
+	o, err := s.orgs.GetOrg(r.Context(), orgID)
+	if err != nil {
+		if errors.Is(err, org.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "org not found")
+			return
+		}
+		s.log.Error("admin: get org", "err", err, "id", orgID)
+		writeError(w, http.StatusInternalServerError, "failed to get org")
+		return
+	}
+
+	// Check membership (system admins bypass).
+	subj, _ := auth.SubjectFromContext(r.Context())
+	if !subj.Admin {
+		u, isUser := auth.UserFromContext(r.Context())
+		if isUser {
+			_, memErr := s.orgs.GetOrgMember(r.Context(), orgID, u.Email)
+			if memErr != nil {
+				writeError(w, http.StatusForbidden, "not a member of this org")
+				return
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, toOrgDTO(*o))
+}
+
+// ---- members -----------------------------------------------------------------
+
+// requireOrgAdmin checks that the caller holds at least the admin role in the
+// given org. Returns true on success, writes the error response and returns
+// false on failure.
+func (s *Server) requireOrgAdmin(w http.ResponseWriter, r *http.Request, orgID string) bool {
+	subj, _ := auth.SubjectFromContext(r.Context())
+	if subj.Admin {
+		return true // system admin bypass
+	}
+	u, isUser := auth.UserFromContext(r.Context())
+	if !isUser {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	if s.orgs == nil {
+		writeError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	mem, err := s.orgs.GetOrgMember(r.Context(), orgID, u.Email)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "not a member of this org")
+		return false
+	}
+	if !org.AtLeast(mem.Role, org.RoleAdmin) {
+		writeError(w, http.StatusForbidden, "org admin role required")
+		return false
+	}
+	return true
+}
+
+// handleListMembers → GET /api/v1/orgs/{id}/members. Returns MembersResponse.
+func (s *Server) handleListMembers(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+	orgID := r.PathValue("id")
+	if !s.requireOrgAdmin(w, r, orgID) {
+		return
+	}
+
+	members, err := s.orgs.ListOrgMembers(r.Context(), orgID)
+	if err != nil {
+		s.log.Error("admin: list org members", "err", err, "org_id", orgID)
+		writeError(w, http.StatusInternalServerError, "failed to list members")
+		return
+	}
+	dtos := make([]MemberDTO, 0, len(members))
+	for _, m := range members {
+		dtos = append(dtos, toMemberDTO(*m))
+	}
+	writeJSON(w, http.StatusOK, MembersResponse{Members: dtos})
+}
+
+// handleAddMember → POST /api/v1/orgs/{id}/members. Returns 201 + MemberDTO.
+func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+	orgID := r.PathValue("id")
+	if !s.requireOrgAdmin(w, r, orgID) {
+		return
+	}
+
+	var req AddMemberRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+	if req.Email == "" {
+		writeError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+
+	subj, _ := auth.SubjectFromContext(r.Context())
+	m := &org.Member{
+		OrgID:     orgID,
+		Email:     req.Email,
+		Role:      org.NormalizeRole(req.Role),
+		InvitedBy: subj.UserID,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.orgs.AddOrgMember(r.Context(), m); err != nil {
+		s.log.Error("admin: add org member", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to add member")
+		return
+	}
+	// Re-fetch to get server-generated ID.
+	added, err := s.orgs.GetOrgMember(r.Context(), orgID, req.Email)
+	if err != nil {
+		writeJSON(w, http.StatusCreated, toMemberDTO(*m))
+		return
+	}
+	writeJSON(w, http.StatusCreated, toMemberDTO(*added))
+}
+
+// handlePatchMember → PATCH /api/v1/orgs/{id}/members/{email}. Returns 200 + MemberDTO.
+func (s *Server) handlePatchMember(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+	orgID := r.PathValue("id")
+	email := strings.ToLower(r.PathValue("email"))
+	if !s.requireOrgAdmin(w, r, orgID) {
+		return
+	}
+
+	var req PatchMemberRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Role == nil {
+		// Nothing to update; return current state.
+		m, err := s.orgs.GetOrgMember(r.Context(), orgID, email)
+		if err != nil {
+			if errors.Is(err, org.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "member not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "failed to get member")
+			return
+		}
+		writeJSON(w, http.StatusOK, toMemberDTO(*m))
+		return
+	}
+
+	current, err := s.orgs.GetOrgMember(r.Context(), orgID, email)
+	if err != nil {
+		if errors.Is(err, org.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "member not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get member")
+		return
+	}
+
+	// Guard: cannot demote the last owner.
+	if current.Role == org.RoleOwner && org.NormalizeRole(*req.Role) != org.RoleOwner {
+		n, countErr := s.orgs.CountOrgOwners(r.Context(), orgID)
+		if countErr == nil && n <= 1 {
+			writeError(w, http.StatusConflict, "cannot demote the last owner")
+			return
+		}
+	}
+
+	current.Role = org.NormalizeRole(*req.Role)
+	if err := s.orgs.AddOrgMember(r.Context(), current); err != nil {
+		s.log.Error("admin: patch member role", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to update member role")
+		return
+	}
+	updated, err := s.orgs.GetOrgMember(r.Context(), orgID, email)
+	if err != nil {
+		writeJSON(w, http.StatusOK, toMemberDTO(*current))
+		return
+	}
+	writeJSON(w, http.StatusOK, toMemberDTO(*updated))
+}
+
+// handleRemoveMember → DELETE /api/v1/orgs/{id}/members/{email}. Returns 204.
+func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+	orgID := r.PathValue("id")
+	email := strings.ToLower(r.PathValue("email"))
+	if !s.requireOrgAdmin(w, r, orgID) {
+		return
+	}
+
+	target, err := s.orgs.GetOrgMember(r.Context(), orgID, email)
+	if err != nil {
+		if errors.Is(err, org.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "member not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get member")
+		return
+	}
+
+	// Guard: cannot remove the last owner.
+	if target.Role == org.RoleOwner {
+		n, countErr := s.orgs.CountOrgOwners(r.Context(), orgID)
+		if countErr == nil && n <= 1 {
+			writeError(w, http.StatusConflict, "cannot remove the last owner")
+			return
+		}
+	}
+
+	if err := s.orgs.RemoveOrgMember(r.Context(), orgID, email); err != nil {
+		s.log.Error("admin: remove member", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to remove member")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- invitations -------------------------------------------------------------
+
+// handleCreateInvitation → POST /api/v1/orgs/{id}/invitations. Returns 201 + InvitationDTO.
+func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+	orgID := r.PathValue("id")
+	if !s.requireOrgAdmin(w, r, orgID) {
+		return
+	}
+
+	var req CreateInvitationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
+	if req.Email == "" {
+		writeError(w, http.StatusBadRequest, "email is required")
+		return
+	}
+
+	subj, _ := auth.SubjectFromContext(r.Context())
+	inv := &org.Invitation{
+		OrgID:     orgID,
+		Email:     req.Email,
+		Role:      org.NormalizeRole(req.Role),
+		InvitedBy: subj.UserID,
+		Status:    org.InviteStatusPending,
+		ExpiresAt: req.ExpiresAt,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.orgs.CreateInvitation(r.Context(), inv); err != nil {
+		s.log.Error("admin: create invitation", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to create invitation")
+		return
+	}
+	writeJSON(w, http.StatusCreated, toInvitationDTO(*inv))
+}
+
+// handleAcceptInvitation → POST /api/v1/invitations/accept. Returns 200.
+// The caller must present their own valid session; the invitation is matched
+// by token and the caller's email must match (no cross-user acceptance).
+func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+
+	var req AcceptInvitationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Token == "" {
+		writeError(w, http.StatusBadRequest, "token is required")
+		return
+	}
+
+	inv, err := s.orgs.GetInvitationByToken(r.Context(), req.Token)
+	if err != nil {
+		if errors.Is(err, org.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "invitation not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get invitation")
+		return
+	}
+
+	if inv.Status != org.InviteStatusPending {
+		writeError(w, http.StatusConflict, "invitation is not pending")
+		return
+	}
+	if inv.Expired() {
+		writeError(w, http.StatusConflict, "invitation has expired")
+		return
+	}
+
+	// Verify the caller is the invited email.
+	u, isUser := auth.UserFromContext(r.Context())
+	if isUser && strings.ToLower(u.Email) != strings.ToLower(inv.Email) {
+		writeError(w, http.StatusForbidden, "invitation email does not match")
+		return
+	}
+
+	now := time.Now().UTC()
+	_ = s.orgs.AddOrgMember(r.Context(), &org.Member{
+		OrgID:     inv.OrgID,
+		Email:     inv.Email,
+		Role:      inv.Role,
+		InvitedBy: inv.InvitedBy,
+		CreatedAt: now,
+	})
+	_ = s.orgs.SetInvitationStatus(r.Context(), inv.ID, org.InviteStatusAccepted)
+
+	writeJSON(w, http.StatusOK, toInvitationDTO(*inv))
 }

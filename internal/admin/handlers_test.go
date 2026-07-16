@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -17,9 +18,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/config"
+	"github.com/ivanzzeth/specula/internal/org"
 )
 
 // ---- fake dependencies -------------------------------------------------------
@@ -219,6 +222,385 @@ func (m *fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artif
 	return map[string]artifact.SizeStat{}, nil
 }
 
+// ---- fake org store ----------------------------------------------------------
+
+// fakeOrgStore is a thread-safe in-memory org.Store + auth.OrgResolver for tests.
+type fakeOrgStore struct {
+	mu          sync.Mutex
+	orgs        map[string]*org.Org
+	members     map[string]map[string]*org.Member // orgID → lowerEmail → member
+	invitations map[string]*org.Invitation        // id → invitation
+	byToken     map[string]*org.Invitation        // token → invitation
+	nextMembID  int
+	nextInvID   int
+}
+
+func newFakeOrgStore() *fakeOrgStore {
+	return &fakeOrgStore{
+		orgs:        map[string]*org.Org{},
+		members:     map[string]map[string]*org.Member{},
+		invitations: map[string]*org.Invitation{},
+		byToken:     map[string]*org.Invitation{},
+	}
+}
+
+func (f *fakeOrgStore) CreateOrg(_ context.Context, o *org.Org) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if o.ID == "" {
+		o.ID = "org_" + strconv.Itoa(len(f.orgs)+1)
+	}
+	if o.CreatedAt.IsZero() {
+		o.CreatedAt = time.Now().UTC()
+	}
+	cp := *o
+	f.orgs[o.ID] = &cp
+	return nil
+}
+
+func (f *fakeOrgStore) GetOrg(_ context.Context, id string) (*org.Org, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	o, ok := f.orgs[id]
+	if !ok {
+		return nil, org.ErrNotFound
+	}
+	cp := *o
+	return &cp, nil
+}
+
+func (f *fakeOrgStore) GetOrgBySlug(_ context.Context, slug string) (*org.Org, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, o := range f.orgs {
+		if o.Slug == slug {
+			cp := *o
+			return &cp, nil
+		}
+	}
+	return nil, org.ErrNotFound
+}
+
+func (f *fakeOrgStore) ListOrgs(_ context.Context) ([]*org.Org, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*org.Org, 0, len(f.orgs))
+	for _, o := range f.orgs {
+		cp := *o
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
+func (f *fakeOrgStore) UpdateOrg(_ context.Context, o *org.Org) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.orgs[o.ID]; !ok {
+		return org.ErrNotFound
+	}
+	cp := *o
+	f.orgs[o.ID] = &cp
+	return nil
+}
+
+func (f *fakeOrgStore) DeleteOrg(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.orgs[id]; !ok {
+		return org.ErrNotFound
+	}
+	delete(f.orgs, id)
+	delete(f.members, id)
+	return nil
+}
+
+func (f *fakeOrgStore) ListOrgsForEmail(_ context.Context, email string) ([]*org.Org, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	email = strings.ToLower(email)
+	var out []*org.Org
+	for orgID, memberMap := range f.members {
+		if m, ok := memberMap[email]; ok {
+			o, exists := f.orgs[orgID]
+			if exists {
+				cp := *o
+				cp.Role = m.Role
+				out = append(out, &cp)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeOrgStore) SetOrgStatus(_ context.Context, id, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	o, ok := f.orgs[id]
+	if !ok {
+		return org.ErrNotFound
+	}
+	o.Status = status
+	return nil
+}
+
+func (f *fakeOrgStore) CountOrgAdmins(_ context.Context, orgID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, m := range f.members[orgID] {
+		if org.AtLeast(m.Role, org.RoleAdmin) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeOrgStore) CountOrgOwners(_ context.Context, orgID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	count := 0
+	for _, m := range f.members[orgID] {
+		if m.Role == org.RoleOwner {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeOrgStore) CountOrgs(_ context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.orgs), nil
+}
+
+func (f *fakeOrgStore) AddOrgMember(_ context.Context, m *org.Member) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	email := strings.ToLower(m.Email)
+	if f.members[m.OrgID] == nil {
+		f.members[m.OrgID] = map[string]*org.Member{}
+	}
+	existing, exists := f.members[m.OrgID][email]
+	if exists {
+		// Upsert: update role.
+		existing.Role = m.Role
+		if m.InvitedBy != "" {
+			existing.InvitedBy = m.InvitedBy
+		}
+		return nil
+	}
+	f.nextMembID++
+	cp := *m
+	cp.Email = email
+	if cp.ID == "" {
+		cp.ID = "mem_" + strconv.Itoa(f.nextMembID)
+	}
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = time.Now().UTC()
+	}
+	f.members[m.OrgID][email] = &cp
+	return nil
+}
+
+func (f *fakeOrgStore) GetOrgMember(_ context.Context, orgID, email string) (*org.Member, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	email = strings.ToLower(email)
+	m, ok := f.members[orgID][email]
+	if !ok {
+		return nil, org.ErrNotFound
+	}
+	cp := *m
+	return &cp, nil
+}
+
+func (f *fakeOrgStore) ListOrgMembers(_ context.Context, orgID string) ([]*org.Member, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*org.Member, 0, len(f.members[orgID]))
+	for _, m := range f.members[orgID] {
+		cp := *m
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
+func (f *fakeOrgStore) RemoveOrgMember(_ context.Context, orgID, email string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	email = strings.ToLower(email)
+	if _, ok := f.members[orgID][email]; !ok {
+		return org.ErrNotFound
+	}
+	delete(f.members[orgID], email)
+	return nil
+}
+
+func (f *fakeOrgStore) CreateInvitation(_ context.Context, inv *org.Invitation) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nextInvID++
+	if inv.ID == "" {
+		inv.ID = "inv_" + strconv.Itoa(f.nextInvID)
+	}
+	if inv.Token == "" {
+		inv.Token = "tok_" + strconv.Itoa(f.nextInvID)
+	}
+	if inv.CreatedAt.IsZero() {
+		inv.CreatedAt = time.Now().UTC()
+	}
+	cp := *inv
+	f.invitations[inv.ID] = &cp
+	f.byToken[inv.Token] = &cp
+	return nil
+}
+
+func (f *fakeOrgStore) GetInvitationByToken(_ context.Context, token string) (*org.Invitation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	inv, ok := f.byToken[token]
+	if !ok {
+		return nil, org.ErrNotFound
+	}
+	cp := *inv
+	return &cp, nil
+}
+
+func (f *fakeOrgStore) ListInvitations(_ context.Context, orgID string) ([]*org.Invitation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []*org.Invitation
+	for _, inv := range f.invitations {
+		if inv.OrgID == orgID {
+			cp := *inv
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeOrgStore) SetInvitationStatus(_ context.Context, id, status string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	inv, ok := f.invitations[id]
+	if !ok {
+		return org.ErrNotFound
+	}
+	inv.Status = status
+	if tk, ok2 := f.byToken[inv.Token]; ok2 {
+		tk.Status = status
+	}
+	return nil
+}
+
+// ---- fake apikey store -------------------------------------------------------
+
+// fakeAPIKeyStore is a fully functional in-memory apikey.Store for tests.
+// Unlike the production MemStore (stub), this implementation is complete.
+type fakeAPIKeyStore struct {
+	mu      sync.Mutex
+	byID    map[string]*apikey.KeyInfo // id → info (includes OrgID)
+	rawKeys map[string]string          // id → plaintext key (for LookupSubject)
+}
+
+func newFakeAPIKeyStore() *fakeAPIKeyStore {
+	return &fakeAPIKeyStore{
+		byID:    map[string]*apikey.KeyInfo{},
+		rawKeys: map[string]string{},
+	}
+}
+
+func (f *fakeAPIKeyStore) create(orgID, userID, label string) (string, string, error) {
+	// Use public helpers via a raw key construction.
+	rawKey := apikey.KeyPrefix + "testkey" + strconv.Itoa(len(f.byID)+1)
+	id := "kid_" + strconv.Itoa(len(f.byID)+1)
+	info := &apikey.KeyInfo{
+		ID:        id,
+		OrgID:     orgID,
+		UserID:    userID,
+		Label:     label,
+		Prefix:    rawKey[:len(apikey.KeyPrefix)+6] + "…",
+		CreatedAt: time.Now().UTC(),
+		Revoked:   false,
+	}
+	f.byID[id] = info
+	f.rawKeys[id] = rawKey
+	return id, rawKey, nil
+}
+
+func (f *fakeAPIKeyStore) Create(orgID, label string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if orgID == "" {
+		orgID = apikey.DefaultOrgID
+	}
+	return f.create(orgID, "", label)
+}
+
+func (f *fakeAPIKeyStore) CreateOwned(orgID, userID, label string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if orgID == "" {
+		orgID = apikey.DefaultOrgID
+	}
+	return f.create(orgID, userID, label)
+}
+
+func (f *fakeAPIKeyStore) LookupSubject(token string) (string, string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for id, raw := range f.rawKeys {
+		if raw == token {
+			info, ok := f.byID[id]
+			if !ok || info.Revoked {
+				return "", "", false
+			}
+			if info.ExpiresAt != nil && time.Now().After(*info.ExpiresAt) {
+				return "", "", false
+			}
+			return info.OrgID, apikey.SubjectID(id), true
+		}
+	}
+	return "", "", false
+}
+
+func (f *fakeAPIKeyStore) List(orgID string) ([]apikey.KeyInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []apikey.KeyInfo
+	for _, info := range f.byID {
+		if info.OrgID == orgID {
+			out = append(out, *info)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (f *fakeAPIKeyStore) Get(orgID, id string) (apikey.KeyInfo, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	info, ok := f.byID[id]
+	if !ok || info.OrgID != orgID {
+		return apikey.KeyInfo{}, false
+	}
+	return *info, true
+}
+
+func (f *fakeAPIKeyStore) Revoke(orgID, id string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	info, ok := f.byID[id]
+	if !ok || info.OrgID != orgID {
+		return false, nil
+	}
+	if info.Revoked {
+		return false, nil
+	}
+	info.Revoked = true
+	return true, nil
+}
+
 // ---- test helpers ------------------------------------------------------------
 
 // testConfig returns a minimal *config.Config for testing.
@@ -254,13 +636,13 @@ type harness struct {
 	hasher   *fakeHasher
 }
 
-// newHarness creates a complete admin server wired with fakes.
+// newHarness creates a complete admin server wired with fakes (no multi-tenant stores).
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	store := newFakeUserStore()
 	verifier := auth.NewHS256Verifier([]byte("test-secret-32-bytes-minimum!!!"))
 	hasher := &fakeHasher{}
-	svc := auth.NewService(store, hasher, verifier, false)
+	svc := auth.NewService(store, hasher, verifier, false, nil)
 
 	srv := New(Deps{
 		Stats:  newFakeStatsCollector(),
@@ -281,6 +663,39 @@ func newHarness(t *testing.T) *harness {
 	srv.RegisterRoutes(mux)
 
 	return &harness{srv: srv, mux: mux, store: store, verifier: verifier, hasher: hasher}
+}
+
+// newHarnessWithMT creates a harness with multi-tenant (org + apikey + grant) stores.
+func newHarnessWithMT(t *testing.T) (*harness, *fakeOrgStore, *fakeAPIKeyStore) {
+	t.Helper()
+	store := newFakeUserStore()
+	verifier := auth.NewHS256Verifier([]byte("test-secret-32-bytes-minimum!!!"))
+	hasher := &fakeHasher{}
+	orgStore := newFakeOrgStore()
+	keyStore := newFakeAPIKeyStore()
+
+	svc := auth.NewService(store, hasher, verifier, false, nil) // bootstrap not tested here
+
+	srv := New(Deps{
+		Stats:    newFakeStatsCollector(),
+		Meta:     &fakeMetaStore{},
+		Users:    store,
+		Auth:     svc,
+		Tokens:   verifier,
+		Config:   testConfig(),
+		Blobs:    &fakeBlobReporter{usedBytes: 999},
+		Secure:   false,
+		Logger:   nil,
+		OrgStore: orgStore,
+		KeyStore: keyStore,
+	})
+	srv.hasher = hasher
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	h := &harness{srv: srv, mux: mux, store: store, verifier: verifier, hasher: hasher}
+	return h, orgStore, keyStore
 }
 
 // mustCreateAdmin creates an admin user in the fake store and returns a signed
@@ -1137,4 +1552,331 @@ func TestTimestampEncoding(t *testing.T) {
 	var ts time.Time
 	require.NoError(t, json.Unmarshal(raw["created_at"], &ts), "created_at must parse as time.Time/RFC3339")
 	assert.False(t, ts.IsZero())
+}
+
+// ======================================================================
+// Multi-tenant tests (apikey resolution, X-Org-Id, keys CRUD, members, /me)
+// ======================================================================
+
+// doWithBearer makes a request using Authorization: Bearer <token>.
+func (h *harness) doWithBearer(method, path, bearer string, body io.Reader) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, body)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rr := httptest.NewRecorder()
+	h.mux.ServeHTTP(rr, req)
+	return rr
+}
+
+// doWithOrgHeader makes a cookie-authenticated request with an X-Org-Id header.
+func (h *harness) doWithOrgHeader(method, path, token, orgID string, body io.Reader) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, body)
+	if token != "" {
+		req.AddCookie(&http.Cookie{Name: auth.TokenCookieName, Value: token})
+	}
+	if orgID != "" {
+		req.Header.Set("X-Org-Id", orgID)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rr := httptest.NewRecorder()
+	h.mux.ServeHTTP(rr, req)
+	return rr
+}
+
+// ---- apikey → subject resolution --------------------------------------------
+
+func TestAPIKeySubjectResolution(t *testing.T) {
+	h, _, keyStore := newHarnessWithMT(t)
+
+	t.Run("valid apikey resolves to subject", func(t *testing.T) {
+		// Create a key directly in the fake store.
+		id, rawKey, err := keyStore.CreateOwned(org.DefaultOrgID, "user:1", "test-key")
+		require.NoError(t, err)
+		require.NotEmpty(t, rawKey)
+
+		// POST /api/v1/keys (list) with the apikey as Bearer.
+		rr := h.doWithBearer("GET", "/api/v1/keys", rawKey, nil)
+		assert.Equal(t, http.StatusOK, rr.Code, "valid apikey must pass PrincipalMiddleware")
+
+		var resp KeysResponse
+		decodeJSON(t, rr, &resp)
+		// The key we just created must appear in the list.
+		found := false
+		for _, k := range resp.Keys {
+			if k.ID == id {
+				found = true
+			}
+		}
+		assert.True(t, found, "created key must appear in list response")
+	})
+
+	t.Run("unknown apikey returns 401", func(t *testing.T) {
+		rr := h.doWithBearer("GET", "/api/v1/keys", "spck_notarealkey123456", nil)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	})
+
+	t.Run("no credentials returns 401 for authed routes", func(t *testing.T) {
+		rr := h.doWithBearer("GET", "/api/v1/keys", "", nil)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	})
+}
+
+// ---- X-Org-Id header role resolution ----------------------------------------
+
+func TestXOrgIdRole(t *testing.T) {
+	h, orgStore, _ := newHarnessWithMT(t)
+
+	// Seed an org and a member.
+	_ = orgStore.CreateOrg(context.Background(), &org.Org{
+		ID: "org_test", Name: "Test", Slug: "test", Status: org.StatusActive,
+	})
+	adminUser, adminTok := h.mustCreateAdmin(t)
+	_ = orgStore.AddOrgMember(context.Background(), &org.Member{
+		OrgID: "org_test", Email: adminUser.Email, Role: org.RoleOwner,
+	})
+
+	t.Run("session user with X-Org-Id gets org context in /me", func(t *testing.T) {
+		rr := h.doWithOrgHeader("GET", "/api/v1/me", adminTok, "org_test", nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var resp MeResponse
+		decodeJSON(t, rr, &resp)
+		assert.Equal(t, "org_test", resp.ActiveOrgID)
+		assert.Equal(t, org.RoleOwner, resp.ActiveOrgRole)
+	})
+
+	t.Run("non-member with explicit X-Org-Id gets 403", func(t *testing.T) {
+		_, nonMemberTok := h.mustCreateUser(t, "nonmember@example.com")
+		// nonmember is not in org_test, so PrincipalMiddleware should 403
+		// when they explicitly request that org.
+		rr := h.doWithOrgHeader("GET", "/api/v1/keys", nonMemberTok, "org_test", nil)
+		assert.Equal(t, http.StatusForbidden, rr.Code)
+	})
+
+	t.Run("system admin can cross-org with X-Org-Id", func(t *testing.T) {
+		// admin is system_role=admin, so cross-org is allowed.
+		// (admin is already a member of org_test so this isn't a true cross-org
+		// test, but it verifies the path doesn't block admins.)
+		rr := h.doWithOrgHeader("GET", "/api/v1/keys", adminTok, "org_test", nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+	})
+}
+
+// ---- keys CRUD ---------------------------------------------------------------
+
+func TestKeysCRUD(t *testing.T) {
+	h, orgStore, _ := newHarnessWithMT(t)
+
+	// Bootstrap: create default org and add admin as owner.
+	adminUser, adminTok := h.mustCreateAdmin(t)
+	_ = orgStore.CreateOrg(context.Background(), &org.Org{
+		ID: org.DefaultOrgID, Name: org.DefaultOrgName, Slug: org.DefaultOrgSlug,
+		Status: org.StatusActive,
+	})
+	_ = orgStore.AddOrgMember(context.Background(), &org.Member{
+		OrgID: org.DefaultOrgID, Email: adminUser.Email, Role: org.RoleOwner,
+	})
+
+	t.Run("create key returns plaintext once", func(t *testing.T) {
+		rr := h.do("POST", "/api/v1/keys", adminTok, jsonBody(CreateKeyRequest{Label: "ci-key"}))
+		assert.Equal(t, http.StatusCreated, rr.Code)
+
+		var dto KeyDTO
+		decodeJSON(t, rr, &dto)
+		assert.NotEmpty(t, dto.ID)
+		assert.NotEmpty(t, dto.RawKey, "raw key must be returned on creation")
+		assert.True(t, strings.HasPrefix(dto.RawKey, apikey.KeyPrefix), "key must start with spck_")
+		assert.Equal(t, "ci-key", dto.Label)
+		assert.False(t, dto.Revoked)
+	})
+
+	t.Run("list keys returns created key", func(t *testing.T) {
+		// Create a second key.
+		rr := h.do("POST", "/api/v1/keys", adminTok, jsonBody(CreateKeyRequest{Label: "deploy-key"}))
+		require.Equal(t, http.StatusCreated, rr.Code)
+
+		listRR := h.do("GET", "/api/v1/keys", adminTok, nil)
+		assert.Equal(t, http.StatusOK, listRR.Code)
+
+		var resp KeysResponse
+		decodeJSON(t, listRR, &resp)
+		assert.NotEmpty(t, resp.Keys)
+		// RawKey must NOT appear in list responses.
+		for _, k := range resp.Keys {
+			assert.Empty(t, k.RawKey, "raw key must not appear in list response")
+		}
+	})
+
+	t.Run("revoke key returns 204", func(t *testing.T) {
+		createRR := h.do("POST", "/api/v1/keys", adminTok, jsonBody(CreateKeyRequest{Label: "temp-key"}))
+		require.Equal(t, http.StatusCreated, createRR.Code)
+
+		var created KeyDTO
+		decodeJSON(t, createRR, &created)
+
+		revokeRR := h.do("DELETE", "/api/v1/keys/"+created.ID, adminTok, nil)
+		assert.Equal(t, http.StatusNoContent, revokeRR.Code)
+
+		// After revocation, the raw key must no longer authenticate.
+		authRR := h.doWithBearer("GET", "/api/v1/keys", created.RawKey, nil)
+		assert.Equal(t, http.StatusUnauthorized, authRR.Code, "revoked key must be rejected")
+	})
+
+	t.Run("revoke unknown key returns 404", func(t *testing.T) {
+		rr := h.do("DELETE", "/api/v1/keys/doesnotexist", adminTok, nil)
+		assert.Equal(t, http.StatusNotFound, rr.Code)
+	})
+
+	t.Run("apikey can create and list keys in its own org", func(t *testing.T) {
+		// Create a key via session.
+		createRR := h.do("POST", "/api/v1/keys", adminTok, jsonBody(CreateKeyRequest{Label: "apikey-test"}))
+		require.Equal(t, http.StatusCreated, createRR.Code)
+		var apikeyDTO KeyDTO
+		decodeJSON(t, createRR, &apikeyDTO)
+
+		// Use that key to list keys (apikey authenticates via PrincipalMiddleware).
+		listRR := h.doWithBearer("GET", "/api/v1/keys", apikeyDTO.RawKey, nil)
+		assert.Equal(t, http.StatusOK, listRR.Code)
+	})
+}
+
+// ---- member management -------------------------------------------------------
+
+func TestMemberManagement(t *testing.T) {
+	h, orgStore, _ := newHarnessWithMT(t)
+
+	// Bootstrap org.
+	adminUser, adminTok := h.mustCreateAdmin(t)
+	_ = orgStore.CreateOrg(context.Background(), &org.Org{
+		ID: "org_main", Name: "Main", Slug: "main", Status: org.StatusActive,
+	})
+	_ = orgStore.AddOrgMember(context.Background(), &org.Member{
+		OrgID: "org_main", Email: adminUser.Email, Role: org.RoleOwner,
+	})
+
+	t.Run("list members returns owner", func(t *testing.T) {
+		rr := h.do("GET", "/api/v1/orgs/org_main/members", adminTok, nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var resp MembersResponse
+		decodeJSON(t, rr, &resp)
+		require.Len(t, resp.Members, 1)
+		assert.Equal(t, adminUser.Email, resp.Members[0].Email)
+		assert.Equal(t, org.RoleOwner, resp.Members[0].Role)
+	})
+
+	t.Run("add member succeeds", func(t *testing.T) {
+		rr := h.do("POST", "/api/v1/orgs/org_main/members", adminTok,
+			jsonBody(AddMemberRequest{Email: "newmember@example.com", Role: org.RoleEditor}))
+		assert.Equal(t, http.StatusCreated, rr.Code)
+
+		var dto MemberDTO
+		decodeJSON(t, rr, &dto)
+		assert.Equal(t, "newmember@example.com", dto.Email)
+		assert.Equal(t, org.RoleEditor, dto.Role)
+	})
+
+	t.Run("patch member role", func(t *testing.T) {
+		// Add another member first.
+		h.do("POST", "/api/v1/orgs/org_main/members", adminTok,
+			jsonBody(AddMemberRequest{Email: "patchme@example.com", Role: org.RoleViewer}))
+
+		newRole := org.RoleAdmin
+		rr := h.do("PATCH", "/api/v1/orgs/org_main/members/patchme@example.com", adminTok,
+			jsonBody(PatchMemberRequest{Role: &newRole}))
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var dto MemberDTO
+		decodeJSON(t, rr, &dto)
+		assert.Equal(t, org.RoleAdmin, dto.Role)
+	})
+
+	t.Run("remove member succeeds", func(t *testing.T) {
+		h.do("POST", "/api/v1/orgs/org_main/members", adminTok,
+			jsonBody(AddMemberRequest{Email: "todelete@example.com", Role: org.RoleViewer}))
+
+		rr := h.do("DELETE", "/api/v1/orgs/org_main/members/todelete@example.com", adminTok, nil)
+		assert.Equal(t, http.StatusNoContent, rr.Code)
+
+		_, err := orgStore.GetOrgMember(context.Background(), "org_main", "todelete@example.com")
+		assert.ErrorIs(t, err, org.ErrNotFound)
+	})
+
+	t.Run("non-admin cannot manage members", func(t *testing.T) {
+		_, userTok := h.mustCreateUser(t, "plain@example.com")
+		// plain is not a member of org_main, so requireOrgAdmin returns 403.
+		rr := h.do("GET", "/api/v1/orgs/org_main/members", userTok, nil)
+		assert.Equal(t, http.StatusForbidden, rr.Code)
+	})
+
+	t.Run("member viewer cannot manage members", func(t *testing.T) {
+		// Add a viewer to the org.
+		h.do("POST", "/api/v1/orgs/org_main/members", adminTok,
+			jsonBody(AddMemberRequest{Email: "viewer@example.com", Role: org.RoleViewer}))
+
+		_, viewerTok := h.mustCreateUser(t, "viewer@example.com")
+		rr := h.do("GET", "/api/v1/orgs/org_main/members", viewerTok, nil)
+		assert.Equal(t, http.StatusForbidden, rr.Code)
+	})
+}
+
+// ---- /me org context ---------------------------------------------------------
+
+func TestMeOrgContext(t *testing.T) {
+	h, orgStore, _ := newHarnessWithMT(t)
+
+	adminUser, adminTok := h.mustCreateAdmin(t)
+
+	// Seed an org with the admin as owner.
+	_ = orgStore.CreateOrg(context.Background(), &org.Org{
+		ID: org.DefaultOrgID, Name: org.DefaultOrgName, Slug: org.DefaultOrgSlug,
+		Status: org.StatusActive,
+	})
+	_ = orgStore.AddOrgMember(context.Background(), &org.Member{
+		OrgID: org.DefaultOrgID, Email: adminUser.Email, Role: org.RoleOwner,
+	})
+
+	t.Run("/me includes org context", func(t *testing.T) {
+		rr := h.do("GET", "/api/v1/me", adminTok, nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var resp MeResponse
+		decodeJSON(t, rr, &resp)
+		assert.Equal(t, adminUser.ID, resp.User.ID)
+		assert.True(t, resp.IsAdmin, "first user must be admin")
+		assert.Equal(t, org.DefaultOrgID, resp.ActiveOrgID)
+		assert.Equal(t, org.RoleOwner, resp.ActiveOrgRole)
+		require.Len(t, resp.Orgs, 1)
+		assert.Equal(t, org.DefaultOrgID, resp.Orgs[0].ID)
+	})
+
+	t.Run("/me without org store returns just user", func(t *testing.T) {
+		// Use a plain harness (no org store).
+		plainH := newHarness(t)
+		plainAdmin, plainTok := plainH.mustCreateAdmin(t)
+
+		rr := plainH.do("GET", "/api/v1/me", plainTok, nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var resp MeResponse
+		decodeJSON(t, rr, &resp)
+		assert.Equal(t, plainAdmin.ID, resp.User.ID)
+		assert.Empty(t, resp.ActiveOrgID, "no org store means no org context")
+	})
+
+	t.Run("/me is_admin field", func(t *testing.T) {
+		_, userTok := h.mustCreateUser(t, "regular@example.com")
+		rr := h.do("GET", "/api/v1/me", userTok, nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var resp MeResponse
+		decodeJSON(t, rr, &resp)
+		assert.False(t, resp.IsAdmin, "non-admin user must have is_admin=false")
+	})
 }

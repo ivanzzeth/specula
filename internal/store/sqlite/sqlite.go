@@ -74,6 +74,12 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+// DB returns the raw *sql.DB handle for packages that need direct
+// database/sql access (e.g. apikey.SQLStore, org.SQLStore) after migrations
+// have been applied by NewSQLiteStore. The caller must not close the
+// connection; use Close() for that.
+func (s *SQLiteStore) DB() *sql.DB { return s.db }
+
 // Compile-time assertion that SQLiteStore satisfies meta.MetadataStore.
 var _ meta.MetadataStore = (*SQLiteStore)(nil)
 

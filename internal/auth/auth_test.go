@@ -191,7 +191,7 @@ func (f *fakeStore) DeleteUser(_ context.Context, id int64) error {
 func newTestService(t *testing.T) (*Service, *fakeStore) {
 	t.Helper()
 	store := newFakeStore()
-	svc := NewService(store, NewBcryptHasher(), NewHS256Verifier([]byte("test-hs256-secret")), false)
+	svc := NewService(store, NewBcryptHasher(), NewHS256Verifier([]byte("test-hs256-secret")), false, nil)
 	return svc, store
 }
 

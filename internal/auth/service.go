@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/ivanzzeth/specula/internal/org"
 )
 
 // ---- service-level sentinel errors -------------------------------------------
@@ -75,7 +78,8 @@ type Service struct {
 	store    UserStore
 	hasher   PasswordHasher
 	verifier TokenVerifier
-	secure   bool // set Secure flag on session cookies (enable for HTTPS)
+	secure   bool      // set Secure flag on session cookies (enable for HTTPS)
+	orgStore org.Store // optional; when set, bootstraps the default org on first registration
 }
 
 // NewService constructs an AuthService.
@@ -84,8 +88,15 @@ type Service struct {
 //   - hasher   — password hashing (NewBcryptHasher())
 //   - verifier — JWT signing/verification (NewHS256Verifier(secret))
 //   - secure   — enable Secure flag on Set-Cookie (true in HTTPS deployments)
-func NewService(store UserStore, hasher PasswordHasher, verifier TokenVerifier, secure bool) *Service {
-	return &Service{store: store, hasher: hasher, verifier: verifier, secure: secure}
+//   - orgStore — optional; when non-nil the first-user-admin bootstrap also
+//     creates the default org and adds the first user as org owner. Accepting
+//     a variadic keeps the four-arg signature used by existing callers valid.
+func NewService(store UserStore, hasher PasswordHasher, verifier TokenVerifier, secure bool, orgStore ...org.Store) *Service {
+	var os org.Store
+	if len(orgStore) > 0 {
+		os = orgStore[0]
+	}
+	return &Service{store: store, hasher: hasher, verifier: verifier, secure: secure, orgStore: os}
 }
 
 // Secure reports whether session cookies should carry the Secure attribute.
@@ -139,6 +150,29 @@ func (s *Service) Register(ctx context.Context, email, password, name string) (*
 	if err != nil {
 		return nil, fmt.Errorf("auth: create user: %w", err)
 	}
+
+	// Bootstrap multi-tenancy: when this is the first user AND an org store is
+	// wired in, create the default org and grant the first user org ownership.
+	// Failures are best-effort (the user account is already committed).
+	if count == 0 && s.orgStore != nil {
+		now := time.Now().UTC()
+		createdBy := org.UserSubjectID(u.ID)
+		_ = s.orgStore.CreateOrg(ctx, &org.Org{
+			ID:        org.DefaultOrgID,
+			Name:      org.DefaultOrgName,
+			Slug:      org.DefaultOrgSlug,
+			Status:    org.StatusActive,
+			CreatedBy: createdBy,
+			CreatedAt: now,
+		})
+		_ = s.orgStore.AddOrgMember(ctx, &org.Member{
+			OrgID:     org.DefaultOrgID,
+			Email:     u.Email,
+			Role:      org.RoleOwner,
+			CreatedAt: now,
+		})
+	}
+
 	return u, nil
 }
 

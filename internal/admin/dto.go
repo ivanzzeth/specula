@@ -124,9 +124,14 @@ type LoginResponse struct {
 	User UserDTO `json:"user"`
 }
 
-// MeResponse is the GET /api/v1/me payload (the currently authenticated user).
+// MeResponse is the GET /api/v1/me payload. The base user info is always
+// present; org context fields are populated when an org store is wired in.
 type MeResponse struct {
-	User UserDTO `json:"user"`
+	User          UserDTO  `json:"user"`
+	IsAdmin       bool     `json:"is_admin"`
+	ActiveOrgID   string   `json:"active_org_id,omitempty"`
+	ActiveOrgRole string   `json:"active_org_role,omitempty"`
+	Orgs          []OrgDTO `json:"orgs,omitempty"`
 }
 
 // ---- verification events (GET /api/v1/admin/events) --------------------------
@@ -175,6 +180,120 @@ type ConfigResponse struct {
 	BlobDriver       string               `json:"blob_driver"`
 	MetaDriver       string               `json:"meta_driver"`
 	Protocols        []ProtocolConfigView `json:"protocols"`
+}
+
+// ---- orgs (GET/POST /api/v1/orgs, GET /api/v1/orgs/{id}) --------------------
+
+// OrgDTO is the safe client-facing projection of an org.
+type OrgDTO struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Slug      string    `json:"slug"`
+	Status    string    `json:"status"`
+	CreatedBy string    `json:"created_by"`
+	CreatedAt time.Time `json:"created_at"`
+	// Role is the caller's effective role in the org; populated by handlers
+	// that have access to the member record.
+	Role string `json:"role,omitempty"`
+}
+
+// CreateOrgRequest is the POST /api/v1/orgs body.
+type CreateOrgRequest struct {
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+// OrgsResponse is the paginated org-list payload.
+type OrgsResponse struct {
+	Orgs []OrgDTO `json:"orgs"`
+}
+
+// ---- members (GET/POST/PATCH/DELETE /api/v1/orgs/{id}/members) ---------------
+
+// MemberDTO is the client-facing projection of an org_members row.
+type MemberDTO struct {
+	ID        string    `json:"id,omitempty"`
+	OrgID     string    `json:"org_id"`
+	Email     string    `json:"email"`
+	Role      string    `json:"role"`
+	InvitedBy string    `json:"invited_by,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// MembersResponse is the member-list payload.
+type MembersResponse struct {
+	Members []MemberDTO `json:"members"`
+}
+
+// AddMemberRequest is the POST /api/v1/orgs/{id}/members body.
+type AddMemberRequest struct {
+	Email string `json:"email"`
+	Role  string `json:"role"`
+}
+
+// PatchMemberRequest is the PATCH /api/v1/orgs/{id}/members/{email} body.
+type PatchMemberRequest struct {
+	Role *string `json:"role,omitempty"`
+}
+
+// ---- invitations (POST /api/v1/orgs/{id}/invitations) -----------------------
+
+// InvitationDTO is the client-facing projection of an org_invitations row.
+type InvitationDTO struct {
+	ID        string    `json:"id"`
+	OrgID     string    `json:"org_id"`
+	Email     string    `json:"email"`
+	Role      string    `json:"role"`
+	InvitedBy string    `json:"invited_by,omitempty"`
+	Token     string    `json:"token,omitempty"` // omitted after creation unless admin
+	Status    string    `json:"status"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// InvitationsResponse is the invitation-list payload.
+type InvitationsResponse struct {
+	Invitations []InvitationDTO `json:"invitations"`
+}
+
+// CreateInvitationRequest is the POST /api/v1/orgs/{id}/invitations body.
+type CreateInvitationRequest struct {
+	Email     string    `json:"email"`
+	Role      string    `json:"role"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+}
+
+// AcceptInvitationRequest is the POST /api/v1/invitations/accept body.
+type AcceptInvitationRequest struct {
+	Token string `json:"token"`
+}
+
+// ---- api keys (POST/GET/DELETE /api/v1/keys) ---------------------------------
+
+// KeyDTO is the client-facing projection of an api_keys row. The raw plaintext
+// key is only present immediately after creation (RawKey field); it is never
+// stored and never returned again after that single response.
+type KeyDTO struct {
+	ID         string     `json:"id"`
+	OrgID      string     `json:"org_id"`
+	Label      string     `json:"label,omitempty"`
+	Prefix     string     `json:"prefix"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	Revoked    bool       `json:"revoked"`
+	// RawKey is the plaintext key returned exactly once at creation time.
+	RawKey string `json:"raw_key,omitempty"`
+}
+
+// KeysResponse is the key-list payload.
+type KeysResponse struct {
+	Keys []KeyDTO `json:"keys"`
+}
+
+// CreateKeyRequest is the POST /api/v1/keys body.
+type CreateKeyRequest struct {
+	Label string `json:"label,omitempty"`
 }
 
 // ---- error envelope ----------------------------------------------------------

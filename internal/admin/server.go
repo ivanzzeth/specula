@@ -4,8 +4,11 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/config"
+	"github.com/ivanzzeth/specula/internal/grant"
+	"github.com/ivanzzeth/specula/internal/org"
 	"github.com/ivanzzeth/specula/internal/stats"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 )
@@ -44,6 +47,18 @@ type Deps struct {
 	Secure bool
 	// Logger is the structured logger; slog.Default() is used when nil.
 	Logger *slog.Logger
+
+	// ── multi-tenant deps (R1) ───────────────────────────────────────────────
+
+	// OrgStore is the multi-tenant org/member/invitation persistence layer.
+	// Optional: when nil, org-related endpoints return 501.
+	OrgStore org.Store
+	// KeyStore is the API-key persistence and lookup layer.
+	// Optional: when nil, key endpoints return 501.
+	KeyStore apikey.Store
+	// GrantStore is the cross-org resource-sharing grants layer.
+	// Optional: when nil, grant-aware acl falls back to CanAccess.
+	GrantStore grant.Store
 }
 
 // Server holds the admin API dependencies and serves the /api/v1 routes.
@@ -62,6 +77,11 @@ type Server struct {
 	hasher auth.PasswordHasher
 	secure bool
 	log    *slog.Logger
+
+	// multi-tenant deps (R1)
+	orgs   org.Store
+	keys   apikey.Store
+	grants grant.Store
 }
 
 // New constructs an admin Server from deps. The logger falls back to
@@ -83,6 +103,9 @@ func New(deps Deps) *Server {
 		hasher: auth.NewBcryptHasher(),
 		secure: deps.Secure,
 		log:    log,
+		orgs:   deps.OrgStore,
+		keys:   deps.KeyStore,
+		grants: deps.GrantStore,
 	}
 }
 

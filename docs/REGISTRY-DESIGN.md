@@ -169,7 +169,19 @@ docker push specula.local/myorg/app:v1
 - **Members**（org admin）：成员、角色、邀请
 - **Access Tokens**（用户自建 apikey）：创建(明文仅一次+复制)、列表、吊销、**附 docker login/pip/npm/go 用法**
 - **Cache 仪表盘**：per-protocol + total 容量、命中率、上游健康(auto-block)、验签告警趋势
-- **Upstreams**：各协议上游列表/健康/blocked、镜像 fallback 顺序
+- **Upstreams / 镜像源**（每协议一张列表 —— 这是核心运维视图）：
+  每个协议展示其**有序的上游镜像列表**（fallback 链），逐条给出：
+  | 列 | 说明 |
+  |---|---|
+  | 顺序 | fallback 优先级（第 1 个先试）|
+  | URL | 镜像地址（如 oci: daocloud→docker.io；pypi: tuna→pypi.org；go: goproxy.cn→proxy.golang.org；apt: aliyun→archive.ubuntu；npm: npmmirror→npmjs；helm/git/tarball 同理）|
+  | 健康 | up / **blocked**(auto-block 触发) / 探测中 |
+  | 最近延迟 | 上次上游请求耗时 |
+  | 命中占比 | 该镜像服务了多少 miss 回源 |
+  | 最近served | 上次成功由哪个镜像回源 |
+  - **操作**（admin，运行时可变配置，YAML 仍是声明式基线）：启用/禁用某镜像、拖拽**调整 fallback 顺序**、手动 unblock、手动探测。
+  - 数据来源：upstream 客户端已有的 auto-block 状态 + 延迟/命中埋点；config 的 per-protocol upstreams 列表。
+  - 顶部按协议 tab 或分组：8 个协议各自一段镜像列表，一眼看清"每个协议在从哪些源拉、哪个挂了"。
 - **Settings**：org 资料、默认可见性、GC/eviction 策略
 
 **心智要点**：
