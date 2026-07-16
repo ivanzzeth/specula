@@ -18,11 +18,15 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="/tmp/specula-git-realclient"
-DATA_PORT="${DATA_PORT:-5105}"
-CTRL_PORT="${CTRL_PORT:-5205}"
+WORK="${WORK:-$(mktemp -d /tmp/specula-git-realclient.XXXXXX)}"
+
+# Free ports + a socket-ownership assertion at startup; see scripts/lib/daemon.sh for why
+# both are required and why liveness/health checks alone are not enough.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
+DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
+CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
 # Fake upstream git HTTP server (plain CGI wrapper around git-http-backend).
-GIT_SRV_PORT="${GIT_SRV_PORT:-5305}"
+GIT_SRV_PORT="${GIT_SRV_PORT:-$(pick_free_port)}"
 
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOSUMDB="${GOSUMDB:-sum.golang.google.cn}"
@@ -122,12 +126,10 @@ start_specula() {
     SPECULA_GIT_UPSTREAM_SCHEME=http \
         "$WORK/specula" --config "$cfg" > "$log" 2>&1 &
     SPID=$!
-    sleep 2
-    if ! kill -0 "$SPID" 2>/dev/null; then
-        echo "FATAL: specula failed to start"
-        cat "$log"
-        return 1
-    fi
+    # Replaces `sleep 2` + a single `kill -0`: a fixed sleep is both slower than needed and
+    # unsound — it can elapse while the daemon is still binding, and a live process does not
+    # prove it is the one serving our port. wait_for_daemon asserts socket ownership.
+    wait_for_daemon "$SPID" "$DATA_PORT" "http://127.0.0.1:${CTRL_PORT}/healthz" "$log" || return 1
 }
 
 # ── 0. Workspace ─────────────────────────────────────────────────────────────

@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package e2e — hermetic end-to-end tests for the Specula PyPI data-plane handler.
 //
 // Every test runs entirely in-process: a tiny fake PyPI index / package server

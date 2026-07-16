@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package e2e — hermetic end-to-end tests for the Specula tarball handler.
 //
 // Every test runs entirely in-process: a minimal httptest.Server acts as the

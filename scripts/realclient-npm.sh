@@ -25,9 +25,13 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="${WORK:-/tmp/specula-npm-conf}"
-DATA_PORT="${DATA_PORT:-5102}"
-CTRL_PORT="${CTRL_PORT:-5202}"
+WORK="${WORK:-$(mktemp -d /tmp/specula-npm-conf.XXXXXX)}"
+
+# Free ports + a socket-ownership assertion at startup; see scripts/lib/daemon.sh for why
+# both are required and why liveness/health checks alone are not enough.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
+DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
+CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
 NPM_REGISTRY="http://127.0.0.1:${DATA_PORT}/npm/"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOSUMDB="${GOSUMDB:-sum.golang.google.cn}"
@@ -80,16 +84,10 @@ trap '
   wait "${SPID}" 2>/dev/null || true
 ' EXIT
 
-# Wait for the data plane to accept connections.
-for i in $(seq 1 20); do
-  if curl -fsS "http://127.0.0.1:${DATA_PORT}/healthz" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.3
-done
-curl -fsS "http://127.0.0.1:${DATA_PORT}/healthz" >/dev/null \
-  || { echo "ERROR: specula did not start (see ${WORK}/daemon.log)"; cat "${WORK}/daemon.log"; exit 1; }
-echo "specula is up (pid ${SPID})"
+# Block until the daemon serves AND the kernel confirms :${DATA_PORT} belongs to OUR pid.
+wait_for_daemon "${SPID}" "${DATA_PORT}" "http://127.0.0.1:${DATA_PORT}/healthz" "${WORK}/daemon.log" \
+  || exit 1
+echo "specula is up (pid ${SPID}, data :${DATA_PORT}, control :${CTRL_PORT})"
 
 # ── 4. Test workspace (isolated from system npm cache to force upstream hits) ──
 NPMDIR="${WORK}/npmtest"

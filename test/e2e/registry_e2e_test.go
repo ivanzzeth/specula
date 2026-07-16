@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package e2e — hermetic end-to-end tests for the WRITABLE, multi-tenant hosted
 // registry (REGISTRY-DESIGN R2). Everything runs in-process: a real Specula
 // data-plane stack (local CAS + sqlite + org/apikey/repo stores + RS256 token

@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package e2e — hermetic end-to-end tests for the Specula git clone-acceleration
 // handler.
 //

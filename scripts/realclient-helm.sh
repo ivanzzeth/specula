@@ -30,9 +30,13 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="${WORK:-/tmp/specula-helm-real}"
-DATA_PORT="${DATA_PORT:-5104}"
-CTRL_PORT="${CTRL_PORT:-5204}"
+WORK="${WORK:-$(mktemp -d /tmp/specula-helm-real.XXXXXX)}"
+
+# Free ports + a socket-ownership assertion at startup; see scripts/lib/daemon.sh for why
+# both are required and why liveness/health checks alone are not enough.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
+DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
+CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
 REPO_ALIAS="specula-helm-test"
 
 # Upstream config: parent directory of the stable chart repo so that the repo
@@ -106,19 +110,14 @@ SPID=$!
 # self-kill when the shell's own command line contains the config path.
 trap 'kill "$SPID" 2>/dev/null || true' EXIT
 
-# Wait for the control plane to become healthy.
-for i in $(seq 1 20); do
-    if curl -fsS --max-time 1 "http://127.0.0.1:${CTRL_PORT}/healthz" >/dev/null 2>&1; then
-        break
-    fi
-    sleep 0.5
-done
-if ! curl -fsS --max-time 2 "http://127.0.0.1:${CTRL_PORT}/healthz" >/dev/null 2>&1; then
-    echo "ERROR: specula failed to start; daemon log:"
-    cat "$WORK/daemon.log"
-    exit 1
-fi
-echo "==> specula healthy"
+# Block until the daemon serves AND the kernel confirms :${CTRL_PORT} belongs to OUR pid.
+# The data plane is what helm actually drives, so assert ownership of that port too — a
+# healthy control plane says nothing about who holds :${DATA_PORT}.
+wait_for_daemon "$SPID" "$CTRL_PORT" "http://127.0.0.1:${CTRL_PORT}/healthz" "$WORK/daemon.log" \
+    || exit 1
+wait_for_daemon "$SPID" "$DATA_PORT" "http://127.0.0.1:${DATA_PORT}/healthz" "$WORK/daemon.log" \
+    || exit 1
+echo "==> specula healthy (pid $SPID, data :${DATA_PORT}, control :${CTRL_PORT})"
 
 # ── 4. Remove any previous helm repo alias ───────────────────────────────────
 helm repo remove "$REPO_ALIAS" 2>/dev/null || true

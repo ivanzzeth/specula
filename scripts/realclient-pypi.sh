@@ -30,9 +30,13 @@ set -euo pipefail
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="${WORK:-/tmp/specula-pypi-conf}"
-DATA_PORT="${DATA_PORT:-5101}"
-CTRL_PORT="${CTRL_PORT:-5201}"
+WORK="${WORK:-$(mktemp -d /tmp/specula-pypi-conf.XXXXXX)}"
+
+# Free ports + a socket-ownership assertion at startup; see scripts/lib/daemon.sh for why
+# both are required and why liveness/health checks alone are not enough.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
+DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
+CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOSUMDB="${GOSUMDB:-sum.golang.google.cn}"
 
@@ -111,19 +115,10 @@ trap '
     kill "${SPID}" 2>/dev/null || true
 ' EXIT
 
-# Wait for the data plane to become reachable.
-for i in $(seq 1 10); do
-    if curl -fsS --max-time 1 "http://127.0.0.1:${DATA_PORT}/healthz" >/dev/null 2>&1; then
-        break
-    fi
-    sleep 1
-done
-curl -fsS --max-time 3 "http://127.0.0.1:${DATA_PORT}/healthz" >/dev/null || {
-    echo "Specula failed to start:" >&2
-    cat "${WORK}/daemon.log" >&2
-    exit 1
-}
-pass "specula listening on :${DATA_PORT}"
+# Block until the daemon serves AND the kernel confirms :${DATA_PORT} belongs to OUR pid.
+wait_for_daemon "${SPID}" "${DATA_PORT}" "http://127.0.0.1:${DATA_PORT}/healthz" "${WORK}/daemon.log" \
+    || exit 1
+pass "specula listening on :${DATA_PORT} (pid ${SPID}, control :${CTRL_PORT})"
 
 # ── 4. Seed admin user (for stats API) ────────────────────────────────────────
 step "Seeding admin user"

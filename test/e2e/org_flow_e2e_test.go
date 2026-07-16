@@ -1,3 +1,5 @@
+//go:build integration
+
 package e2e
 
 // org_flow_e2e_test.go drives the multi-tenant org lifecycle over REAL HTTP

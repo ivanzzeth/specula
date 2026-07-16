@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package e2e contains hermetic end-to-end tests for the Specula OCI
 // data-plane handler. Every hermetic test runs entirely in-process using an
 // httptest.Server as the fake upstream; no external network access is required.

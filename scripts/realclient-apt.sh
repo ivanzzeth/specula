@@ -29,9 +29,13 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="${WORK:-/tmp/specula-apt-conf}"
-DATA_PORT="${DATA_PORT:-5103}"
-CTRL_PORT="${CTRL_PORT:-5203}"
+WORK="${WORK:-$(mktemp -d /tmp/specula-apt-conf.XXXXXX)}"
+
+# Free ports + a socket-ownership assertion at startup; see scripts/lib/daemon.sh for why
+# both are required and why liveness/health checks alone are not enough.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
+DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
+CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
 
 # The out-of-band distro keyring — ships with ubuntu-keyring and is managed
 # independently of any mirror.  apt verifies InRelease against this key.
@@ -51,27 +55,24 @@ mkdir -p \
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 
-# specula_pid returns the PID of a running specula instance on our data port,
-# or empty string when none is running.
-specula_pid() {
-    # Use grep instead of awk regex to avoid special-char quoting issues with $WORK.
-    # "|| true" prevents pipefail from propagating a non-zero exit when grep finds
-    # no match (no running specula) — set -euo pipefail would otherwise abort here.
-    ps -eo pid,args | grep '[s]pecula --config' | grep "$WORK" | awk '{print $1}' | head -1 || true
-}
+# SPID holds the PID of the daemon WE started; set when it is launched below.
+#
+# This used to be discovered with `ps -eo pid,args | grep '[s]pecula --config' | grep $WORK`.
+# Matching on a command line is a footgun: any process whose own argv contains that string
+# matches too — including the shell running this script — so the pattern can select and kill
+# the wrong process, up to and including itself. Holding the PID from `$!` is exact,
+# needs no pattern, and cannot match a bystander.
+SPID=""
 
 stop_specula() {
-    local pid
-    pid="$(specula_pid)"
-    if [[ -n "$pid" ]]; then
-        kill "$pid" 2>/dev/null || true
-        # Wait up to 5 s for the process to exit.
-        local i=0
-        while kill -0 "$pid" 2>/dev/null && (( i < 50 )); do
-            sleep 0.1
-            i=$(( i + 1 ))  # avoid (( i++ )) which evaluates to 0 when i=0 and aborts under set -e
-        done
-    fi
+    [[ -n "$SPID" ]] || return 0
+    kill "$SPID" 2>/dev/null || true
+    # Wait up to 5 s for the process to exit.
+    local i=0
+    while kill -0 "$SPID" 2>/dev/null && (( i < 50 )); do
+        sleep 0.1
+        i=$(( i + 1 ))  # avoid (( i++ )) which evaluates to 0 when i=0 and aborts under set -e
+    done
 }
 
 # ── Step 0: verify prerequisites ─────────────────────────────────────────────
@@ -126,17 +127,13 @@ mkdir -p "$WORK/lists/partial" "$WORK/cache/archives/partial"
 
 echo "==> starting specula (data=:${DATA_PORT} ctrl=:${CTRL_PORT})"
 "$WORK/specula" --config "$WORK/cfg.yaml" >> "$WORK/daemon.log" 2>&1 &
+SPID=$!
 trap 'stop_specula' EXIT
 
-# Wait for the data plane to be ready (up to 10 s).
-for i in $(seq 1 20); do
-    if curl -sf "http://127.0.0.1:${DATA_PORT}/healthz" >/dev/null 2>&1; then
-        echo "==> specula is up"
-        break
-    fi
-    sleep 0.5
-    [[ "$i" -eq 20 ]] && die "specula did not start within 10 s (check $WORK/daemon.log)"
-done
+# Block until the daemon serves AND the kernel confirms :${DATA_PORT} belongs to OUR pid.
+wait_for_daemon "$SPID" "$DATA_PORT" "http://127.0.0.1:${DATA_PORT}/healthz" "$WORK/daemon.log" \
+    || die "specula did not start correctly (check $WORK/daemon.log)"
+echo "==> specula is up (pid $SPID, data :${DATA_PORT}, control :${CTRL_PORT})"
 
 # ── Step 4: write an isolated APT sources.list ────────────────────────────────
 # signed-by= pins the exact keyring used for this source so no system-wide

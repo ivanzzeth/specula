@@ -23,9 +23,12 @@ CONF_BIN="${OCI_CONFORMANCE_BIN:-$WORK/conformance.test}"
 # conformance suite silently ran against THE OTHER SERVER. It reported a pass for
 # a binary it never touched, and registered its first user into someone else's
 # database. A gate that quietly grades the wrong process is worse than no gate.
-pick_free_port() {
-  python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'
-}
+#
+# pick_free_port and wait_for_daemon now live in lib/daemon.sh and are shared by every
+# script that starts a daemon. See that file for why the liveness+health check this script
+# originally used is NOT sufficient on its own (it was demonstrated to pass while a
+# different server answered) and why socket ownership is asserted instead.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
 DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
 CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}" GOSUMDB="${GOSUMDB:-sum.golang.google.cn}"
@@ -60,25 +63,11 @@ rm -f "$WORK"/meta.db* ; rm -rf "$WORK"/blobs/*
 SPID=$!
 trap 'kill $SPID 2>/dev/null || true' EXIT
 
-# Prove OUR daemon is the one answering before trusting a single result.
-# Backgrounding hides a failed bind from `set -e`, so check liveness explicitly
-# and fail loudly rather than letting the suite grade whatever else is listening.
-for _ in $(seq 1 50); do
-  if ! kill -0 "$SPID" 2>/dev/null; then
-    echo "==> FATAL: specula exited during startup. Log:" >&2
-    cat "$WORK/daemon.log" >&2
-    exit 1
-  fi
-  if curl -fsS --max-time 1 "http://127.0.0.1:$CTRL_PORT/healthz" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.2
-done
-if ! curl -fsS --max-time 2 "http://127.0.0.1:$CTRL_PORT/healthz" >/dev/null 2>&1; then
-  echo "==> FATAL: specula never became healthy on :$CTRL_PORT. Log:" >&2
-  cat "$WORK/daemon.log" >&2
-  exit 1
-fi
+# Prove OUR daemon is the one answering before trusting a single result: the kernel must
+# confirm both sockets belong to $SPID. The suite drives the data plane and seeds its user
+# through the control plane, so ownership of both is asserted.
+wait_for_daemon "$SPID" "$CTRL_PORT" "http://127.0.0.1:$CTRL_PORT/healthz" "$WORK/daemon.log" || exit 1
+wait_for_daemon "$SPID" "$DATA_PORT" "http://127.0.0.1:$DATA_PORT/healthz" "$WORK/daemon.log" || exit 1
 echo "==> specula up (pid $SPID, data :$DATA_PORT, control :$CTRL_PORT)"
 
 # 3. Seed the first user (admin + owner of org "default").

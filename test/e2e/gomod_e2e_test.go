@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package e2e — hermetic end-to-end tests for the Specula Go module proxy handler.
 //
 // Every hermetic test runs entirely in-process: a tiny fake GOPROXY upstream

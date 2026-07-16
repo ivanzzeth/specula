@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package e2e — hermetic end-to-end tests for the Helm classic HTTP handler.
 //
 // # What is tested

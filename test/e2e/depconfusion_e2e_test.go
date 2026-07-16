@@ -1,3 +1,5 @@
+//go:build integration
+
 // Package e2e — hermetic end-to-end dep-confusion guard tests.
 //
 // These tests drive the full Specula data-plane stack (LocalDiskDriver +

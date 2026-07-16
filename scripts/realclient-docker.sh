@@ -38,9 +38,14 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="${WORK:-/tmp/specula-docker-test}"
-DATA_PORT="${DATA_PORT:-5106}"
-CTRL_PORT="${CTRL_PORT:-5206}"
+WORK="${WORK:-$(mktemp -d /tmp/specula-docker-test.XXXXXX)}"
+
+# Free ports + a socket-ownership assertion at startup; see scripts/lib/daemon.sh for why
+# both are required and why liveness/health checks alone are not enough.
+# The registry name embeds the port, so docker tags derive from it and follow along.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
+DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
+CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}" GOSUMDB="${GOSUMDB:-sum.golang.google.cn}"
 
 REGISTRY="127.0.0.1:${DATA_PORT}"
@@ -62,18 +67,23 @@ cleanup_docker() {
     docker logout "$REGISTRY" 2>/dev/null || true
 }
 
+# SPID holds the PID of the daemon WE started; set when it is launched below.
+#
+# This used to be discovered with `ps -eo pid,args | grep "[s]pecula --config $WORK/cfg.yaml"`.
+# Matching on a command line is a footgun: any process whose own argv contains that string
+# matches too — including the shell running this script — so the pattern can select and kill
+# the wrong process, up to and including itself. Holding the PID from `$!` is exact,
+# needs no pattern, and cannot match a bystander.
+SPID=""
+
 kill_specula() {
-    local pid
-    # grep exits 1 when no match; the || true prevents set -e from aborting.
-    pid="$(ps -eo pid,args | grep "[s]pecula --config ${WORK}/cfg.yaml" | awk '{print $1}' || true)"
-    if [ -n "$pid" ]; then
-        kill "$pid" 2>/dev/null || true
-        # Wait briefly for the process to exit.
-        local i=0
-        while kill -0 "$pid" 2>/dev/null && [ $i -lt 10 ]; do
-            sleep 0.2; i=$((i+1))
-        done
-    fi
+    [ -n "$SPID" ] || return 0
+    kill "$SPID" 2>/dev/null || true
+    # Wait briefly for the process to exit.
+    local i=0
+    while kill -0 "$SPID" 2>/dev/null && [ $i -lt 10 ]; do
+        sleep 0.2; i=$((i+1))
+    done
 }
 
 trap 'kill_specula; cleanup_docker' EXIT
@@ -121,24 +131,20 @@ EOF
 # ── 3. Start specula ─────────────────────────────────────────────────────────
 
 step "starting specula on :${DATA_PORT} (data) / :${CTRL_PORT} (control)"
-kill_specula                     # clean up any stale instance
+# No stale-instance cleanup needed: $WORK is a fresh mktemp dir and the ports are freshly
+# picked, so there is nothing of ours already running to collide with.
 rm -f "${WORK}"/meta.db* ; rm -rf "${WORK}"/blobs/*
 "${WORK}/specula" --config "${WORK}/cfg.yaml" > "${WORK}/daemon.log" 2>&1 &
+SPID=$!
 
-# Wait for the health endpoints to respond (up to 10 s).
-for i in $(seq 1 50); do
-    if curl -fsS "http://127.0.0.1:${DATA_PORT}/healthz" >/dev/null 2>&1 &&
-       curl -fsS "http://127.0.0.1:${CTRL_PORT}/healthz" >/dev/null 2>&1; then
-        break
-    fi
-    sleep 0.2
-    if [ "$i" -eq 50 ]; then
-        echo "Specula did not start within 10 s; daemon log:" >&2
-        tail -20 "${WORK}/daemon.log" >&2
-        exit 1
-    fi
-done
-pass "specula is up"
+# Block until the daemon serves AND the kernel confirms each port belongs to OUR pid.
+# docker pushes/pulls against the data plane and logs in against the control plane, so
+# ownership of both must be proven before anything is graded.
+wait_for_daemon "$SPID" "$DATA_PORT" "http://127.0.0.1:${DATA_PORT}/healthz" "${WORK}/daemon.log" \
+    || exit 1
+wait_for_daemon "$SPID" "$CTRL_PORT" "http://127.0.0.1:${CTRL_PORT}/healthz" "${WORK}/daemon.log" \
+    || exit 1
+pass "specula is up (pid ${SPID}, data :${DATA_PORT}, control :${CTRL_PORT})"
 
 # ── 4. Seed first user ───────────────────────────────────────────────────────
 
