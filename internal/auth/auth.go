@@ -1,9 +1,13 @@
 // Package auth provides the control-plane user model and the minimal auth
 // primitives used by the Specula control plane: bcrypt password hashing and
-// a hand-rolled HS256 JWT signer/verifier (stdlib only, no third-party JWT
-// libraries; rejects alg=none and any asymmetric or unknown alg family to
-// prevent alg-confusion attacks). Ported/trimmed from ai-sandbox auth/
-// (drops org/acl multi-tenancy).
+// an HS256 JWT signer/verifier backed by github.com/golang-jwt/jwt/v5.
+//
+// Algorithm safety: every call to Verify first inspects the JOSE header
+// manually (before the library's signature work begins) and rejects any alg
+// that is not exactly "HS256". The parser is also configured with
+// WithValidMethods([]string{"HS256"}) as a second layer of defence, ensuring
+// alg=none, RS*, ES*, PS*, and lowercase variants are all rejected before any
+// cryptographic operation runs.
 //
 // # token_gen revocation
 //
@@ -19,14 +23,13 @@
 package auth
 
 import (
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -124,142 +127,163 @@ func (h *bcryptHasher) Compare(hash, password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 }
 
-// ---- HS256 JWT signer / verifier ---------------------------------------------
+// ---- HS256 JWT signer / verifier (backed by golang-jwt/jwt/v5) ---------------
 
 // jwtHeader holds only the fields we care about from the JOSE header.
+// Retained so that the manual alg pre-check (Step 1 of verifyAt) can inspect
+// the token before the library begins any cryptographic work. Tests in package
+// auth also use b64 directly, so both must remain package-visible.
 type jwtHeader struct {
 	Alg string `json:"alg"`
 	Typ string `json:"typ"`
 }
 
-// jwtClaims maps all User identity fields plus standard JWT registered claims.
-// TokenGen is embedded so the middleware can detect revocation without a DB
-// round-trip per request (the gen is compared to the live store value).
-type jwtClaims struct {
+// sessionClaims is the combined JWT payload for a Specula session token.
+// Custom fields preserve the wire names from the predecessor so existing tokens
+// issued before this change remain verifiable (same json tags). Embedding
+// jwt.RegisteredClaims provides iss/aud/exp/iat in their RFC 7519 positions.
+type sessionClaims struct {
 	UserID     int64  `json:"uid"`
 	Email      string `json:"email"`
 	SystemRole string `json:"role"`
 	TokenGen   int64  `json:"gen,omitempty"`
-	Iss        string `json:"iss"`
-	Aud        string `json:"aud,omitempty"`
-	Exp        int64  `json:"exp"`
-	Iat        int64  `json:"iat"`
+	jwt.RegisteredClaims
 }
 
-// b64 is the JWT-standard unpadded base64url codec used for all three segments.
+// b64 is the JWT-standard unpadded base64url codec.
+// Kept as a package-level variable so tests in package auth can assemble
+// hand-crafted tokens (e.g. for alg-confusion rejection tests) without
+// importing encoding/base64 directly.
 var b64 = base64.RawURLEncoding
 
-// hs256Verifier implements TokenVerifier with a hand-rolled HS256 JWT.
+// hs256Verifier implements TokenVerifier with HMAC-SHA256 via golang-jwt/v5.
 type hs256Verifier struct{ secret []byte }
 
 // NewHS256Verifier constructs an HS256 TokenVerifier from a signing secret.
-// An empty secret is silently accepted here (to match the foundation contract
-// signature) but will produce tokens that cannot be validated by any verifier
-// constructed with a non-empty secret. Production callers should validate the
-// secret is non-empty before passing it here.
+// An empty secret is accepted here (to match the interface contract) but tokens
+// signed with an empty secret cannot be verified by a verifier with a non-empty
+// secret. Production callers should validate the secret is non-empty before use.
 func NewHS256Verifier(secret []byte) TokenVerifier { return &hs256Verifier{secret: secret} }
 
 // Compile-time assertion.
 var _ TokenVerifier = (*hs256Verifier)(nil)
 
-// Sign issues a signed HS256 JWT. The user's TokenGen snapshot is embedded in
-// the claims so that Middleware can detect logout-all revocation by comparing
-// against the live store value.
+// Sign issues a signed HS256 JWT. The user's TokenGen snapshot is embedded so
+// Middleware can detect logout-all revocation by comparing against the live store.
 func (v *hs256Verifier) Sign(user User) (string, error) {
 	now := time.Now()
-	hdr, err := json.Marshal(jwtHeader{Alg: "HS256", Typ: "JWT"})
-	if err != nil {
-		return "", err
-	}
-	c := jwtClaims{
+	claims := sessionClaims{
 		UserID:     user.ID,
 		Email:      user.Email,
 		SystemRole: user.SystemRole,
 		TokenGen:   user.TokenGen,
-		Iss:        tokenIssuer,
-		Aud:        tokenAudience,
-		Exp:        now.Add(DefaultTokenTTL).Unix(),
-		Iat:        now.Unix(),
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    tokenIssuer,
+			Audience:  jwt.ClaimStrings{tokenAudience},
+			ExpiresAt: jwt.NewNumericDate(now.Add(DefaultTokenTTL)),
+			IssuedAt:  jwt.NewNumericDate(now),
+		},
 	}
-	payload, err := json.Marshal(c)
-	if err != nil {
-		return "", err
-	}
-	unsigned := b64.EncodeToString(hdr) + "." + b64.EncodeToString(payload)
-	mac := hmac.New(sha256.New, v.secret)
-	mac.Write([]byte(unsigned))
-	return unsigned + "." + b64.EncodeToString(mac.Sum(nil)), nil
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(v.secret)
 }
 
 // Verify validates a compact JWS token (header.payload.signature). It
 // explicitly rejects alg=none and any asymmetric or unknown alg to prevent
-// alg-confusion attacks. Signature is verified before claims are inspected.
-// If valid, returns the embedded User (with TokenGen snapshot).
+// alg-confusion attacks. The signature is verified by the library before claims
+// are inspected. If valid, returns the embedded User (with TokenGen snapshot).
 func (v *hs256Verifier) Verify(token string) (User, error) {
 	return v.verifyAt(token, time.Now())
 }
 
 // verifyAt is the internal implementation; accepts an explicit "now" so tests
-// can inject a synthetic clock without wrapping time.Now globally.
+// that construct tokens with synthetic expiry values can inject the clock.
 func (v *hs256Verifier) verifyAt(token string, now time.Time) (User, error) {
+	// ── Step 1: manual alg pre-check ────────────────────────────────────────
+	// Inspect the JOSE header before the library touches the token. This is the
+	// primary alg-confusion defence: reject anything that is not exactly "HS256"
+	// (case-sensitive, per RFC 7518 §3) before any cryptographic operation runs.
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return User{}, ErrMalformed
 	}
-
 	headerJSON, err := b64.DecodeString(parts[0])
 	if err != nil {
 		return User{}, ErrMalformed
 	}
-	var h jwtHeader
-	if err := json.Unmarshal(headerJSON, &h); err != nil {
+	var hdr jwtHeader
+	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
 		return User{}, ErrMalformed
 	}
-	// Accept ONLY HS256. Explicitly reject alg=none (unsigned token), RS*/ES*/PS*
-	// (asymmetric confusion), hs256 (case-sensitive), and anything else unknown.
-	if h.Alg != "HS256" {
+	// Accept ONLY "HS256". alg=none, RS*/ES*/PS*, and lowercase "hs256" are
+	// all rejected here before the library even sees the token.
+	if hdr.Alg != "HS256" {
 		return User{}, ErrAlg
 	}
 
-	payloadJSON, err := b64.DecodeString(parts[1])
-	if err != nil {
-		return User{}, ErrMalformed
-	}
-	sig, err := b64.DecodeString(parts[2])
-	if err != nil {
-		return User{}, ErrMalformed
+	// ── Step 2: library signature + expiry verification ─────────────────────
+	// WithValidMethods provides a second alg layer inside the library.
+	// WithLeeway adds clockSkew tolerance to the exp check.
+	// WithTimeFunc injects the caller's "now" so tests can control the clock.
+	// Issuer and audience are NOT validated here — done manually in Step 3 so
+	// we return our own typed sentinel errors rather than the library's.
+	var claims sessionClaims
+	_, parseErr := jwt.NewParser(
+		jwt.WithValidMethods([]string{"HS256"}),
+		jwt.WithLeeway(clockSkew),
+		jwt.WithTimeFunc(func() time.Time { return now }),
+	).ParseWithClaims(token, &claims, func(_ *jwt.Token) (interface{}, error) {
+		return v.secret, nil
+	})
+	if parseErr != nil {
+		return User{}, mapHS256ParseError(parseErr)
 	}
 
-	// Verify HMAC-SHA256 signature before touching any claims (fail fast,
-	// no claim data exposed on signature failure).
-	unsigned := parts[0] + "." + parts[1]
-	mac := hmac.New(sha256.New, v.secret)
-	mac.Write([]byte(unsigned))
-	want := mac.Sum(nil)
-	if !hmac.Equal(sig, want) {
-		return User{}, ErrSignature
-	}
-
-	var c jwtClaims
-	if err := json.Unmarshal(payloadJSON, &c); err != nil {
-		return User{}, ErrMalformed
-	}
-	if c.Exp != 0 && now.After(time.Unix(c.Exp, 0).Add(clockSkew)) {
-		return User{}, ErrExpired
-	}
-	if c.Iss != tokenIssuer {
+	// ── Step 3: application-level claim checks ───────────────────────────────
+	if claims.Issuer != tokenIssuer {
 		return User{}, ErrIssuer
 	}
-	// Audience: missing = backward-compatible legacy token (no rejection);
-	// present but wrong = reject (prevents token-type confusion).
-	if c.Aud != "" && c.Aud != tokenAudience {
+	// Audience: missing = accepted (backward compat for tokens without aud);
+	// present but not matching = rejected (prevents token-type confusion).
+	if len(claims.Audience) > 0 && !containsString(claims.Audience, tokenAudience) {
 		return User{}, ErrAudience
 	}
 
 	return User{
-		ID:         c.UserID,
-		Email:      c.Email,
-		SystemRole: c.SystemRole,
-		TokenGen:   c.TokenGen,
+		ID:         claims.UserID,
+		Email:      claims.Email,
+		SystemRole: claims.SystemRole,
+		TokenGen:   claims.TokenGen,
 	}, nil
+}
+
+// mapHS256ParseError converts a golang-jwt parsing error to one of our typed
+// sentinel errors. Because the alg pre-check already passed, any
+// ErrTokenSignatureInvalid here is a genuine HMAC key mismatch, not an
+// alg-confusion issue — so it maps to ErrSignature rather than ErrAlg.
+func mapHS256ParseError(err error) error {
+	switch {
+	case errors.Is(err, jwt.ErrTokenMalformed):
+		return ErrMalformed
+	case errors.Is(err, jwt.ErrTokenSignatureInvalid):
+		return ErrSignature
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return ErrExpired
+	case errors.Is(err, jwt.ErrTokenUnverifiable):
+		// alg=none causes ErrTokenUnverifiable ("signing method unavailable")
+		// in ParseUnverified; shouldn't reach here after Step 1, but map to
+		// ErrAlg as a safety net.
+		return ErrAlg
+	default:
+		return ErrMalformed
+	}
+}
+
+// containsString reports whether haystack contains needle (case-sensitive).
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }

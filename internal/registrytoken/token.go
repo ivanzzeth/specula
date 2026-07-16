@@ -1,16 +1,16 @@
 package registrytoken
 
 import (
-	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // Token type / algorithm sentinels and defaults.
@@ -29,6 +29,7 @@ const (
 )
 
 // b64 is the JWT-standard unpadded base64url codec for all three segments.
+// Used internally by verifyAt for the manual alg pre-check.
 var b64 = base64.RawURLEncoding
 
 // Verify sentinel errors.
@@ -50,22 +51,20 @@ type Access struct {
 	Actions []string `json:"actions"`
 }
 
-// jwtHeader is the JOSE header we emit / accept.
+// jwtHeader holds only the fields we care about from the JOSE header.
+// Used by verifyAt for the manual alg pre-check before the library runs.
 type jwtHeader struct {
 	Typ string `json:"typ"`
 	Alg string `json:"alg"`
 }
 
-// jwtClaims is the registry token payload (Distribution token spec shape).
-type jwtClaims struct {
-	Iss    string   `json:"iss"`
-	Sub    string   `json:"sub"`
-	Aud    string   `json:"aud"`
-	Exp    int64    `json:"exp"`
-	Nbf    int64    `json:"nbf"`
-	Iat    int64    `json:"iat"`
-	Jti    string   `json:"jti"`
+// registryClaims is the registry token payload (Distribution token spec shape).
+// Access carries the Docker Distribution resource-scope list; jwt.RegisteredClaims
+// provides the standard iss/sub/aud/exp/nbf/iat/jti fields in their RFC 7519
+// positions with the correct wire names.
+type registryClaims struct {
 	Access []Access `json:"access"`
+	jwt.RegisteredClaims
 }
 
 // AccessClaims is the verified, decoded view returned by Verify: who the token
@@ -118,35 +117,23 @@ func (s *Service) PublicKey() *rsa.PublicKey { return &s.priv.PublicKey }
 // Mint issues a signed RS256 token for subject authorizing the given access
 // scopes. subject "" mints an anonymous token (only ever carrying pull access
 // to public repositories, per the authorizer). access may be empty (a valid
-// token with no grants — docker accepts it and the request then 401/403s at the
-// data plane).
+// token with no grants — docker accepts it and the request then 401/403s at
+// the data plane).
 func (s *Service) Mint(subject string, access []Access) (string, error) {
 	now := time.Now()
-	hdr, err := json.Marshal(jwtHeader{Typ: tokenTyp, Alg: tokenAlg})
-	if err != nil {
-		return "", err
-	}
-	claims := jwtClaims{
-		Iss:    s.issuer,
-		Sub:    subject,
-		Aud:    s.service,
-		Exp:    now.Add(s.ttl).Unix(),
-		Nbf:    now.Add(-clockSkew).Unix(),
-		Iat:    now.Unix(),
-		Jti:    randomJTI(),
+	claims := registryClaims{
 		Access: access,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    s.issuer,
+			Subject:   subject,
+			Audience:  jwt.ClaimStrings{s.service},
+			ExpiresAt: jwt.NewNumericDate(now.Add(s.ttl)),
+			NotBefore: jwt.NewNumericDate(now.Add(-clockSkew)),
+			IssuedAt:  jwt.NewNumericDate(now),
+			ID:        randomJTI(),
+		},
 	}
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	signingInput := b64.EncodeToString(hdr) + "." + b64.EncodeToString(payload)
-	sum := sha256.Sum256([]byte(signingInput))
-	sig, err := rsa.SignPKCS1v15(rand.Reader, s.priv, crypto.SHA256, sum[:])
-	if err != nil {
-		return "", err
-	}
-	return signingInput + "." + b64.EncodeToString(sig), nil
+	return jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(s.priv)
 }
 
 // Verify validates a compact RS256 JWS and returns its access claims. It
@@ -157,60 +144,97 @@ func (s *Service) Verify(token string) (*AccessClaims, error) {
 }
 
 func (s *Service) verifyAt(token string, now time.Time) (*AccessClaims, error) {
+	// ── Step 1: manual alg pre-check ────────────────────────────────────────
+	// Inspect the JOSE header before the library begins any cryptographic work.
+	// This is the primary alg-confusion defence: reject anything that is not
+	// exactly "RS256" (case-sensitive, per RFC 7518) up front.
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return nil, ErrMalformed
 	}
-
 	headerJSON, err := b64.DecodeString(parts[0])
 	if err != nil {
 		return nil, ErrMalformed
 	}
-	var h jwtHeader
-	if err := json.Unmarshal(headerJSON, &h); err != nil {
+	var hdr jwtHeader
+	if err := json.Unmarshal(headerJSON, &hdr); err != nil {
 		return nil, ErrMalformed
 	}
-	if h.Alg != tokenAlg {
+	if hdr.Alg != tokenAlg {
 		return nil, ErrAlg
 	}
 
-	payloadJSON, err := b64.DecodeString(parts[1])
-	if err != nil {
-		return nil, ErrMalformed
-	}
-	sig, err := b64.DecodeString(parts[2])
-	if err != nil {
-		return nil, ErrMalformed
+	// ── Step 2: library signature + expiry/nbf verification ─────────────────
+	// WithValidMethods adds a second alg layer inside the library.
+	// WithLeeway applies clockSkew tolerance to both exp and nbf.
+	// WithTimeFunc injects the caller's "now" for clock-controlled testing.
+	// Issuer and audience are NOT validated by the parser — done manually in
+	// Step 3 so we return our own typed sentinel errors.
+	var claims registryClaims
+	_, parseErr := jwt.NewParser(
+		jwt.WithValidMethods([]string{tokenAlg}),
+		jwt.WithLeeway(clockSkew),
+		jwt.WithTimeFunc(func() time.Time { return now }),
+	).ParseWithClaims(token, &claims, func(_ *jwt.Token) (interface{}, error) {
+		return &s.priv.PublicKey, nil
+	})
+	if parseErr != nil {
+		return nil, mapRS256ParseError(parseErr)
 	}
 
-	// Verify signature before inspecting any claim (fail fast).
-	sum := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
-	if err := rsa.VerifyPKCS1v15(&s.priv.PublicKey, crypto.SHA256, sum[:], sig); err != nil {
-		return nil, ErrSignature
-	}
-
-	var c jwtClaims
-	if err := json.Unmarshal(payloadJSON, &c); err != nil {
-		return nil, ErrMalformed
-	}
-	if c.Exp != 0 && now.After(time.Unix(c.Exp, 0).Add(clockSkew)) {
-		return nil, ErrExpired
-	}
-	if c.Nbf != 0 && now.Add(clockSkew).Before(time.Unix(c.Nbf, 0)) {
-		return nil, ErrNotYet
-	}
-	if s.issuer != "" && c.Iss != s.issuer {
+	// ── Step 3: application-level claim checks ───────────────────────────────
+	if s.issuer != "" && claims.Issuer != s.issuer {
 		return nil, ErrIssuer
 	}
-	if s.service != "" && c.Aud != "" && c.Aud != s.service {
-		return nil, ErrAudience
+	// Audience: if s.service is set and the token carries a non-empty audience
+	// that does not include our service name, reject. A missing/empty audience
+	// claim is accepted (legacy tokens without aud).
+	if s.service != "" && len(claims.Audience) > 0 {
+		if !containsString([]string(claims.Audience), s.service) {
+			return nil, ErrAudience
+		}
+	}
+
+	var expiresAt time.Time
+	if claims.ExpiresAt != nil {
+		expiresAt = claims.ExpiresAt.Time
 	}
 
 	return &AccessClaims{
-		Subject:   c.Sub,
-		Access:    c.Access,
-		ExpiresAt: time.Unix(c.Exp, 0),
+		Subject:   claims.Subject,
+		Access:    claims.Access,
+		ExpiresAt: expiresAt,
 	}, nil
+}
+
+// mapRS256ParseError converts a golang-jwt parsing error to one of our typed
+// sentinel errors. Because the alg pre-check has already passed, any
+// ErrTokenSignatureInvalid here reflects a genuine RSA key mismatch.
+func mapRS256ParseError(err error) error {
+	switch {
+	case errors.Is(err, jwt.ErrTokenMalformed):
+		return ErrMalformed
+	case errors.Is(err, jwt.ErrTokenSignatureInvalid):
+		return ErrSignature
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return ErrExpired
+	case errors.Is(err, jwt.ErrTokenNotValidYet):
+		return ErrNotYet
+	case errors.Is(err, jwt.ErrTokenUnverifiable):
+		return ErrAlg
+	default:
+		return ErrMalformed
+	}
+}
+
+// containsString reports whether haystack contains needle (case-sensitive).
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // randomJTI returns a 16-byte hex token id for replay/audit distinctness.
