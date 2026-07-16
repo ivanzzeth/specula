@@ -90,8 +90,28 @@ func WithMeta(m meta.MetadataStore) Option {
 
 // WithUpstream configures the fallback upstream client and ordered mirror list
 // used when an artifact is absent from the verified cache.
+//
+// Base URLs are normalised: a trailing "/simple" suffix is stripped because the
+// generic upstream.Client path builder (buildPath for protocol "pypi") already
+// prepends "simple/" for mutable (index) refs.  Operators naturally write the
+// full simple-index base URL (e.g. "https://pypi.tuna.tsinghua.edu.cn/simple")
+// matching PEP 503 / pip --index-url convention; without this normalisation the
+// fetch URL would be doubled ("…/simple/simple/<project>/").
+//
+// Spec reference: PEP 503 §1 defines the simple repository API at a base URL
+// whose sub-path for a project is "<base>/<project>/".  The internal buildPath
+// already produces "simple/<project>/" so the stored base must be the mirror
+// root without the "/simple" suffix.
 func WithUpstream(c upstream.Client, ups []upstream.Upstream) Option {
-	return func(h *Handler) { h.upstreamClt = c; h.upstreams = ups }
+	return func(h *Handler) {
+		h.upstreamClt = c
+		normalized := make([]upstream.Upstream, len(ups))
+		for i, u := range ups {
+			normalized[i] = u
+			normalized[i].BaseURL = normalizeUpstreamBase(u.BaseURL)
+		}
+		h.upstreams = normalized
+	}
 }
 
 // WithMutableTTL overrides the /simple/ index cache TTL (seconds).
@@ -125,8 +145,14 @@ func WithPrivateNames(names []string) Option {
 
 // WithPrivateUpstream sets the private index that owns the private names. Private
 // names are NEVER queried against the public mirrors.
+//
+// The base URL is normalised identically to WithUpstream (see above).
 func WithPrivateUpstream(up upstream.Upstream) Option {
-	return func(h *Handler) { h.privateUpstream = &up }
+	return func(h *Handler) {
+		normalized := up
+		normalized.BaseURL = normalizeUpstreamBase(up.BaseURL)
+		h.privateUpstream = &normalized
+	}
 }
 
 // WithFailClosed controls the behaviour when a private name's private upstream is
@@ -196,6 +222,38 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusNotFound, "not a PyPI path")
 	}
+}
+
+// --------------------------------------------------------------------------
+// Upstream base-URL normalisation
+// --------------------------------------------------------------------------
+
+// normalizeUpstreamBase strips the "/simple" suffix (with optional trailing
+// slash) from a PyPI upstream base URL.
+//
+// # Rationale (PEP 503, upstream.buildPath)
+//
+// The upstream.Client path builder for protocol "pypi" always prepends
+// "simple/" for mutable (index) refs:
+//
+//	buildPath(ref{Protocol:"pypi", Mutable:true, Name:"six"}) → "simple/six/"
+//
+// The resulting fetch URL is therefore "<baseURL>/simple/<project>/".
+// Operators naturally configure the mirror as its full simple-index root
+// (e.g. "https://pypi.tuna.tsinghua.edu.cn/simple"), matching pip's
+// --index-url convention (PEP 503 §1).  Without stripping the trailing
+// "/simple" the URL becomes ".../simple/simple/<project>/" which returns 404
+// on every conformant PyPI mirror.
+//
+// After stripping, the base is the mirror root:
+//   - Index:   <root>/simple/<project>/   — built by buildPath + buildURL
+//   - Package: <root>/packages/<path>     — built by buildPath + buildURL
+func normalizeUpstreamBase(base string) string {
+	base = strings.TrimRight(base, "/")
+	if strings.HasSuffix(base, "/simple") {
+		return base[:len(base)-len("/simple")]
+	}
+	return base
 }
 
 // --------------------------------------------------------------------------

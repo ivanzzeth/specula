@@ -135,6 +135,23 @@ func (h *Handler) selectUpstreams(project string) ([]upstream.Upstream, error) {
 // serveIndex handles GET/HEAD /simple/<project>/ (PEP 503 HTML + PEP 691 JSON).
 // The index page is mutable (new releases appear over time) and is cached in
 // the short-TTL mutable tier with conditional-GET revalidation.
+//
+// # PEP 691 content negotiation
+//
+// When the client sends Accept: application/vnd.pypi.simple.v1+json (PEP 691)
+// we first probe the "simple-json" cache slot: if a JSON response was
+// previously cached (e.g. from a JSON-capable upstream), we serve it directly
+// with the JSON Content-Type.
+//
+// If the JSON slot is empty we fall back to the HTML path.  This is valid
+// per PEP 691 §4.1 ("A server MAY respond with any version they support")
+// — pip ≥21 always includes "text/html" in its Accept fallback and will
+// re-parse the response as HTML when the server returns text/html.
+//
+// Full JSON negotiation (forwarding the Accept header to the upstream so that
+// mirrors which support PEP 691 return JSON) requires a new
+// upstream.WithAcceptHeader(string) RequestOption that the upstream package
+// currently does not expose.  See KNOWN-LIMITATIONS below.
 func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, project string) {
 	ups, err := h.selectUpstreams(project)
 	if err != nil {
@@ -149,9 +166,33 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, project str
 		return
 	}
 
-	ref := indexRefForRequest(project, r)
-	ct := contentTypeForRequest(r)
-	h.serveMutable(w, r, ref, ct, ups)
+	// PEP 691: if the client prefers JSON and a JSON copy is already cached,
+	// serve it.  Otherwise fall through to the HTML path (valid graceful
+	// degradation per PEP 691 §4.1).
+	if wantsJSON(r) {
+		jsonRef := artifact.ArtifactRef{
+			Protocol: Protocol,
+			Name:     project,
+			Version:  indexVersionJSON,
+			Mutable:  true,
+		}
+		jsonEntry, lookErr := h.cache.Lookup(r.Context(), jsonRef)
+		if lookErr != nil {
+			h.log.Error("pypi: json cache lookup", "ref", jsonRef, "err", lookErr)
+			// fall through to HTML
+		} else if jsonEntry != nil {
+			h.serveFromCache(w, r, jsonRef, jsonEntry, ctSimpleJSON)
+			return
+		}
+		// JSON slot is empty — fall through to HTML with HTML Content-Type.
+		// pip accepts this per PEP 691 (servers may respond with any supported
+		// format; pip's Accept list always includes text/html as a fallback).
+		h.log.Debug("pypi: JSON not cached; falling back to HTML for JSON client",
+			"project", project)
+	}
+
+	ref := indexRef(project)
+	h.serveMutable(w, r, ref, ctSimpleHTML, ups)
 }
 
 // serveMutable is the shared pipeline for the mutable /simple/ index endpoint:
