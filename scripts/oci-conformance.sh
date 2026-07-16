@@ -15,8 +15,19 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-/tmp/specula-oci-conf}"
 CONF_BIN="${OCI_CONFORMANCE_BIN:-$WORK/conformance.test}"
-DATA_PORT="${DATA_PORT:-5000}"
-CTRL_PORT="${CTRL_PORT:-8080}"
+# Ports default to FREE ones, never 5000/8080.
+#
+# This is not tidiness. When these defaulted to 5000/8080 and something else
+# already held them (a demo instance), our daemon lost the bind and exited — but
+# it is started in the background, so `set -e` never saw it, and the whole
+# conformance suite silently ran against THE OTHER SERVER. It reported a pass for
+# a binary it never touched, and registered its first user into someone else's
+# database. A gate that quietly grades the wrong process is worse than no gate.
+pick_free_port() {
+  python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()'
+}
+DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
+CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}" GOSUMDB="${GOSUMDB:-sum.golang.google.cn}"
 
 mkdir -p "$WORK/blobs"
@@ -48,7 +59,27 @@ rm -f "$WORK"/meta.db* ; rm -rf "$WORK"/blobs/*
 "$WORK/specula" --config "$WORK/cfg.yaml" > "$WORK/daemon.log" 2>&1 &
 SPID=$!
 trap 'kill $SPID 2>/dev/null || true' EXIT
-sleep 2
+
+# Prove OUR daemon is the one answering before trusting a single result.
+# Backgrounding hides a failed bind from `set -e`, so check liveness explicitly
+# and fail loudly rather than letting the suite grade whatever else is listening.
+for _ in $(seq 1 50); do
+  if ! kill -0 "$SPID" 2>/dev/null; then
+    echo "==> FATAL: specula exited during startup. Log:" >&2
+    cat "$WORK/daemon.log" >&2
+    exit 1
+  fi
+  if curl -fsS --max-time 1 "http://127.0.0.1:$CTRL_PORT/healthz" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.2
+done
+if ! curl -fsS --max-time 2 "http://127.0.0.1:$CTRL_PORT/healthz" >/dev/null 2>&1; then
+  echo "==> FATAL: specula never became healthy on :$CTRL_PORT. Log:" >&2
+  cat "$WORK/daemon.log" >&2
+  exit 1
+fi
+echo "==> specula up (pid $SPID, data :$DATA_PORT, control :$CTRL_PORT)"
 
 # 3. Seed the first user (admin + owner of org "default").
 curl -fsS -H Content-Type:application/json -X POST \
