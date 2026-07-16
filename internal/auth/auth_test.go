@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -115,6 +116,52 @@ func (f *fakeStore) BumpTokenGen(_ context.Context, id int64) (int64, error) {
 	}
 	u.TokenGen++ // both maps share the same *User so the email index is updated too
 	return u.TokenGen, nil
+}
+
+func (f *fakeStore) ListUsers(_ context.Context, limit, offset int) ([]User, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ids := make([]int64, 0, len(f.byID))
+	for id := range f.byID {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	total := int64(len(ids))
+	if offset > len(ids) {
+		offset = len(ids)
+	}
+	ids = ids[offset:]
+	if limit > 0 && limit < len(ids) {
+		ids = ids[:limit]
+	}
+	out := make([]User, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, *f.byID[id])
+	}
+	return out, total, nil
+}
+
+func (f *fakeStore) UpdateUserRole(_ context.Context, id int64, role string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.byID[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	u.SystemRole = role
+	return nil
+}
+
+func (f *fakeStore) DeleteUser(_ context.Context, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.byID[id]
+	if !ok {
+		return ErrUserNotFound
+	}
+	delete(f.byID, id)
+	delete(f.users, u.Email)
+	return nil
 }
 
 // ---- service factory ----------------------------------------------------------

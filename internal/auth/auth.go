@@ -74,11 +74,13 @@ var (
 // User is the control-plane account row. The first registered user
 // (CountUsers()==0 at register time) becomes system_role="admin".
 type User struct {
-	ID           int64  // stable DB identifier
-	Email        string // login identity (normalised to lower-case)
-	PasswordHash string // bcrypt hash; never logged or returned to clients
-	SystemRole   string // "admin" | "user"
-	TokenGen     int64  // generation counter; embedded in JWT, bump to revoke all sessions
+	ID           int64     // stable DB identifier
+	Email        string    // login identity (normalised to lower-case)
+	Name         string    // optional display name (never used for auth)
+	PasswordHash string    // bcrypt hash; never logged or returned to clients
+	SystemRole   string    // "admin" | "user"
+	TokenGen     int64     // generation counter; embedded in JWT, bump to revoke all sessions
+	CreatedAt    time.Time // account creation time (zero until persisted)
 }
 
 // PasswordHasher hashes and verifies passwords.

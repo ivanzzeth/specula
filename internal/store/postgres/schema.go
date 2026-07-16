@@ -27,6 +27,18 @@ func ApplySchema(ctx context.Context, pool *pgxpool.Pool) error {
 // database up to the current schema. Every statement is idempotent
 // (CREATE … IF NOT EXISTS / CREATE INDEX IF NOT EXISTS).
 var schemaDDL = []string{
+	// Control-plane accounts. First registered user becomes admin
+	// (CountUsers()==0 bootstrap, architecture §11).
+	`CREATE TABLE IF NOT EXISTS users (
+		id            BIGSERIAL   PRIMARY KEY,
+		email         TEXT        NOT NULL UNIQUE,
+		name          TEXT        NOT NULL DEFAULT '',
+		password_hash TEXT        NOT NULL DEFAULT '',
+		system_role   TEXT        NOT NULL DEFAULT 'user',
+		token_gen     BIGINT      NOT NULL DEFAULT 0,
+		created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`,
+
 	// Immutable tier: one row per (protocol, name, version).
 	// size is recorded at write time so CacheSizeByProtocol is an O(1) SUM,
 	// never an FS walk (architecture §10 / G7).

@@ -47,6 +47,18 @@ type UserStore interface {
 	// new value. All previously issued JWTs become invalid because the embedded
 	// gen snapshot no longer matches.
 	BumpTokenGen(ctx context.Context, id int64) (int64, error)
+
+	// ---- admin management surface (used by internal/admin) --------------------
+
+	// ListUsers returns a page of users ordered by ID ascending (limit/offset)
+	// together with the total user count for pagination. A limit <= 0 returns
+	// all rows. Password hashes are populated but callers must never expose them.
+	ListUsers(ctx context.Context, limit, offset int) ([]User, int64, error)
+	// UpdateUserRole sets the user's system_role ("admin" | "user"). Returns
+	// ErrUserNotFound when no row matches id.
+	UpdateUserRole(ctx context.Context, id int64, role string) error
+	// DeleteUser removes the user row. Returns ErrUserNotFound when absent.
+	DeleteUser(ctx context.Context, id int64) error
 }
 
 // ---- Service ------------------------------------------------------------------

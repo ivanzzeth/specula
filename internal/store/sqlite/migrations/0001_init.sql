@@ -4,6 +4,7 @@
 CREATE TABLE IF NOT EXISTS users (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     email         TEXT    NOT NULL UNIQUE,
+    name          TEXT    NOT NULL DEFAULT '',
     password_hash TEXT    NOT NULL DEFAULT '',
     system_role   TEXT    NOT NULL DEFAULT 'user',
     token_gen     INTEGER NOT NULL DEFAULT 0,

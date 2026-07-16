@@ -10,6 +10,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,7 +24,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/ivanzzeth/specula/internal/admin"
 	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/handler/oci"
@@ -35,6 +39,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/store/sqlite"
 	"github.com/ivanzzeth/specula/internal/upstream"
 	"github.com/ivanzzeth/specula/internal/verify"
+	webui "github.com/ivanzzeth/specula/web"
 )
 
 const banner = `
@@ -95,9 +100,11 @@ func run() error {
 	// ── Cache manager: two-tier CAS + verify-on-write quarantine ─────────────
 	cm := cache.New(blobs, metaStore, chain)
 
-	// ── Stats collector (metadata-backed, powers /metrics) ───────────────────
+	// ── Stats collector (metadata-backed, powers /metrics + Admin API) ───────
 	collector := stats.NewCollectorWithStore(metaStore)
-	_ = collector // exported via Prometheus default registry; refreshed by handlers/GC
+	// Background refresh loop: periodically re-aggregates per-protocol usage into
+	// Prometheus gauges. Stops when ctx is cancelled (SIGINT/SIGTERM).
+	go collector.Run(ctx)
 
 	// ── Data plane: OCI handler + protocol stubs ─────────────────────────────
 	dataMux := http.NewServeMux()
@@ -106,12 +113,43 @@ func run() error {
 	// Liveness on the data plane too, so a bare data-plane LB can probe it.
 	dataMux.HandleFunc("/healthz", healthz)
 
-	// ── Control plane: health + readiness + metrics ──────────────────────────
+	// ── Control plane: health + readiness + metrics + Admin API ──────────────
 	ctrlMux := http.NewServeMux()
 	ctrlMux.HandleFunc("/healthz", healthz)
 	ctrlMux.HandleFunc("/readyz", readyz(ctx, blobs, metaStore))
 	ctrlMux.Handle("/metrics", promhttp.Handler())
-	// TODO(control-plane): mount embedded WebUI + Admin API + auth (ARCHITECTURE §11).
+
+	// Admin API (ARCHITECTURE §11): the concrete metadata store also implements
+	// the control-plane UserStore (shared users table), so a single value backs
+	// both the cache metadata and account management.
+	userStore, ok := metaStore.(auth.UserStore)
+	if !ok {
+		return fmt.Errorf("meta store %T does not implement auth.UserStore", metaStore)
+	}
+	tokens := auth.NewHS256Verifier(resolveJWTSecret(cfg, log))
+	authSvc := auth.NewService(userStore, auth.NewBcryptHasher(), tokens, cfg.Auth.CookieSecure)
+	adminSrv := admin.New(admin.Deps{
+		Stats:  collector,
+		Meta:   metaStore,
+		Users:  userStore,
+		Auth:   authSvc,
+		Tokens: tokens,
+		Config: cfg,
+		Blobs:  blobs,
+		Secure: cfg.Auth.CookieSecure,
+		Logger: log.With("component", "admin"),
+	})
+	adminSrv.RegisterRoutes(ctrlMux)
+	log.Info("specula: mounted Admin API", "base", "/api/v1")
+
+	// Embedded WebUI SPA (ARCHITECTURE §11): the "/" catch-all serves the Vite
+	// build output; hashed assets get an immutable long cache, index.html is
+	// no-cache for SPA route fallback. devMode surfaces dev-only UI when
+	// APP_ENV==dev. Registered last so the more-specific /api, /healthz, /readyz,
+	// /metrics patterns win under ServeMux longest-prefix matching.
+	devMode := os.Getenv("APP_ENV") == "dev"
+	ctrlMux.Handle("/", webui.Handler(devMode))
+	log.Info("specula: mounted embedded WebUI", "path", "/", "dev_mode", devMode)
 
 	dataSrv := &http.Server{Addr: cfg.Server.DataPlaneAddr, Handler: dataMux, ReadHeaderTimeout: 15 * time.Second}
 	ctrlSrv := &http.Server{Addr: cfg.Server.ControlPlaneAddr, Handler: ctrlMux, ReadHeaderTimeout: 15 * time.Second}
@@ -137,10 +175,14 @@ func buildBlobStore(ctx context.Context, cfg *config.Config) (blobstore.BlobStor
 		return local.NewLocalDiskDriver(cfg.Storage.Blob.Local.Root), nil
 	case "s3":
 		sc := cfg.Storage.Blob.S3
-		// NOTE: only bucket wiring is supported by the current S3Driver
-		// constructor; endpoint/region/static-credentials wiring is a TODO
-		// that needs a richer constructor in internal/store/s3.
-		return s3.NewS3Driver(ctx, sc.Bucket)
+		return s3.NewS3Driver(ctx, s3.S3Config{
+			Bucket:          sc.Bucket,
+			Endpoint:        sc.Endpoint,
+			Region:          sc.Region,
+			AccessKeyID:     sc.AccessKeyID,
+			SecretAccessKey: sc.SecretAccessKey,
+			UsePathStyle:    sc.UsePathStyle,
+		})
 	default:
 		return nil, fmt.Errorf("unknown blob driver %q (want \"local\" or \"s3\")", cfg.Storage.Blob.Driver)
 	}
@@ -227,6 +269,27 @@ func mutableTTL(pc config.ProtocolConfig, cfg *config.Config) int64 {
 		return pc.MutableTTLSeconds
 	}
 	return cfg.Cache.DefaultMutableTTLSeconds
+}
+
+// resolveJWTSecret returns the configured HS256 session-signing secret. When
+// auth.jwt_secret is empty it generates a random 32-byte ephemeral secret and
+// warns loudly: sessions will not survive a restart and cannot be shared across
+// HA replicas until a stable secret is configured (ARCHITECTURE §11 ensureSecret).
+func resolveJWTSecret(cfg *config.Config, log *slog.Logger) []byte {
+	if cfg.Auth.JWTSecret != "" {
+		return []byte(cfg.Auth.JWTSecret)
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand failure is fatal-adjacent; fall back to a fixed marker so
+		// the process still starts but every session is clearly non-persistent.
+		log.Error("specula: crypto/rand failed generating JWT secret", "err", err)
+		return []byte("specula-insecure-ephemeral-fallback-secret")
+	}
+	log.Warn("specula: auth.jwt_secret is empty — generated an EPHEMERAL secret; " +
+		"sessions will be invalidated on restart and are not valid across replicas. " +
+		"Set auth.jwt_secret (or SPECULA_AUTH__JWT_SECRET) for production.")
+	return []byte(hex.EncodeToString(buf))
 }
 
 // healthz is a liveness probe: the process is up and serving.

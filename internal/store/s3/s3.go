@@ -73,17 +73,77 @@ type S3Driver struct {
 // Compile-time assertion that S3Driver satisfies blob.BlobStore.
 var _ blob.BlobStore = (*S3Driver)(nil)
 
-// NewS3Driver builds an S3Driver from the ambient AWS configuration (env vars,
-// shared config file, IRSA/EC2 metadata, etc.) targeting bucket.
-func NewS3Driver(ctx context.Context, bucket string) (*S3Driver, error) {
-	cfg, err := awsconfig.LoadDefaultConfig(ctx)
+// S3Config holds all configuration needed to construct an S3Driver.
+// The field names and types mirror internal/config.S3BlobConfig so callers
+// can translate directly without adapter code.
+type S3Config struct {
+	// Bucket is the S3 bucket name (required).
+	Bucket string
+
+	// Endpoint overrides the default AWS endpoint.  Empty means standard AWS.
+	// Set for MinIO ("http://localhost:9000"), Cloudflare R2, or Ceph RGW.
+	Endpoint string
+
+	// Region is the AWS/compatible region (e.g. "us-east-1", "auto").
+	// Empty lets the SDK infer from environment or shared config files.
+	Region string
+
+	// AccessKeyID and SecretAccessKey provide static credentials.
+	// Both must be non-empty to activate static auth; if either is empty the
+	// SDK credential chain (env vars, shared config, EC2/IRSA metadata) is used.
+	AccessKeyID     string
+	SecretAccessKey string
+
+	// UsePathStyle forces path-style S3 addressing (http://host/bucket/key)
+	// instead of virtual-hosted style (http://bucket.host/key).
+	// Required for MinIO, many S3-compatible gateways, and some OSS setups.
+	UsePathStyle bool
+}
+
+// buildLoadOptions converts an S3Config into aws-sdk-go-v2 LoadOptions functions
+// that are passed to awsconfig.LoadDefaultConfig.  Region and static credentials
+// are applied when non-empty; everything else is left to SDK defaults.
+func buildLoadOptions(cfg S3Config) []func(*awsconfig.LoadOptions) error {
+	var opts []func(*awsconfig.LoadOptions) error
+	if cfg.Region != "" {
+		opts = append(opts, awsconfig.WithRegion(cfg.Region))
+	}
+	if cfg.AccessKeyID != "" && cfg.SecretAccessKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+		))
+	}
+	return opts
+}
+
+// applyS3Options transfers S3Config settings into an s3.Options value.
+// It sets BaseEndpoint when a custom endpoint is provided and always
+// propagates the UsePathStyle flag.
+func applyS3Options(cfg S3Config, o *s3.Options) {
+	if cfg.Endpoint != "" {
+		o.BaseEndpoint = aws.String(cfg.Endpoint)
+	}
+	o.UsePathStyle = cfg.UsePathStyle
+}
+
+// NewS3Driver builds an S3Driver from the provided S3Config.
+//
+// Endpoint handling: empty Endpoint uses standard AWS service endpoints;
+// a non-empty value (e.g. "http://localhost:9000") is used as-is, which
+// enables MinIO, Cloudflare R2, Ceph RGW, and similar S3-compatible services.
+//
+// Credential handling: when both AccessKeyID and SecretAccessKey are non-empty,
+// static credentials are used; otherwise the SDK credential chain is consulted
+// (env vars, shared config, EC2 instance metadata, IRSA, etc.).
+func NewS3Driver(ctx context.Context, cfg S3Config) (*S3Driver, error) {
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, buildLoadOptions(cfg)...)
 	if err != nil {
 		return nil, fmt.Errorf("s3: load aws config: %w", err)
 	}
-	c := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.UsePathStyle = true
+	c := s3.NewFromConfig(awsCfg, func(o *s3.Options) {
+		applyS3Options(cfg, o)
 	})
-	return &S3Driver{client: c, bucket: bucket}, nil
+	return &S3Driver{client: c, bucket: cfg.Bucket}, nil
 }
 
 // newWithClient constructs an S3Driver backed by the given client.

@@ -3,6 +3,17 @@
 -- cache_entries: immutable CAS metadata (one row per protocol/name/version).
 -- mutable_entries: short-TTL mutable tier (tag→digest, index pages, packuments).
 
+-- users: control-plane authentication (first registered user becomes admin).
+CREATE TABLE IF NOT EXISTS users (
+    id            BIGSERIAL   PRIMARY KEY,
+    email         TEXT        NOT NULL UNIQUE,
+    name          TEXT        NOT NULL DEFAULT '',
+    password_hash TEXT        NOT NULL DEFAULT '',
+    system_role   TEXT        NOT NULL DEFAULT 'user',
+    token_gen     BIGINT      NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS cache_entries (
     protocol    TEXT        NOT NULL,
     name        TEXT        NOT NULL,
@@ -40,3 +51,4 @@ DROP TABLE IF EXISTS mutable_entries;
 DROP INDEX IF EXISTS idx_cache_entries_digest;
 DROP INDEX IF EXISTS idx_cache_entries_protocol;
 DROP TABLE IF EXISTS cache_entries;
+DROP TABLE IF EXISTS users;

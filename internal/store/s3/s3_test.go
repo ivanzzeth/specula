@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/stretchr/testify/assert"
@@ -438,6 +439,151 @@ func TestIsNotFound(t *testing.T) {
 		assert.Equal(t, tc.want, got, tc.name)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Option-wiring tests — no live network required.
+// ---------------------------------------------------------------------------
+
+// TestApplyS3Options_Endpoint verifies that a non-empty Endpoint is written to
+// s3.Options.BaseEndpoint, enabling MinIO/R2/OSS custom service URLs.
+func TestApplyS3Options_Endpoint(t *testing.T) {
+	cfg := S3Config{Endpoint: "http://localhost:9000", UsePathStyle: true}
+	var o s3.Options
+	applyS3Options(cfg, &o)
+	require.NotNil(t, o.BaseEndpoint, "BaseEndpoint must be set for custom endpoint")
+	assert.Equal(t, "http://localhost:9000", *o.BaseEndpoint)
+	assert.True(t, o.UsePathStyle)
+}
+
+// TestApplyS3Options_AWSDefault verifies that an empty Endpoint leaves
+// BaseEndpoint nil so the SDK uses standard AWS service endpoints.
+func TestApplyS3Options_AWSDefault(t *testing.T) {
+	cfg := S3Config{} // empty = AWS defaults
+	var o s3.Options
+	applyS3Options(cfg, &o)
+	assert.Nil(t, o.BaseEndpoint, "BaseEndpoint must remain nil for AWS default")
+	assert.False(t, o.UsePathStyle)
+}
+
+// TestApplyS3Options_PathStyleOnly verifies UsePathStyle is honoured even when
+// no custom endpoint is supplied (rare but valid for some VPC endpoints).
+func TestApplyS3Options_PathStyleOnly(t *testing.T) {
+	cfg := S3Config{UsePathStyle: true}
+	var o s3.Options
+	applyS3Options(cfg, &o)
+	assert.Nil(t, o.BaseEndpoint)
+	assert.True(t, o.UsePathStyle)
+}
+
+// TestBuildLoadOptions_Region verifies that a non-empty Region is forwarded to
+// the AWS config load options.
+func TestBuildLoadOptions_Region(t *testing.T) {
+	cfg := S3Config{Region: "eu-west-1"}
+	opts := buildLoadOptions(cfg)
+	require.Len(t, opts, 1, "expect exactly one option (region)")
+
+	var lo awsconfig.LoadOptions
+	require.NoError(t, opts[0](&lo))
+	assert.Equal(t, "eu-west-1", lo.Region)
+}
+
+// TestBuildLoadOptions_StaticCreds verifies that both keys present causes a
+// static credentials provider to be injected into the load options.
+func TestBuildLoadOptions_StaticCreds(t *testing.T) {
+	cfg := S3Config{
+		Region:          "us-east-1",
+		AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
+		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+	}
+	opts := buildLoadOptions(cfg)
+	require.Len(t, opts, 2, "expect region option + credentials option")
+
+	var lo awsconfig.LoadOptions
+	for _, o := range opts {
+		require.NoError(t, o(&lo))
+	}
+	assert.Equal(t, "us-east-1", lo.Region)
+	assert.NotNil(t, lo.Credentials, "static credentials provider must be set")
+}
+
+// TestBuildLoadOptions_NoCredsWhenEmpty verifies that empty keys do NOT inject
+// a credentials provider, leaving the SDK to use its default chain.
+func TestBuildLoadOptions_NoCredsWhenEmpty(t *testing.T) {
+	cfg := S3Config{Region: "ap-northeast-1"} // keys intentionally empty
+	opts := buildLoadOptions(cfg)
+	require.Len(t, opts, 1, "expect only region option; no credential option")
+
+	var lo awsconfig.LoadOptions
+	require.NoError(t, opts[0](&lo))
+	assert.Nil(t, lo.Credentials, "credentials provider must not be set when keys are empty")
+}
+
+// TestBuildLoadOptions_PartialCredsIgnored verifies that supplying only the
+// access key ID (without the secret) does not activate static credentials.
+func TestBuildLoadOptions_PartialCredsIgnored(t *testing.T) {
+	cfg := S3Config{AccessKeyID: "only-key-no-secret"}
+	opts := buildLoadOptions(cfg)
+	assert.Empty(t, opts, "partial credentials must be ignored")
+}
+
+// TestBuildLoadOptions_EmptyRegionOmitted verifies that an empty Region does
+// not produce a spurious option entry.
+func TestBuildLoadOptions_EmptyRegionOmitted(t *testing.T) {
+	cfg := S3Config{
+		AccessKeyID:     "key",
+		SecretAccessKey: "secret",
+	}
+	opts := buildLoadOptions(cfg)
+	require.Len(t, opts, 1, "expect only credentials option; no region option")
+}
+
+// TestNewS3Driver_MinimalConfig verifies that NewS3Driver succeeds with only a
+// bucket name (all other fields use SDK defaults — no network call is made).
+func TestNewS3Driver_MinimalConfig(t *testing.T) {
+	drv, err := NewS3Driver(context.Background(), S3Config{Bucket: "my-bucket"})
+	require.NoError(t, err)
+	require.NotNil(t, drv)
+	assert.Equal(t, "my-bucket", drv.bucket)
+}
+
+// TestNewS3Driver_MinIOConfig verifies that NewS3Driver succeeds when provided
+// a full MinIO-style configuration (custom endpoint, static creds, path-style).
+// No network call is made during construction.
+func TestNewS3Driver_MinIOConfig(t *testing.T) {
+	cfg := S3Config{
+		Bucket:          "specula",
+		Endpoint:        "http://localhost:9000",
+		Region:          "us-east-1",
+		AccessKeyID:     "minioadmin",
+		SecretAccessKey: "minioadmin",
+		UsePathStyle:    true,
+	}
+	drv, err := NewS3Driver(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, drv)
+	assert.Equal(t, "specula", drv.bucket)
+}
+
+// TestNewS3Driver_R2Config verifies construction with a Cloudflare R2 endpoint
+// (no path-style required, but custom endpoint and static creds are used).
+func TestNewS3Driver_R2Config(t *testing.T) {
+	cfg := S3Config{
+		Bucket:          "r2-bucket",
+		Endpoint:        "https://account.r2.cloudflarestorage.com",
+		Region:          "auto",
+		AccessKeyID:     "r2accesskey",
+		SecretAccessKey: "r2secretkey",
+		UsePathStyle:    false,
+	}
+	drv, err := NewS3Driver(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, drv)
+	assert.Equal(t, "r2-bucket", drv.bucket)
+}
+
+// ---------------------------------------------------------------------------
+// Existing round-trip tests continue below (use fake client, no network).
+// ---------------------------------------------------------------------------
 
 func TestRoundTripMultipleBlobs(t *testing.T) {
 	drv, _ := newTestDriver(t)
