@@ -1,6 +1,7 @@
 package helm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
@@ -45,9 +48,19 @@ func contentTypeForFile(file string) string {
 // --------------------------------------------------------------------------
 
 // serveIndex handles GET/HEAD /<repo>/index.yaml (mutable, short TTL).
+//
+// The fetched index.yaml is transparently rewritten so that any absolute chart
+// download URLs point to just the chart filename (a relative URL). This ensures
+// that when helm resolves chart download URLs it uses the Specula proxy URL as
+// the base and all chart fetches flow through the cache.
+//
+// Helm Chart Repository Spec (https://helm.sh/docs/topics/chart_repository/):
+//
+//	"urls: A list of URLs for each version of the chart. Relative URLs are
+//	 resolved against the repository URL."
 func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, repo string) {
 	ref := indexRef(repo)
-	h.serveMutable(w, r, ref, contentTypeForFile(indexFile))
+	h.serveMutable(w, r, ref, contentTypeForFile(indexFile), rewriteIndexURLs)
 }
 
 // serveMutable is the shared pipeline for the mutable index endpoint:
@@ -57,7 +70,10 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, repo string
 //     304 → extend TTL, serve stale.  200 → store new content.
 //  3. On complete cache miss: fresh fetch → quarantine → store → serve.
 //  4. If the upstream is unreachable and stale content exists, serve stale.
-func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ct string) {
+//
+// transform, when non-nil, is applied to the upstream body bytes before they
+// are quarantined and stored. Used by serveIndex to rewrite chart URLs.
+func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ct string, transform func([]byte) ([]byte, error)) {
 	ctx := r.Context()
 
 	// 1. Check the mutable cache (fresh entries only; TTL enforced by Lookup).
@@ -101,7 +117,7 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 			}
 			// 200: new body — store and serve.
 			defer body.Close()
-			if newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta); storeErr == nil && newEntry != nil {
+			if newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta, transform); storeErr == nil && newEntry != nil {
 				h.serveFromCache(w, r, ref, newEntry, ct)
 				return
 			}
@@ -123,7 +139,7 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	}
 	defer body.Close()
 
-	newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta)
+	newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta, transform)
 	if storeErr != nil {
 		h.log.Error("helm: store mutable", "ref", ref, "err", storeErr)
 		writeError(w, http.StatusBadGateway, "failed to cache upstream response")
@@ -249,8 +265,29 @@ func (h *Handler) fetchProvBytes(ctx context.Context, provRef artifact.ArtifactR
 // (index.yaml) into the CAS and writes a TTL-bearing MutableEntry via h.meta
 // (when set). The caller is responsible for closing the reader after this
 // function returns.
-func (h *Handler) fetchBodyAndStore(ctx context.Context, ref artifact.ArtifactRef, rc io.Reader, umeta artifact.UpstreamMeta) (*artifact.CacheEntry, error) {
-	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
+//
+// transform, when non-nil, is applied to the buffered body bytes before
+// quarantine. This allows content to be rewritten (e.g., URL rewriting in
+// index.yaml) before it enters the CAS. index.yaml files are small enough
+// that buffering in memory is safe.
+func (h *Handler) fetchBodyAndStore(ctx context.Context, ref artifact.ArtifactRef, rc io.Reader, umeta artifact.UpstreamMeta, transform func([]byte) ([]byte, error)) (*artifact.CacheEntry, error) {
+	var reader io.Reader = rc
+	if transform != nil {
+		data, err := io.ReadAll(rc)
+		if err != nil {
+			return nil, fmt.Errorf("read body for transform: %w", err)
+		}
+		transformed, tErr := transform(data)
+		if tErr != nil {
+			// Log and fall back to the original — degrade gracefully rather
+			// than blocking chart discovery on a transform error.
+			h.log.Warn("helm: index URL rewrite failed; storing original", "ref", ref, "err", tErr)
+			reader = bytes.NewReader(data)
+		} else {
+			reader = bytes.NewReader(transformed)
+		}
+	}
+	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, reader, umeta)
 	if err != nil {
 		return nil, fmt.Errorf("quarantine: %w", err)
 	}
@@ -368,5 +405,78 @@ func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef
 	}
 	if putErr := h.meta.PutMutable(ctx, *me); putErr != nil {
 		h.log.Warn("helm: extend mutable TTL", "ref", ref, "err", putErr)
+	}
+}
+
+// --------------------------------------------------------------------------
+// index.yaml URL rewriting
+// --------------------------------------------------------------------------
+
+// rewriteIndexURLs rewrites absolute http/https chart download URLs in a Helm
+// index.yaml to relative filenames (the last URL path segment). This ensures
+// that when helm resolves a chart URL it uses the Specula proxy URL as the
+// base, so all chart downloads flow through the proxy's cache.
+//
+// Helm Chart Repository Spec (https://helm.sh/docs/topics/chart_repository/):
+//
+//	"urls: A list of URLs for each version of the chart. Relative URLs are
+//	 resolved against the repository URL."
+//
+// An absolute URL like https://upstream/charts/mysql-1.6.9.tgz becomes the
+// relative filename mysql-1.6.9.tgz. helm then resolves that against the repo
+// URL (e.g. http://specula:5104/helm/charts) to get the final download URL
+// http://specula:5104/helm/charts/mysql-1.6.9.tgz.
+//
+// If the YAML cannot be parsed the original bytes are returned unchanged so
+// Specula degrades gracefully rather than blocking chart discovery.
+func rewriteIndexURLs(data []byte) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return data, nil // degrade gracefully
+	}
+	rewriteYAMLURLs(doc.Content[0])
+	out, err := yaml.Marshal(doc.Content[0])
+	if err != nil {
+		return data, nil // degrade gracefully
+	}
+	return out, nil
+}
+
+// rewriteYAMLURLs recursively walks a parsed yaml.Node tree and replaces
+// every absolute http/https URL found inside "urls" sequence nodes with just
+// the filename (the last slash-delimited segment of the URL path). Non-http/s
+// values and relative URLs are left unchanged.
+func rewriteYAMLURLs(n *yaml.Node) {
+	if n == nil {
+		return
+	}
+	switch n.Kind {
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			keyNode := n.Content[i]
+			valNode := n.Content[i+1]
+			if keyNode.Value == "urls" && valNode.Kind == yaml.SequenceNode {
+				// Rewrite each URL entry in this sequence.
+				for _, item := range valNode.Content {
+					if item.Kind != yaml.ScalarNode {
+						continue
+					}
+					u := item.Value
+					if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+						continue // already relative or non-http — leave as-is
+					}
+					if idx := strings.LastIndexByte(u, '/'); idx >= 0 && idx < len(u)-1 {
+						item.Value = u[idx+1:]
+					}
+				}
+			} else {
+				// Recurse into mapping values (not into "urls" key nodes).
+				rewriteYAMLURLs(valNode)
+			}
+		}
+	case yaml.SequenceNode:
+		for _, child := range n.Content {
+			rewriteYAMLURLs(child)
+		}
 	}
 }
