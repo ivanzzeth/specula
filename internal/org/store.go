@@ -38,6 +38,10 @@ type Store interface {
 	// CountOrgs returns the total number of org rows; used by the bootstrap to
 	// decide whether the default org needs to be seeded.
 	CountOrgs(ctx context.Context) (int, error)
+	// CountOrgsByCreator returns how many orgs the given user self-created
+	// (matched on created_by). It backs the settings.KeyOrgMaxPerUser quota on
+	// the self-service create-org path.
+	CountOrgsByCreator(ctx context.Context, userID string) (int, error)
 
 	// ── members ───────────────────────────────────────────────────────────
 	// AddOrgMember upserts a (org_id, email) membership (idempotent; updates

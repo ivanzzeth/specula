@@ -963,6 +963,26 @@ func (s *Server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 	}
 
 	subj, _ := auth.SubjectFromContext(r.Context())
+
+	// Self-service org quota (settings.KeyOrgMaxPerUser; default 1, 0 =
+	// unlimited). Hot-reloadable: the effective value is read per request, so an
+	// admin raising the limit takes effect on the very next create with no
+	// restart. System admins are exempt — they are the ones who set the limit,
+	// and locking an operator out of creating an org is the failure mode this
+	// endpoint exists to prevent.
+	//
+	// Counted on created_by, not membership: being invited into other people's
+	// orgs must never consume your own allowance.
+	if err := s.checkOrgQuota(r.Context(), subj.UserID, u.SystemRole); err != nil {
+		if errors.Is(err, errOrgQuotaExceeded) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		s.log.Error("admin: org quota check", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to check org quota")
+		return
+	}
+
 	now := time.Now().UTC()
 	newOrg := &org.Org{
 		Name:      name,

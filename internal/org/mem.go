@@ -196,6 +196,20 @@ func (s *MemStore) CountOrgs(ctx context.Context) (int, error) {
 	return len(s.orgs), nil
 }
 
+// CountOrgsByCreator returns how many orgs the given user self-created (by
+// CreatedBy), matching SQLStore.CountOrgsByCreator.
+func (s *MemStore) CountOrgsByCreator(ctx context.Context, userID string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, o := range s.orgs {
+		if o.CreatedBy == userID {
+			n++
+		}
+	}
+	return n, nil
+}
+
 // ── org_members ───────────────────────────────────────────────────────────
 
 // AddOrgMember upserts a (org_id, email) membership. Email is normalised;

@@ -185,6 +185,70 @@ export interface ConfigResponse {
   protocols: ProtocolConfig[];
 }
 
+// ---- Admin: runtime settings ------------------------------------------------
+
+/** A setting's value type; drives the editor control and server-side validation. */
+export type SettingKind =
+  | 'string'
+  | 'secret'
+  | 'list'
+  | 'duration'
+  | 'bool'
+  | 'enum'
+  | 'int'
+  | 'float';
+
+/**
+ * Where a setting's currently effective value comes from.
+ *
+ *  runtime — an operator's override, held encrypted in the settings store
+ *  env     — the bootstrap default (specula.yaml or a SPECULA_* env var)
+ *  unset   — neither; the built-in default applies
+ */
+export type SettingSource = 'runtime' | 'env' | 'unset';
+
+/**
+ * One runtime setting as the server projects it.
+ *
+ * A secret's plaintext is NEVER present: the server sends `set` + a masked
+ * `display` (length and last 4) and leaves `value` empty. The UI must never
+ * try to render a secret's current value, because it does not have one.
+ */
+export interface SettingView {
+  key: string;
+  kind: SettingKind;
+  source: SettingSource;
+  /** Effective value — non-secret settings only. */
+  value?: string;
+  /** True when this setting is redacted (kind==='secret'). */
+  secret: boolean;
+  /** True when a non-empty value is in effect. */
+  set: boolean;
+  /** A secret's masked display, e.g. "set (len=64, …ab12)". */
+  display?: string;
+  /** True when a change takes effect immediately. */
+  hot_reload: boolean;
+  /** True when the setting has been changed but needs a restart to apply. */
+  restart_required: boolean;
+  /** High-risk: the UI must require an explicit confirmation before writing. */
+  dangerous?: boolean;
+  desc?: string;
+}
+
+export interface SettingsResponse {
+  settings: SettingView[];
+  /**
+   * False when no master key (auth.config_secret) is configured: the settings
+   * are read-only and every write answers 503. The UI explains this rather than
+   * letting the user discover it by failing to save.
+   */
+  config_enabled: boolean;
+}
+
+export interface PutSettingRequest {
+  value: string;
+}
+
 export interface CreateUserRequest {
   email: string;
   name: string;

@@ -487,6 +487,18 @@ func (f *fakeOrgStore) CountOrgs(_ context.Context) (int, error) {
 	return len(f.orgs), nil
 }
 
+func (f *fakeOrgStore) CountOrgsByCreator(_ context.Context, userID string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, o := range f.orgs {
+		if o.CreatedBy == userID {
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (f *fakeOrgStore) AddOrgMember(_ context.Context, m *org.Member) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

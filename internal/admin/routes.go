@@ -58,6 +58,15 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/admin/config", adminOnly(s.handleConfig))
 	mux.Handle("GET /api/v1/admin/events", adminOnly(s.handleEvents))
 
+	// Runtime settings (ported settings layer): the writable counterpart to the
+	// read-only /admin/config echo above. GET lists every known setting with its
+	// effective source (secrets redacted); PUT/DELETE write/clear the encrypted
+	// runtime override and fire that key's reload hook. Admin-only: these knobs
+	// include the session signing secret and the registry token key.
+	mux.Handle("GET /api/v1/admin/settings", adminOnly(s.handleListSettings))
+	mux.Handle("PUT /api/v1/admin/settings/{key}", adminOnly(s.handlePutSetting))
+	mux.Handle("DELETE /api/v1/admin/settings/{key}", adminOnly(s.handleDeleteSetting))
+
 	// ── multi-tenant: PrincipalMiddleware (JWT or API key) ───────────────────
 	// principalMW resolves acl.Subject + active org and injects both into ctx.
 	principalMW := auth.PrincipalMiddleware(s.keys, s.orgs, s.tokens, s.users)

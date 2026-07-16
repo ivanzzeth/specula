@@ -563,6 +563,23 @@ type TagsResponse struct {
 	Tags []TagDTO `json:"tags"`
 }
 
+// ---- runtime settings --------------------------------------------------------
+
+// SettingsResponse is GET /api/v1/admin/settings — every known runtime setting
+// with its effective source, secrets redacted.
+//
+// Note this envelopes the list rather than returning a bare JSON array (which is
+// what the ai-sandbox original did): it matches the house convention used by
+// ConfigResponse/EventsResponse, and it carries ConfigEnabled, which the UI needs
+// in order to explain WHY every field is read-only when no master key is set —
+// otherwise the page just silently 503s on save.
+type SettingsResponse struct {
+	Settings []SettingView `json:"settings"`
+	// ConfigEnabled reports whether the encrypted store holds a valid master
+	// key. False → the settings are read-only and PUT/DELETE answer 503.
+	ConfigEnabled bool `json:"config_enabled"`
+}
+
 // ---- error envelope ----------------------------------------------------------
 
 // ErrorResponse is the uniform error envelope for every non-2xx JSON response.

@@ -4,6 +4,7 @@ import { getConfig } from '@/api/client';
 import type { ConfigResponse } from '@/api/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { SkeletonRows } from '@/components/ui/skeleton';
+import { SettingsPanel } from '@/pages/settings/SettingsPanel';
 import {
   Table,
   TableBody,
@@ -26,8 +27,22 @@ import {
  * Dashboard, and this page answers only "how is this server configured?".
  * With one tab left, the Tabs shell went too — a single tab is just a heading.
  *
+ * ── SETTINGS vs CONFIG (settings-layer port) ─────────────────────────────────
+ * The page now leads with SettingsPanel — the runtime settings an operator can
+ * actually CHANGE (persisted encrypted, shared by every replica) — and keeps the
+ * read-only config echo beneath it. They answer two different questions and the
+ * order reflects which one an operator arrives here to ask:
+ *
+ *   Settings — "what is in effect, and what can I change right now?"  (writable)
+ *   Config   — "how was this server started?"                        (read-only)
+ *
+ * Crucially, a setting's SOURCE is shown: a runtime override beats the config
+ * file, so without it an operator can edit specula.yaml, restart, see nothing
+ * change, and have no way to find out why.
+ *
  * HONESTY CONTRACT (REGISTRY-DESIGN §5.0):
  *   · Values are the server's live, redacted view — not the YAML on disk.
+ *   · A secret's plaintext is never sent to the browser, so it is never shown.
  *
  * Owned by: the Ops UI agent.
  */
@@ -46,35 +61,31 @@ export function Config() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) {
-    return (
-      <div className="space-y-3">
-        <PageHeading />
+  // The two panels load independently: a failure to read the startup config
+  // echo must not hide the settings an operator came here to change.
+  return (
+    <div className="space-y-3">
+      <PageHeading />
+
+      <SettingsPanel />
+
+      <div className="pt-1">
+        <p className="section-label">Startup configuration (read-only)</p>
+      </div>
+
+      {loading ? (
         <Card>
           <CardContent>
             <SkeletonRows rows={8} />
           </CardContent>
         </Card>
-      </div>
-    );
-  }
-
-  if (err) {
-    return (
-      <div className="space-y-3">
-        <PageHeading />
+      ) : err ? (
         <Card>
           <CardContent className="text-data text-destructive">{err}</CardContent>
         </Card>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      <PageHeading />
-
-      <ConfigTab config={config} />
+      ) : (
+        <ConfigTab config={config} />
+      )}
     </div>
   );
 }
@@ -84,7 +95,8 @@ function PageHeading() {
     <div>
       <h1 className="text-display font-semibold text-slate-100">Config</h1>
       <p className="mt-0.5 text-data text-slate-400">
-        The server's live configuration. Read-only — secrets are redacted by the server.
+        What this server is running. Settings are changeable at runtime; the startup
+        configuration below is read-only. Secrets are redacted by the server.
       </p>
     </div>
   );

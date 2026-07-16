@@ -216,6 +216,19 @@ func (s *SQLStore) CountOrgs(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// CountOrgsByCreator returns how many orgs the given user self-created (by
+// created_by). This is the query behind the org.max_per_user quota.
+//
+// Counting created_by rather than membership is deliberate: the limit is on
+// how many orgs you may CREATE, not how many you may belong to. Being invited
+// into ten orgs must never exhaust your own allowance.
+func (s *SQLStore) CountOrgsByCreator(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		s.rb(`SELECT COUNT(1) FROM orgs WHERE created_by = ?`), userID).Scan(&n)
+	return n, err
+}
+
 func scanOrg(row scanner) (*Org, error) {
 	var o Org
 	var created sql.NullString

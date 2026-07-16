@@ -11,8 +11,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -50,6 +49,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/registryauthz"
 	"github.com/ivanzzeth/specula/internal/registrytoken"
 	"github.com/ivanzzeth/specula/internal/repo"
+	"github.com/ivanzzeth/specula/internal/settings"
 	"github.com/ivanzzeth/specula/internal/stats"
 	blobstore "github.com/ivanzzeth/specula/internal/store/blob"
 	"github.com/ivanzzeth/specula/internal/store/local"
@@ -117,12 +117,26 @@ func run() error {
 	// the embedded migrations are applied here against a stdlib handle. The org
 	// store also drives the first-user bootstrap (default org + owner) via the
 	// auth service below.
-	orgStore, keyStore, grantStore, repoStore, closeMT, err := buildMultiTenantStores(cfg, metaStore)
+	orgStore, keyStore, grantStore, repoStore, mtDB, closeMT, err := buildMultiTenantStores(cfg, metaStore)
 	if err != nil {
 		return fmt.Errorf("build multi-tenant stores: %w", err)
 	}
 	defer closeMT()
 	log.Info("specula: multi-tenant kernel ready", "meta_driver", cfg.Storage.Meta.Driver)
+
+	// ── Runtime settings: encrypted config store + resolver ──────────────────
+	// The config file/env is the bootstrap default; the encrypted store
+	// (system_config, same database) holds runtime overrides, resolution order
+	// override>bootstrap. This is what lets an auto-generated secret survive a
+	// restart AND be shared by every HA replica, and what makes org.max_per_user
+	// changeable at runtime.
+	settings.WarnRemovedEnv(log)
+	cfgStore, err := buildConfigStore(cfg, mtDB, log)
+	if err != nil {
+		return fmt.Errorf("build encrypted settings store: %w", err)
+	}
+	regKeyPath := resolveRegistryKeyPath(cfg)
+	resolver := buildSettingsResolver(cfg, cfgStore, readRegistryKeyPEM(regKeyPath))
 
 	// ── Writable hosted registry (R2): RS256 token service + authz glue ──────
 	// The registry token service signs/verifies the Docker v2 Bearer tokens; the
@@ -130,7 +144,7 @@ func run() error {
 	// the /token, /v2/ write, and hosted-first pull seams. A key-load failure
 	// downgrades /v2/ to pull-through-only (registryEnabled=false) rather than
 	// crashing, so the cache keeps serving reads.
-	regTokenSvc, registryEnabled := buildRegistryTokenService(cfg, log)
+	regTokenSvc, registryEnabled := buildRegistryTokenService(ctx, resolver, regKeyPath, log)
 	regAuthz := registryauthz.New(orgStore, repoStore)
 
 	// ── Protocol-native signed verifiers ────────────────────────────────────
@@ -235,7 +249,11 @@ func run() error {
 	if !ok {
 		return fmt.Errorf("meta store %T does not implement auth.UserStore", metaStore)
 	}
-	tokens := auth.NewHS256Verifier(resolveJWTSecret(cfg, log))
+	jwtSecret, err := ensureJWTSecret(ctx, resolver, log)
+	if err != nil {
+		return fmt.Errorf("resolve session signing secret: %w", err)
+	}
+	tokens := auth.NewHS256Verifier(jwtSecret)
 	// Passing orgStore enables the first-user-admin bootstrap to also seed the
 	// default org and make the first user its owner (auth.Service.Register).
 	authSvc := auth.NewService(userStore, auth.NewBcryptHasher(), tokens, cfg.Auth.CookieSecure, orgStore)
@@ -255,6 +273,7 @@ func run() error {
 		RepoStore:  repoStore,
 		TagStore:   repoStore,
 		Upstreams:  upstreams,
+		Settings:   resolver,
 	})
 	adminSrv.RegisterRoutes(ctrlMux)
 	log.Info("specula: mounted Admin API", "base", "/api/v1")
@@ -377,27 +396,31 @@ func buildMetaStore(ctx context.Context, cfg *config.Config) (metastore.Metadata
 //     embedded goose migrations before constructing the stores; closeMT closes
 //     that handle. The postgres constructors (NewSQLStorePostgres) rebind the
 //     ported "?"-placeholder SQL to "$N" for the pgx stdlib driver.
-func buildMultiTenantStores(cfg *config.Config, metaStore metastore.MetadataStore) (org.Store, apikey.Store, grant.Store, *repo.SQLStore, func(), error) {
+//
+// The returned *sql.DB is the same handle the multi-tenant stores use; the
+// encrypted settings store (internal/configstore) is built on it too, so runtime
+// settings live in the same database and are therefore shared by every replica.
+func buildMultiTenantStores(cfg *config.Config, metaStore metastore.MetadataStore) (org.Store, apikey.Store, grant.Store, *repo.SQLStore, *sql.DB, func(), error) {
 	switch cfg.Storage.Meta.Driver {
 	case "sqlite":
 		st, ok := metaStore.(*sqlite.SQLiteStore)
 		if !ok {
-			return nil, nil, nil, nil, func() {}, fmt.Errorf("sqlite meta store has unexpected type %T", metaStore)
+			return nil, nil, nil, nil, nil, func() {}, fmt.Errorf("sqlite meta store has unexpected type %T", metaStore)
 		}
 		db := st.DB()
-		return org.NewSQLStore(db), apikey.NewSQLStore(db), grant.NewSQLStore(db), repo.NewSQLStore(db), func() {}, nil
+		return org.NewSQLStore(db), apikey.NewSQLStore(db), grant.NewSQLStore(db), repo.NewSQLStore(db), db, func() {}, nil
 	case "postgres":
 		db, err := postgres.OpenSQLDB(cfg.Storage.Meta.DSN)
 		if err != nil {
-			return nil, nil, nil, nil, func() {}, err
+			return nil, nil, nil, nil, nil, func() {}, err
 		}
 		if err := postgres.Migrate(db); err != nil {
 			_ = db.Close()
-			return nil, nil, nil, nil, func() {}, err
+			return nil, nil, nil, nil, nil, func() {}, err
 		}
-		return org.NewSQLStorePostgres(db), apikey.NewSQLStorePostgres(db), grant.NewSQLStorePostgres(db), repo.NewSQLStorePostgres(db), func() { _ = db.Close() }, nil
+		return org.NewSQLStorePostgres(db), apikey.NewSQLStorePostgres(db), grant.NewSQLStorePostgres(db), repo.NewSQLStorePostgres(db), db, func() { _ = db.Close() }, nil
 	default:
-		return nil, nil, nil, nil, func() {}, fmt.Errorf("unknown meta driver %q (want \"sqlite\" or \"postgres\")", cfg.Storage.Meta.Driver)
+		return nil, nil, nil, nil, nil, func() {}, fmt.Errorf("unknown meta driver %q (want \"sqlite\" or \"postgres\")", cfg.Storage.Meta.Driver)
 	}
 }
 
@@ -467,19 +490,19 @@ func registryRealm(r *http.Request) string {
 	return scheme + "://" + r.Host + "/token"
 }
 
-// buildRegistryTokenService loads (or generates) the durable RS256 registry
-// signing keypair and constructs the token Service. On any key error it warns
-// and returns enabled=false so /v2/ stays pull-through-only and the cache keeps
-// serving reads.
-func buildRegistryTokenService(cfg *config.Config, log *slog.Logger) (*registrytoken.Service, bool) {
-	keyPath := resolveRegistryKeyPath(cfg)
-	key, err := registrytoken.EnsureKeyPair(keyPath)
+// buildRegistryTokenService resolves the durable RS256 registry signing keypair
+// through the settings layer (encrypted store first, on-disk PEM migrated in,
+// otherwise freshly generated) and constructs the token Service. On any key
+// error it warns and returns enabled=false so /v2/ stays pull-through-only and
+// the cache keeps serving reads.
+func buildRegistryTokenService(ctx context.Context, resolver *settings.Resolver, keyPath string, log *slog.Logger) (*registrytoken.Service, bool) {
+	key, err := ensureRegistryKey(ctx, resolver, keyPath, log)
 	if err != nil {
 		log.Warn("specula: registry token key unavailable — /v2/ stays pull-through only (no push/private repos)",
 			"key_path", keyPath, "err", err)
 		return nil, false
 	}
-	log.Info("specula: writable registry enabled", "token_key", keyPath, "issuer", registryIssuer, "service", registryService)
+	log.Info("specula: writable registry enabled", "issuer", registryIssuer, "service", registryService)
 	return registrytoken.NewService(key, registryIssuer, registryService, 0), true
 }
 
@@ -1047,26 +1070,12 @@ func mutableTTL(pc config.ProtocolConfig, cfg *config.Config) int64 {
 	return cfg.Cache.DefaultMutableTTLSeconds
 }
 
-// resolveJWTSecret returns the configured HS256 session-signing secret. When
-// auth.jwt_secret is empty it generates a random 32-byte ephemeral secret and
-// warns loudly: sessions will not survive a restart and cannot be shared across
-// HA replicas until a stable secret is configured (ARCHITECTURE §11 ensureSecret).
-func resolveJWTSecret(cfg *config.Config, log *slog.Logger) []byte {
-	if cfg.Auth.JWTSecret != "" {
-		return []byte(cfg.Auth.JWTSecret)
-	}
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		// crypto/rand failure is fatal-adjacent; fall back to a fixed marker so
-		// the process still starts but every session is clearly non-persistent.
-		log.Error("specula: crypto/rand failed generating JWT secret", "err", err)
-		return []byte("specula-insecure-ephemeral-fallback-secret")
-	}
-	log.Warn("specula: auth.jwt_secret is empty — generated an EPHEMERAL secret; " +
-		"sessions will be invalidated on restart and are not valid across replicas. " +
-		"Set auth.jwt_secret (or SPECULA_AUTH__JWT_SECRET) for production.")
-	return []byte(hex.EncodeToString(buf))
-}
+// resolveJWTSecret is gone: see ensureJWTSecret in settings.go. It generated a
+// fresh EPHEMERAL secret on every boot when auth.jwt_secret was unset, which
+// signed every user out on restart and made sessions non-portable across HA
+// replicas. The secret is now generated once and persisted into the encrypted
+// settings store, so both problems disappear; the loud warning survives for the
+// case where no master key is configured and the old behaviour still applies.
 
 // healthz is a liveness probe: the process is up and serving.
 func healthz(w http.ResponseWriter, _ *http.Request) {

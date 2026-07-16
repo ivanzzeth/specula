@@ -16,6 +16,9 @@ import type {
   UsersResponse,
   EventsResponse,
   ConfigResponse,
+  SettingsResponse,
+  SettingView,
+  PutSettingRequest,
   CreateUserRequest,
   PatchUserRequest,
   CacheEntriesResponse,
@@ -457,6 +460,35 @@ export function deleteUser(id: number): Promise<void> {
 
 export function getConfig(): Promise<ConfigResponse> {
   return reqJSON<ConfigResponse>('/admin/config');
+}
+
+// ---- Admin: runtime settings ----
+
+/** getSettings lists every known runtime setting (secrets redacted server-side). */
+export function getSettings(): Promise<SettingsResponse> {
+  return reqJSON<SettingsResponse>('/admin/settings');
+}
+
+/**
+ * putSetting writes a runtime override and returns the setting's new view.
+ * Throws ApiError 400 on a validation failure, 503 when the encrypted store is
+ * disabled (no auth.config_secret).
+ */
+export function putSetting(key: string, body: PutSettingRequest): Promise<SettingView> {
+  return reqJSON<SettingView>(`/admin/settings/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * deleteSetting clears the runtime override, falling back to the bootstrap
+ * default, and returns the setting's new view.
+ */
+export function deleteSetting(key: string): Promise<SettingView> {
+  return reqJSON<SettingView>(`/admin/settings/${encodeURIComponent(key)}`, {
+    method: 'DELETE',
+  });
 }
 
 // ---- Admin: Events ----

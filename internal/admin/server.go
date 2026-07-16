@@ -76,6 +76,13 @@ type Deps struct {
 	// Optional: when nil, GET /admin/upstreams degrades to a config-only
 	// snapshot and the mutating upstream endpoints return 501.
 	Upstreams *upstream.Registry
+
+	// ── runtime settings ─────────────────────────────────────────────────────
+
+	// Settings resolves runtime settings over (bootstrap config/env + the
+	// encrypted configstore), backing /api/v1/admin/settings. Optional: when nil
+	// the settings endpoints return 503.
+	Settings SettingsResolver
 }
 
 // Server holds the admin API dependencies and serves the /api/v1 routes.
@@ -104,6 +111,9 @@ type Server struct {
 	repos     repo.RepoStore
 	tags      repo.TagStore
 	upstreams *upstream.Registry
+
+	// runtime settings resolver (nil → the settings endpoints answer 503)
+	settings SettingsResolver
 }
 
 // New constructs an admin Server from deps. The logger falls back to
@@ -132,6 +142,8 @@ func New(deps Deps) *Server {
 		repos:     deps.RepoStore,
 		tags:      deps.TagStore,
 		upstreams: deps.Upstreams,
+
+		settings: deps.Settings,
 	}
 }
 

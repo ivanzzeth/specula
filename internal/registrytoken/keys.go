@@ -84,6 +84,41 @@ func generateAndPersist(path string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
+// GenerateKeyPEM mints a fresh RSA signing key and returns it together with its
+// PKCS#8 PEM encoding, WITHOUT touching the filesystem.
+//
+// This is the seam that lets the key live in the encrypted settings store
+// (internal/configstore) instead of on local disk. A PEM on disk is node-local,
+// so a token minted by replica A does not verify on replica B and `docker push`
+// fails behind a load balancer; a key in the store is shared by every replica.
+// EnsureKeyPair remains for the file-backed fallback when no master key is
+// configured.
+func GenerateKeyPEM() (*rsa.PrivateKey, []byte, error) {
+	key, err := rsa.GenerateKey(rand.Reader, rsaKeyBits)
+	if err != nil {
+		return nil, nil, fmt.Errorf("registrytoken: generate key: %w", err)
+	}
+	pemBytes, err := MarshalPrivateKeyPEM(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	return key, pemBytes, nil
+}
+
+// MarshalPrivateKeyPEM encodes an RSA private key as a PKCS#8 PEM block.
+func MarshalPrivateKeyPEM(key *rsa.PrivateKey) ([]byte, error) {
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("registrytoken: marshal key: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
+}
+
+// ParsePrivateKeyPEM decodes a PEM block holding a PKCS#8 or PKCS#1 RSA key.
+// Exported counterpart of the file-loading path, for keys held in the encrypted
+// settings store.
+func ParsePrivateKeyPEM(data []byte) (*rsa.PrivateKey, error) { return parsePrivateKeyPEM(data) }
+
 // parsePrivateKeyPEM decodes a PEM block holding a PKCS#8 or PKCS#1 RSA key.
 func parsePrivateKeyPEM(data []byte) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(data)

@@ -122,9 +122,33 @@ type CacheConfig struct {
 // AuthConfig configures control-plane authentication (ARCHITECTURE §11).
 type AuthConfig struct {
 	// JWTSecret is the HS256 signing key for session cookies. Empty means
-	// auto-generated on first start and persisted. Must be kept stable across
-	// restarts or all sessions are invalidated.
+	// auto-generated on first start and persisted into the encrypted settings
+	// store (see ConfigSecret), so sessions survive restarts and every HA
+	// replica shares the key. Must be kept stable across restarts or all
+	// sessions are invalidated.
+	//
+	// This is the bootstrap default for the auth.jwt_secret runtime setting: a
+	// runtime override in the encrypted store wins over this value.
 	JWTSecret string `koanf:"jwt_secret"`
+
+	// ConfigSecret is the AES-256-GCM master key (base64 of exactly 32 bytes)
+	// for the encrypted runtime-settings store (internal/configstore). Generate
+	// one with `openssl rand -base64 32`.
+	//
+	// Empty DISABLES the store: runtime settings become read-only, the admin
+	// settings endpoints answer 503 on write, and any secret Specula must
+	// auto-generate (jwt_secret, the registry token key) falls back to the
+	// legacy ephemeral/on-disk behaviour with a loud warning. This is the
+	// graceful-degradation path for dev; production should set it.
+	//
+	// A NON-EMPTY but malformed value is a startup ERROR, never a silent
+	// downgrade to disabled: treating a typo'd key as "unset" would put secrets
+	// in the database in plaintext while the operator believed encryption was on.
+	//
+	// Keep it OUT of the database it protects — that separation is the entire
+	// point. Prefer SPECULA_AUTH__CONFIG_SECRET from a secret manager over
+	// writing it into the YAML file.
+	ConfigSecret string `koanf:"config_secret"`
 
 	// AdminKey is a break-glass Bearer token that bypasses normal session
 	// auth. Should be a high-entropy random string. Empty disables it.
