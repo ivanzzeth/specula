@@ -1,16 +1,73 @@
-import { useEffect, useState } from 'react';
-import { listUsers, createUser, patchUser, deleteUser } from '../api/client';
-import { ApiError } from '../api/client';
-import type { UserDTO, CreateUserRequest } from '../api/types';
-import Button from '../ui/Button';
-import Spinner from '../ui/Spinner';
-import { Input, Field } from '../ui/Field';
+/**
+ * Users — system-wide user administration (Ops zone, admin only).
+ *
+ * Distinct from Members: a *member* is an identity's role inside one org; a
+ * *user* is the account itself, across the whole install. Only a system admin
+ * sees this route (RequireAdmin in App.tsx).
+ *
+ * ── INTEGRATION NOTE (R3) ────────────────────────────────────────────────────
+ * This page was the last holdout on the pre-R3 primitives (`src/ui/*`): hand
+ * rolled modals with a large radius, raw `text-red-400`, and a spinner that
+ * collapsed the layout on load. It is now on the shared system — Radix Dialog
+ * (focus trap + Esc + restore), the sanctioned Table, and status colour drawn
+ * from the lamp ramp rather than raw Tailwind reds. With this, nothing imports
+ * `src/ui/*` and that directory is deleted.
+ */
+
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+
+import { ApiError, createUser, deleteUser, listUsers, patchUser } from '@/api/client';
+import type { CreateUserRequest, UserDTO } from '@/api/types';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { SkeletonRows } from '@/components/ui/skeleton';
+import {
+  EmptyRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 type Modal =
   | { kind: 'create' }
   | { kind: 'edit'; user: UserDTO }
   | { kind: 'delete'; user: UserDTO }
   | null;
+
+/** The system roles the API accepts. '' is a plain user. */
+const SYSTEM_ROLES = [
+  { value: 'user', label: 'user' },
+  { value: 'admin', label: 'admin' },
+] as const;
+
+/** The API models "no role" as ''; Radix Select cannot hold '' as a value. */
+const toRoleValue = (role: string): string => role || 'user';
+const fromRoleValue = (value: string): string => (value === 'user' ? '' : value);
+
+function errMessage(ex: unknown): string {
+  if (ex instanceof ApiError) return ex.detail || ex.message;
+  return ex instanceof Error ? ex.message : String(ex);
+}
 
 export function Users() {
   const [users, setUsers] = useState<UserDTO[]>([]);
@@ -21,139 +78,147 @@ export function Users() {
   const load = () => {
     setLoading(true);
     listUsers()
-      .then((r) => setUsers(r.users ?? []))
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .then((r) => {
+        setUsers(r.users ?? []);
+        setErr('');
+      })
+      .catch((e: unknown) => setErr(errMessage(e)))
       .finally(() => setLoading(false));
   };
 
   useEffect(load, []);
 
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2 text-slate-400">
-        <Spinner /> Loading users…
-      </div>
-    );
-  }
+  const closeAnd = (reload: boolean) => {
+    setModal(null);
+    if (reload) load();
+  };
 
   return (
-    <div className="space-y-4 max-w-4xl">
-      <div className="flex items-center justify-between">
+    <div className="space-y-3">
+      <div className="flex items-end justify-between gap-3">
         <div>
-          <h1 className="text-base font-semibold text-slate-100">Users</h1>
-          <p className="text-xs text-slate-500 mt-0.5">{users.length} user(s)</p>
+          <h1 className="text-display font-semibold text-slate-100">Users</h1>
+          <p className="mt-0.5 text-data text-slate-400">
+            Every account on this install. Org-level roles live under Members.
+          </p>
         </div>
-        <Button size="sm" onClick={() => setModal({ kind: 'create' })}>
-          + New User
+        <Button variant="default" size="sm" onClick={() => setModal({ kind: 'create' })}>
+          New user
         </Button>
       </div>
 
-      {err && <div className="text-red-400 text-sm">{err}</div>}
+      {err && (
+        <Card>
+          <CardContent className="text-data text-destructive">{err}</CardContent>
+        </Card>
+      )}
 
-      <div className="rounded-lg border border-slate-800 bg-slate-900 overflow-hidden">
-        <table className="w-full text-[13px]">
-          <thead>
-            <tr className="border-b border-slate-800">
-              {['ID', 'Email', 'Name', 'Role', 'Created', 'Actions'].map((h) => (
-                <th
-                  key={h}
-                  className="px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-slate-500"
-                >
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-800/70">
-            {users.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-3 py-10 text-center text-slate-500">
-                  No users found
-                </td>
-              </tr>
-            ) : (
-              users.map((u) => (
-                <tr key={u.id}>
-                  <td className="px-3 py-2.5 text-slate-500 tabular-nums">{u.id}</td>
-                  <td className="px-3 py-2.5 text-slate-200">{u.email}</td>
-                  <td className="px-3 py-2.5 text-slate-400">{u.name || '—'}</td>
-                  <td className="px-3 py-2.5">
-                    {u.system_role === 'admin' ? (
-                      <span className="text-brand text-xs font-semibold uppercase">admin</span>
-                    ) : (
-                      <span className="text-slate-500 text-xs">{u.system_role || 'user'}</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5 text-slate-500 text-xs tabular-nums">
-                    {new Date(u.created_at).toLocaleDateString()}
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <div className="flex items-center gap-2">
-                      <button
-                        className="text-xs text-slate-400 hover:text-slate-100 transition-colors"
-                        onClick={() => setModal({ kind: 'edit', user: u })}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        className="text-xs text-red-400 hover:text-red-300 transition-colors"
-                        onClick={() => setModal({ kind: 'delete', user: u })}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      <Card>
+        {loading ? (
+          <CardContent>
+            <SkeletonRows rows={5} />
+          </CardContent>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-16 text-right">ID</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead className="w-40">Name</TableHead>
+                <TableHead className="w-24">Role</TableHead>
+                <TableHead className="w-28 text-right">Created</TableHead>
+                <TableHead className="w-28 text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {users.length === 0 ? (
+                <EmptyRow colSpan={6}>No users found.</EmptyRow>
+              ) : (
+                users.map((u) => (
+                  <TableRow key={u.id}>
+                    <TableCell className="tnum text-right text-slate-500">{u.id}</TableCell>
+                    <TableCell className="text-slate-100">{u.email}</TableCell>
+                    <TableCell className="text-slate-400">{u.name || '—'}</TableCell>
+                    <TableCell>
+                      {/* Admin is a privilege level, so it is stated plainly in
+                          amber-free lamp terms — a solid amber badge here would
+                          read as a control, not a fact. */}
+                      {u.system_role === 'admin' ? (
+                        <span className="inline-flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-tier-consensus">
+                          <span className="lamp bg-tier-consensus" aria-hidden />
+                          admin
+                        </span>
+                      ) : (
+                        <span className="text-data text-slate-500">user</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="tnum text-right text-slate-500">
+                      {new Date(u.created_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          className="text-data text-slate-400 transition-colors duration-fast hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          onClick={() => setModal({ kind: 'edit', user: u })}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="text-data text-slate-500 transition-colors duration-fast hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          onClick={() => setModal({ kind: 'delete', user: u })}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        )}
+      </Card>
 
-      {modal?.kind === 'create' && (
-        <CreateModal
-          onClose={() => setModal(null)}
-          onDone={() => {
-            setModal(null);
-            load();
-          }}
-        />
-      )}
-      {modal?.kind === 'edit' && (
-        <EditModal
-          user={modal.user}
-          onClose={() => setModal(null)}
-          onDone={() => {
-            setModal(null);
-            load();
-          }}
-        />
-      )}
-      {modal?.kind === 'delete' && (
-        <DeleteModal
-          user={modal.user}
-          onClose={() => setModal(null)}
-          onDone={() => {
-            setModal(null);
-            load();
-          }}
-        />
-      )}
+      {modal?.kind === 'create' && <CreateModal onClose={closeAnd} />}
+      {modal?.kind === 'edit' && <EditModal user={modal.user} onClose={closeAnd} />}
+      {modal?.kind === 'delete' && <DeleteModal user={modal.user} onClose={closeAnd} />}
     </div>
   );
 }
 
-function Overlay({ children }: { children: React.ReactNode }) {
+// ── Modals ────────────────────────────────────────────────────────────────────
+
+/** Shared shell: Radix Dialog wired so dismissal always routes through onClose. */
+function ModalShell({
+  title,
+  description,
+  onClose,
+  children,
+}: {
+  title: string;
+  description?: ReactNode;
+  onClose: (reload: boolean) => void;
+  children: ReactNode;
+}) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-900 p-6 shadow-xl">
+    <Dialog open onOpenChange={(open) => !open && onClose(false)}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          {description ? <DialogDescription>{description}</DialogDescription> : null}
+        </DialogHeader>
         {children}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-function CreateModal({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
+function FormError({ message }: { message: string }) {
+  if (!message) return null;
+  return <p className="text-data text-destructive">{message}</p>;
+}
+
+function CreateModal({ onClose }: { onClose: (reload: boolean) => void }) {
   const [form, setForm] = useState<CreateUserRequest>({
     email: '',
     name: '',
@@ -163,154 +228,166 @@ function CreateModal({ onClose, onDone }: { onClose: () => void; onDone: () => v
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
     setErr('');
     setBusy(true);
     try {
       await createUser(form);
-      onDone();
+      onClose(true);
     } catch (ex) {
-      setErr(ex instanceof ApiError ? ex.detail : String(ex));
+      setErr(errMessage(ex));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <Overlay>
-      <h2 className="text-sm font-semibold text-slate-100 mb-4">Create User</h2>
-      <form onSubmit={submit} className="space-y-3">
-        <Field label="Email">
-          <Input
-            type="email"
-            required
-            value={form.email}
-            onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
-          />
-        </Field>
-        <Field label="Name">
-          <Input
-            value={form.name}
-            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-          />
-        </Field>
-        <Field label="Password">
-          <Input
-            type="password"
-            required
-            minLength={8}
-            value={form.password}
-            onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
-          />
-        </Field>
-        <Field label="Role">
-          <select
-            className="w-full h-8 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-[13px] text-slate-100 focus:border-brand/70 focus:outline-none"
-            value={form.system_role}
-            onChange={(e) => setForm((f) => ({ ...f, system_role: e.target.value }))}
-          >
-            <option value="">user</option>
-            <option value="admin">admin</option>
-          </select>
-        </Field>
-        {err && <p className="text-xs text-red-400">{err}</p>}
-        <div className="flex gap-2 pt-1">
-          <Button type="submit" disabled={busy} className="flex-1">
-            {busy ? 'Creating…' : 'Create'}
-          </Button>
-          <Button variant="secondary" type="button" onClick={onClose} className="flex-1">
+    <ModalShell title="Create user" onClose={onClose}>
+      <form onSubmit={(e) => void submit(e)}>
+        <div className="space-y-3 p-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="cu-email">Email</Label>
+            <Input
+              id="cu-email"
+              type="email"
+              required
+              autoFocus
+              value={form.email}
+              onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="cu-name">Name</Label>
+            <Input
+              id="cu-name"
+              value={form.name}
+              onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="cu-password">Password</Label>
+            <Input
+              id="cu-password"
+              type="password"
+              required
+              minLength={8}
+              value={form.password}
+              onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
+            />
+            <p className="text-micro text-slate-500">At least 8 characters</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="cu-role">System role</Label>
+            <Select
+              value={toRoleValue(form.system_role ?? '')}
+              onValueChange={(v) => setForm((f) => ({ ...f, system_role: fromRoleValue(v) }))}
+            >
+              <SelectTrigger id="cu-role">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SYSTEM_ROLES.map((r) => (
+                  <SelectItem key={r.value} value={r.value}>
+                    {r.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <FormError message={err} />
+        </div>
+        <DialogFooter>
+          <Button variant="secondary" size="sm" type="button" onClick={() => onClose(false)}>
             Cancel
           </Button>
-        </div>
+          <Button variant="default" size="sm" type="submit" disabled={busy}>
+            {busy ? 'Creating…' : 'Create'}
+          </Button>
+        </DialogFooter>
       </form>
-    </Overlay>
+    </ModalShell>
   );
 }
 
-function EditModal({
-  user,
-  onClose,
-  onDone,
-}: {
-  user: UserDTO;
-  onClose: () => void;
-  onDone: () => void;
-}) {
+function EditModal({ user, onClose }: { user: UserDTO; onClose: (reload: boolean) => void }) {
   const [name, setName] = useState(user.name);
   const [role, setRole] = useState(user.system_role);
   const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
     setErr('');
     setBusy(true);
     try {
+      // Send only what changed — a PATCH that echoes every field would clobber
+      // concurrent edits with values this form never intended to set.
       const body: { name?: string; system_role?: string; password?: string } = {};
       if (name !== user.name) body.name = name;
       if (role !== user.system_role) body.system_role = role;
       if (password) body.password = password;
       await patchUser(user.id, body);
-      onDone();
+      onClose(true);
     } catch (ex) {
-      setErr(ex instanceof ApiError ? ex.detail : String(ex));
+      setErr(errMessage(ex));
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <Overlay>
-      <h2 className="text-sm font-semibold text-slate-100 mb-1">Edit User</h2>
-      <p className="text-xs text-slate-500 mb-4">{user.email}</p>
-      <form onSubmit={submit} className="space-y-3">
-        <Field label="Name">
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field label="Role">
-          <select
-            className="w-full h-8 rounded-md border border-slate-700 bg-slate-900 px-2.5 text-[13px] text-slate-100 focus:border-brand/70 focus:outline-none"
-            value={role}
-            onChange={(e) => setRole(e.target.value)}
-          >
-            <option value="">user</option>
-            <option value="admin">admin</option>
-          </select>
-        </Field>
-        <Field label="New Password" hint="Leave blank to keep current">
-          <Input
-            type="password"
-            minLength={8}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-          />
-        </Field>
-        {err && <p className="text-xs text-red-400">{err}</p>}
-        <div className="flex gap-2 pt-1">
-          <Button type="submit" disabled={busy} className="flex-1">
-            {busy ? 'Saving…' : 'Save'}
-          </Button>
-          <Button variant="secondary" type="button" onClick={onClose} className="flex-1">
+    <ModalShell title="Edit user" description={user.email} onClose={onClose}>
+      <form onSubmit={(e) => void submit(e)}>
+        <div className="space-y-3 p-3">
+          <div className="space-y-1.5">
+            <Label htmlFor="eu-name">Name</Label>
+            <Input id="eu-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="eu-role">System role</Label>
+            <Select value={toRoleValue(role)} onValueChange={(v) => setRole(fromRoleValue(v))}>
+              <SelectTrigger id="eu-role">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SYSTEM_ROLES.map((r) => (
+                  <SelectItem key={r.value} value={r.value}>
+                    {r.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="eu-password">New password</Label>
+            <Input
+              id="eu-password"
+              type="password"
+              minLength={8}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+            />
+            <p className="text-micro text-slate-500">Leave blank to keep the current password</p>
+          </div>
+          <FormError message={err} />
+        </div>
+        <DialogFooter>
+          <Button variant="secondary" size="sm" type="button" onClick={() => onClose(false)}>
             Cancel
           </Button>
-        </div>
+          <Button variant="default" size="sm" type="submit" disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </Button>
+        </DialogFooter>
       </form>
-    </Overlay>
+    </ModalShell>
   );
 }
 
-function DeleteModal({
-  user,
-  onClose,
-  onDone,
-}: {
-  user: UserDTO;
-  onClose: () => void;
-  onDone: () => void;
-}) {
+function DeleteModal({ user, onClose }: { user: UserDTO; onClose: (reload: boolean) => void }) {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -319,29 +396,37 @@ function DeleteModal({
     setBusy(true);
     try {
       await deleteUser(user.id);
-      onDone();
+      onClose(true);
     } catch (ex) {
-      setErr(ex instanceof ApiError ? ex.detail : String(ex));
-    } finally {
+      setErr(errMessage(ex));
       setBusy(false);
     }
   }
 
   return (
-    <Overlay>
-      <h2 className="text-sm font-semibold text-slate-100 mb-2">Delete User</h2>
-      <p className="text-sm text-slate-400 mb-4">
-        Delete <span className="text-slate-200">{user.email}</span>? This cannot be undone.
-      </p>
-      {err && <p className="text-xs text-red-400 mb-3">{err}</p>}
-      <div className="flex gap-2">
-        <Button variant="danger" onClick={confirm} disabled={busy} className="flex-1">
-          {busy ? 'Deleting…' : 'Delete'}
-        </Button>
-        <Button variant="secondary" onClick={onClose} className="flex-1">
+    <ModalShell
+      title="Delete user"
+      description={
+        <>
+          <span className="text-slate-100">{user.email}</span> will be removed. This cannot be
+          undone.
+        </>
+      }
+      onClose={onClose}
+    >
+      {err && (
+        <div className="p-3">
+          <FormError message={err} />
+        </div>
+      )}
+      <DialogFooter>
+        <Button variant="secondary" size="sm" onClick={() => onClose(false)}>
           Cancel
         </Button>
-      </div>
-    </Overlay>
+        <Button variant="destructive" size="sm" onClick={() => void confirm()} disabled={busy}>
+          {busy ? 'Deleting…' : 'Delete user'}
+        </Button>
+      </DialogFooter>
+    </ModalShell>
   );
 }
