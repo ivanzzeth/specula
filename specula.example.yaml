@@ -142,6 +142,13 @@ protocols:
       # Best achievable in CN: consensus quorum + TOFU.
       tiers: [consensus, tofu, checksum]
       quorum: 2
+      tofu: enforce   # pin digest on first fetch; alert on later change
+      # Dependency-confusion guard (DESIGN-REVIEW §4): PyPI is a FLAT namespace,
+      # so list the exact private names you own — prefix "conventions" are theatre.
+      # dependency_confusion:
+      #   private_names: ["mycompany-*"]
+      #   private_upstream: https://pypi.internal.example.com/simple
+      #   on_private_down: fail_closed   # never fall back to a public mirror
 
   # ── npm ───────────────────────────────────────────────────────────────────
   npm:
@@ -164,6 +171,14 @@ protocols:
       # Best achievable: consensus + TOFU.
       tiers: [consensus, tofu, checksum]
       quorum: 2
+      tofu: enforce
+      # Dependency-confusion guard: scoped names (@org/pkg) are confusion-resistant
+      # by design; unscoped private names need an explicit denylist.
+      # dependency_confusion:
+      #   private_scopes: ["@myorg"]
+      #   private_unscoped: ["internal-svc"]
+      #   private_upstream: https://npm.internal.example.com
+      #   on_private_down: fail_closed
 
   # ── Go modules ────────────────────────────────────────────────────────────
   go:
@@ -232,7 +247,12 @@ protocols:
     verification:
       tiers: [signed, tofu, checksum]
       quorum: 1
-      # keyring: /etc/specula/keyrings/ubuntu-archive-keyring.gpg
+      tofu: enforce
+      # apt is a full "signed" anchor: the distro keyring is shipped out-of-band
+      # with the OS and cannot be forged by a mirror. Set keyring to enable it.
+      gpg:
+        policy: enforce
+        # keyring: /etc/specula/keyrings/ubuntu-archive-keyring.gpg
 
   # ── Helm ──────────────────────────────────────────────────────────────────
   helm:
@@ -250,7 +270,12 @@ protocols:
       # .prov GPG signature provides "signed" tier when keyring is configured.
       tiers: [tofu, checksum]
       quorum: 1
-      # keyring: /etc/specula/keyrings/helm-signing.gpg
+      tofu: enforce
+      # Helm chart provenance (.prov) is a detached GPG signature. A chart with no
+      # .prov degrades to a lower tier (policy: warn) rather than failing.
+      provenance:
+        policy: warn
+        # keyring: /etc/specula/keyrings/helm-signing.gpg
 
   # ── Tarball ───────────────────────────────────────────────────────────────
   tarball:
@@ -267,6 +292,7 @@ protocols:
     verification:
       tiers: [consensus, tofu, checksum]
       quorum: 2
+      tofu: enforce   # tarball content is immutable once cached; pin its digest
 
   # ── git ───────────────────────────────────────────────────────────────────
   git:
@@ -275,6 +301,10 @@ protocols:
     # refs (branch→SHA) are the mutable layer; git objects are immutable by SHA.
     mutable_ttl_seconds: 30   # 30 seconds for refs
 
+    # git does NOT use the generic upstream fallback chain — it mirrors /
+    # reverse-proxies the allowed hosts directly. The upstreams block below is
+    # kept only to satisfy generic per-protocol validation; allowed_upstreams
+    # under `git:` is the authoritative host allowlist.
     upstreams:
       - name: github
         base_url: https://github.com
@@ -285,10 +315,21 @@ protocols:
         priority: 2
         official: false
 
+    # git-specific bare-mirror settings (ARCHITECTURE §9, PRD §6).
+    git:
+      allowed_upstreams: [github.com, gitlab.com, gitee.com]
+      mirror_dir: /var/specula/git
+      sync_stale_after: 30s    # reuse a mirror within this window; concurrent-clone-safe
+      public_only: true        # private repos / Authorization-bearing → passthrough, no cache
+      fail_closed: true        # probe failure → passthrough (never serve a stale public copy)
+
     verification:
       # tofu: pins ref→SHA on first fetch; alerts on non-fast-forward updates
       # (force-push / history rewrite detection per ARCHITECTURE §5).
       # signed: verifies signed tags/commits via allowed_signers when configured.
       tiers: [tofu, checksum]
       quorum: 1
-      # allowed_signers: /etc/specula/keys/git-allowed-signers
+      tofu: enforce
+      # signed_refs:
+      #   policy: warn
+      #   allowed_signers: /etc/specula/keys/git-allowed-signers

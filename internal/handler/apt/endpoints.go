@@ -1,0 +1,388 @@
+// Package apt — two-tier caching pipeline for APT repository artifacts.
+//
+// This file implements the mutable (dists/) and immutable (pool/) data pipelines
+// following the reference pattern established by internal/handler/gomod/endpoints.go.
+//
+// # Mutable tier (dists/ metadata)
+//
+// InRelease / Release / Packages are versioned by the upstream Valid-Until
+// field, not by a content digest. The handler uses a short-TTL mutable entry
+// keyed by (Protocol="apt", Name=repo, Version=distsPath). Conditional GET
+// (ETag / If-Modified-Since) is used for revalidation; 304 extends the TTL
+// without re-downloading. On upstream failure, stale entries are served.
+//
+// # Immutable tier (pool/*.deb)
+//
+// Pool package files are content-addressed by SHA256 and promoted once to the
+// permanent CAS tier via the verify-on-write quarantine pipeline (fix C2/C3).
+// A second client request for the same .deb is served entirely from the CAS
+// without contacting the upstream.
+package apt
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/cache"
+)
+
+// staler is an optional extension of CacheManager that returns mutable entries
+// even when their TTL has expired. Used for serve-stale-on-upstream-failure.
+// The production manager (cache.manager) implements this; test fakes may not.
+type staler interface {
+	LookupStale(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error)
+}
+
+// --------------------------------------------------------------------------
+// Content-type helpers
+// --------------------------------------------------------------------------
+
+// contentTypeForDistsPath returns a MIME type for a dists/ metadata path.
+// Compressed variants (.gz / .xz / .bz2) reflect the compressed format;
+// everything else is treated as UTF-8 plain text.
+func contentTypeForDistsPath(distsPath string) string {
+	switch {
+	case strings.HasSuffix(distsPath, ".gz"):
+		return "application/x-gzip"
+	case strings.HasSuffix(distsPath, ".xz"):
+		return "application/x-xz"
+	case strings.HasSuffix(distsPath, ".bz2"):
+		return "application/x-bzip2"
+	case strings.HasSuffix(distsPath, "Release.gpg"):
+		return "application/pgp-signature"
+	default:
+		return "text/plain; charset=utf-8"
+	}
+}
+
+// contentTypeForPool returns the MIME type for a pool package file.
+func contentTypeForPool(file string) string {
+	switch {
+	case strings.HasSuffix(file, ".deb"), strings.HasSuffix(file, ".udeb"):
+		return "application/vnd.debian.binary-package"
+	case strings.HasSuffix(file, ".dsc"):
+		return "text/plain; charset=utf-8"
+	default:
+		return "application/octet-stream"
+	}
+}
+
+// --------------------------------------------------------------------------
+// Mutable key helpers
+// --------------------------------------------------------------------------
+
+// aptMutableKey returns the MetadataStore key for a mutable apt ArtifactRef
+// (dists/ metadata). Mirrors cache.mutableKey (unexported).
+func aptMutableKey(ref artifact.ArtifactRef) string {
+	return ref.Protocol + ":" + ref.Name + ":" + ref.Version
+}
+
+// --------------------------------------------------------------------------
+// Mutable pipeline (dists/)
+// --------------------------------------------------------------------------
+
+// serveMutable implements the full mutable caching pipeline for dists/ metadata:
+//
+//  1. Check the short-TTL cache (fresh entries served immediately).
+//  2. Stale: attempt a conditional GET (If-None-Match / If-Modified-Since).
+//     304 → extend TTL, serve stale.  200 → store new content.
+//  3. Complete miss: fresh fetch → quarantine → verify-on-write → store → serve.
+//  4. Upstream unreachable with stale content: serve stale.
+func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ct string) {
+	ctx := r.Context()
+
+	// 1. Fresh cache lookup.
+	entry, err := h.cache.Lookup(ctx, ref)
+	if err != nil {
+		h.log.Error("apt: mutable lookup", "ref", ref, "err", err)
+		writeError(w, http.StatusInternalServerError, "cache lookup failed")
+		return
+	}
+	if entry != nil {
+		h.serveFromCache(w, r, ref, entry, ct)
+		return
+	}
+
+	// Capture stale entry for serve-stale-on-upstream-failure.
+	var staleEntry *artifact.CacheEntry
+	if sm, ok := h.cache.(staler); ok {
+		staleEntry, _ = sm.LookupStale(ctx, ref)
+	}
+
+	// 2. Upstream required.
+	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+		if staleEntry != nil {
+			h.log.Warn("apt: no upstream; serving stale dists", "ref", ref)
+			h.serveFromCache(w, r, ref, staleEntry, ct)
+			return
+		}
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	// 3. Conditional GET revalidation if we have prior ETag/Last-Modified.
+	if prevMeta, hasPrev := h.getMutableUpstreamMeta(ctx, ref); hasPrev && staleEntry != nil {
+		body, umeta, notModified, revalErr := h.upstreamClt.Revalidate(ctx, ref, prevMeta, h.upstreams)
+		if revalErr == nil {
+			if notModified {
+				h.extendMutableTTL(ctx, ref, umeta)
+				h.serveFromCache(w, r, ref, staleEntry, ct)
+				return
+			}
+			// 200: new content — store and serve.
+			defer body.Close()
+			if newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta); storeErr == nil && newEntry != nil {
+				h.serveFromCache(w, r, ref, newEntry, ct)
+				return
+			}
+			// Fall through to fresh fetch if store failed.
+		}
+	}
+
+	// 4. Fresh fetch.
+	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+	if fetchErr != nil {
+		if staleEntry != nil {
+			h.log.Warn("apt: upstream failed; serving stale dists", "ref", ref, "err", fetchErr)
+			h.serveFromCache(w, r, ref, staleEntry, ct)
+			return
+		}
+		h.log.Error("apt: mutable fetch", "ref", ref, "err", fetchErr)
+		writeError(w, http.StatusBadGateway, "upstream fetch failed")
+		return
+	}
+	defer body.Close()
+
+	newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta)
+	if storeErr != nil {
+		h.log.Error("apt: store mutable dists", "ref", ref, "err", storeErr)
+		writeError(w, http.StatusBadGateway, "failed to cache upstream response")
+		return
+	}
+	h.serveFromCache(w, r, ref, newEntry, ct)
+}
+
+// --------------------------------------------------------------------------
+// Immutable pipeline (pool/)
+// --------------------------------------------------------------------------
+
+// serveImmutable implements the full immutable caching pipeline for pool/ package
+// files:
+//
+//  1. Try the verified CAS (fast path, no upstream contact).
+//  2. On cache miss: fetch → quarantine → verify-on-write → CAS promotion → serve.
+func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef) {
+	ctx := r.Context()
+	ct := contentTypeForPool(ref.Version)
+
+	// 1. Try the verified CAS (cache hit fast path).
+	entry, err := h.cache.Lookup(ctx, ref)
+	if err != nil {
+		h.log.Error("apt: immutable lookup", "name", ref.Name, "version", ref.Version, "err", err)
+		writeError(w, http.StatusInternalServerError, "cache lookup failed")
+		return
+	}
+	if entry != nil {
+		h.serveFromCache(w, r, ref, entry, ct)
+		return
+	}
+
+	// 2. Cache miss — upstream required.
+	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	// 3. Fetch → quarantine → verify-on-write → CAS promotion.
+	entry, err = h.fetchAndStoreImmutable(ctx, ref)
+	if err != nil {
+		h.log.Error("apt: fetch immutable pool", "name", ref.Name, "version", ref.Version, "err", err)
+		if errors.Is(err, cache.ErrCacheMiss) || isNotFound(err) {
+			writeError(w, http.StatusNotFound, "not found")
+		} else {
+			writeError(w, http.StatusBadGateway, "upstream fetch failed")
+		}
+		return
+	}
+	if entry == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	h.serveFromCache(w, r, ref, entry, ct)
+}
+
+// --------------------------------------------------------------------------
+// Shared fetch/store helpers
+// --------------------------------------------------------------------------
+
+// fetchAndStoreImmutable fetches an immutable pool artifact from the first
+// healthy upstream, streams it through the quarantine/verify-on-write pipeline,
+// and promotes it to the permanent CAS tier.
+func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	rc, umeta, err := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+	if err != nil {
+		return nil, fmt.Errorf("upstream fetch: %w", err)
+	}
+	defer rc.Close()
+
+	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
+	if err != nil {
+		return nil, fmt.Errorf("quarantine: %w", err)
+	}
+
+	entry, storeErr := h.cache.Store(ctx, ref, art)
+	if storeErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("store: %w", storeErr)
+	}
+	// Store removes art.Path on success; cleanup() is a safe no-op thereafter.
+	return entry, nil
+}
+
+// fetchBodyAndStore quarantines an already-opened mutable response body into
+// the CAS and writes a TTL-bearing MutableEntry via h.meta (when set).
+// The caller is responsible for closing the reader after this function returns.
+func (h *Handler) fetchBodyAndStore(ctx context.Context, ref artifact.ArtifactRef, rc io.Reader, umeta artifact.UpstreamMeta) (*artifact.CacheEntry, error) {
+	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
+	if err != nil {
+		return nil, fmt.Errorf("quarantine: %w", err)
+	}
+
+	entry, storeErr := h.cache.Store(ctx, ref, art)
+	if storeErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("store: %w", storeErr)
+	}
+
+	// cache.Store writes the mutable pointer with TTLSeconds=0 (always
+	// revalidate). Override it with the configured TTL so the mutable tier
+	// stays fresh for h.mutableTTLSec without unnecessary upstream hits.
+	if h.meta != nil {
+		me := artifact.MutableEntry{
+			Key:          aptMutableKey(ref),
+			Protocol:     ref.Protocol,
+			Digest:       art.Digest,
+			ETag:         umeta.ETag,
+			LastModified: umeta.LastModified,
+			TTLSeconds:   h.mutableTTLSec,
+			Upstream:     umeta.Upstream,
+			FetchedAt:    time.Now().UTC(),
+		}
+		if putErr := h.meta.PutMutable(ctx, me); putErr != nil {
+			// Non-fatal: mutable entry still in CAS; we just lose TTL tuning.
+			h.log.Warn("apt: write mutable TTL pointer", "ref", ref, "err", putErr)
+		}
+	}
+
+	return entry, nil
+}
+
+// --------------------------------------------------------------------------
+// Shared serve helper
+// --------------------------------------------------------------------------
+
+// serveFromCache writes the artifact identified by ref to the HTTP response.
+// entry supplies Content-Length when known. All bytes are read from h.cache.Serve
+// (only verified content is returned — fix C2).
+func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, entry *artifact.CacheEntry, ct string) {
+	ctx := r.Context()
+	rc, cacheEntry, err := h.cache.Serve(ctx, ref, 0, -1)
+	if err != nil {
+		if errors.Is(err, cache.ErrCacheMiss) {
+			writeError(w, http.StatusNotFound, "artifact not in cache")
+		} else {
+			h.log.Error("apt: serve from cache", "ref", ref, "err", err)
+			writeError(w, http.StatusInternalServerError, "cache serve failed")
+		}
+		return
+	}
+	if rc == nil {
+		writeError(w, http.StatusNotFound, "artifact not in cache")
+		return
+	}
+	defer rc.Close()
+
+	// Prefer size from the CacheEntry returned by Serve (post-lookup),
+	// falling back to the entry supplied by the caller (pre-lookup).
+	var size int64
+	if cacheEntry != nil && cacheEntry.Size > 0 {
+		size = cacheEntry.Size
+	} else if entry != nil && entry.Size > 0 {
+		size = entry.Size
+	}
+
+	w.Header().Set("Content-Type", ct)
+	if size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+
+	if r.Method == http.MethodGet {
+		_, _ = io.Copy(w, rc)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Mutable revalidation helpers
+// --------------------------------------------------------------------------
+
+// getMutableUpstreamMeta returns the upstream ETag/LastModified from the
+// MetadataStore for conditional GET revalidation. Returns (zero, false) when
+// h.meta is nil, the entry is absent, or there is no revalidation state.
+func (h *Handler) getMutableUpstreamMeta(ctx context.Context, ref artifact.ArtifactRef) (artifact.UpstreamMeta, bool) {
+	if h.meta == nil {
+		return artifact.UpstreamMeta{}, false
+	}
+	key := aptMutableKey(ref)
+	me, err := h.meta.GetMutable(ctx, key)
+	if err != nil || me == nil || (me.ETag == "" && me.LastModified == "") {
+		return artifact.UpstreamMeta{}, false
+	}
+	return artifact.UpstreamMeta{
+		ETag:         me.ETag,
+		LastModified: me.LastModified,
+		Upstream:     me.Upstream,
+	}, true
+}
+
+// extendMutableTTL updates the FetchedAt timestamp after a 304 Not Modified
+// response, renewing the TTL without a new blob transfer.
+func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef, umeta artifact.UpstreamMeta) {
+	if h.meta == nil {
+		return
+	}
+	key := aptMutableKey(ref)
+	me, err := h.meta.GetMutable(ctx, key)
+	if err != nil || me == nil {
+		return
+	}
+	me.FetchedAt = time.Now().UTC()
+	if umeta.ETag != "" {
+		me.ETag = umeta.ETag
+	}
+	if putErr := h.meta.PutMutable(ctx, *me); putErr != nil {
+		h.log.Warn("apt: extend mutable TTL", "ref", ref, "err", putErr)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Misc helpers
+// --------------------------------------------------------------------------
+
+// isNotFound returns true for errors that look like a 404 from the upstream.
+// Used to map upstream 404s to handler 404s without depending on a specific
+// error type from the upstream package.
+func isNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "HTTP 404")
+}

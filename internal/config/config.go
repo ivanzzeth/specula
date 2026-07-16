@@ -143,6 +143,41 @@ type ProtocolConfig struct {
 	// passthrough. Only meaningful for the "go" protocol; nil for all others.
 	// (PRD §6 go block; DESIGN-REVIEW H5.)
 	SumDB *SumDBConfig `koanf:"sumdb"`
+
+	// Git configures the git-clone acceleration handler (bare-mirror model).
+	// Only meaningful for the "git" protocol; nil for all others (PRD §6 git
+	// block; ARCHITECTURE §9). git does not use the generic Upstreams fallback
+	// chain — it reverse-proxies / mirrors the AllowedUpstreams hosts directly.
+	Git *GitConfig `koanf:"git"`
+}
+
+// GitConfig holds the git-clone acceleration settings for the "git" protocol
+// (PRD §6, ARCHITECTURE §9). The handler keeps a disk bare-mirror cache (git
+// objects are content-addressed by SHA = immutable; refs = mutable short TTL)
+// and passes through push / authenticated / private requests untouched.
+type GitConfig struct {
+	// AllowedUpstreams is the host allowlist (e.g. ["github.com", "gitlab.com"]).
+	// A request whose host is not listed is rejected (404) — never proxied.
+	AllowedUpstreams []string `koanf:"allowed_upstreams"`
+
+	// MirrorDir is the on-disk root for bare mirrors (git objects live here,
+	// content-addressed by SHA). Example: /var/specula/git.
+	MirrorDir string `koanf:"mirror_dir"`
+
+	// SyncStaleAfter is the staleness window for a bare mirror before a
+	// `git remote update` is triggered on the next request (Go duration string,
+	// e.g. "30s"). Concurrent clones within the window reuse the same fetch.
+	SyncStaleAfter string `koanf:"sync_stale_after"`
+
+	// PublicOnly, when true, restricts caching to anonymously-readable repos.
+	// Private repos / requests bearing Authorization are passed through with
+	// zero caching (never mirrored). Recommended: true.
+	PublicOnly bool `koanf:"public_only"`
+
+	// FailClosed, when true, passes a request through (bypass) rather than
+	// serving from a stale mirror when the public-visibility probe fails — the
+	// probe-failure window is exactly when an attacker's public copy could win.
+	FailClosed bool `koanf:"fail_closed"`
 }
 
 // SumDBConfig is the Go checksum-database (sumdb) configuration surface for the
@@ -224,6 +259,84 @@ type VerificationConfig struct {
 	// (golang.org/x/mod/sumdb/note format). Defaults to the Go module
 	// proxy key if empty; explicitly setting it enables pinning.
 	SumDBKey string `koanf:"sumdb_key"`
+
+	// GPG configures the apt end-to-end GPG chain verifier (InRelease →
+	// Packages → .deb) against a local keyring. Only meaningful for "apt".
+	// (PRD §6 apt block; DESIGN-REVIEW §1.1 apt gold standard.)
+	GPG *GPGConfig `koanf:"gpg"`
+
+	// Provenance configures the Helm .prov detached-GPG-signature verifier
+	// against a local keyring. Only meaningful for the classic-HTTP "helm"
+	// repo. (PRD §6 helm block.)
+	Provenance *ProvenanceConfig `koanf:"provenance"`
+
+	// SignedRefs configures the git signed tag/commit verifier against an
+	// allowed-signers file. Only meaningful for "git". (PRD §6 git block.)
+	SignedRefs *SignedRefsConfig `koanf:"signed_refs"`
+
+	// Tofu is the TOFU (trust-on-first-use) policy for this protocol:
+	// "enforce" (fail closed on a digest change for an immutable version) or
+	// "warn" (alert only). Empty leaves TOFU governed solely by Tiers. This is
+	// the primary anchor for pypi/npm/tarball (PRD §信任模型).
+	Tofu string `koanf:"tofu"`
+
+	// DependencyConfusion configures the private-namespace / fail-closed guard
+	// for flat-or-scoped ecosystems (pypi, npm). nil disables it. (PRD §6
+	// pypi/npm blocks; DESIGN-REVIEW §4.)
+	DependencyConfusion *DependencyConfusionConfig `koanf:"dependency_confusion"`
+}
+
+// GPGConfig is the apt GPG chain-verification block (PRD §6 apt).
+type GPGConfig struct {
+	// Policy is "enforce" (fail closed on a broken chain) or "warn".
+	// Empty defaults to "enforce" — apt is a full signed anchor.
+	Policy string `koanf:"policy"`
+	// Keyring is the path to the local, out-of-band distro keyring
+	// (e.g. /etc/specula/ubuntu-archive-keyring.gpg). A mirror cannot forge it.
+	Keyring string `koanf:"keyring"`
+}
+
+// ProvenanceConfig is the Helm .prov GPG-verification block (PRD §6 helm).
+type ProvenanceConfig struct {
+	// Policy is "enforce" or "warn". Empty defaults to "warn": a chart without
+	// a .prov attachment degrades to a lower tier rather than failing.
+	Policy string `koanf:"policy"`
+	// Keyring is the path to the local Helm signing keyring
+	// (e.g. /etc/specula/helm-keyring.gpg).
+	Keyring string `koanf:"keyring"`
+}
+
+// SignedRefsConfig is the git signed tag/commit block (PRD §6 git).
+type SignedRefsConfig struct {
+	// Policy is "enforce" or "warn". Empty defaults to "warn": signed refs are
+	// opt-in, and an unsigned ref degrades to tofu rather than failing.
+	Policy string `koanf:"policy"`
+	// AllowedSigners is the path to the git allowed-signers file (SSH format)
+	// used by `git verify-tag` / `git verify-commit`.
+	AllowedSigners string `koanf:"allowed_signers"`
+}
+
+// DependencyConfusionConfig is the private-namespace guard (DESIGN-REVIEW §4).
+// Private names resolve ONLY from the private upstream; on private-upstream
+// failure the guard fails closed (never falls back to a public mirror).
+type DependencyConfusionConfig struct {
+	// PrivateNames is an EXACT list of private package names/patterns for flat
+	// ecosystems (pypi). Prefix "conventions" are security theatre — list the
+	// names the org actually owns (e.g. ["mycompany-*"]).
+	PrivateNames []string `koanf:"private_names"`
+	// PrivateScopes is the list of npm scopes bound to the private registry
+	// (e.g. ["@myorg"]). Scoped names are structurally confusion-resistant.
+	PrivateScopes []string `koanf:"private_scopes"`
+	// PrivateUnscoped is the explicit denylist of unscoped npm names that must
+	// never be queried upstream (e.g. ["internal-svc"]).
+	PrivateUnscoped []string `koanf:"private_unscoped"`
+	// PrivateUpstream is the base URL of the private registry/index that owns
+	// the names above.
+	PrivateUpstream string `koanf:"private_upstream"`
+	// OnPrivateDown selects behaviour when the private upstream is unreachable:
+	// "fail_closed" (default; 5xx, never fall back to public) or
+	// "serve_stale" (serve from local cache only). Empty = "fail_closed".
+	OnPrivateDown string `koanf:"on_private_down"`
 }
 
 // Load reads and parses the YAML config file at path, applies SPECULA_*

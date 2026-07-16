@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // validTiers is the set of recognised verification tier names.
@@ -19,6 +20,21 @@ var validSumDBPolicies = map[string]bool{
 	"":        true, // empty defaults to "enforce"
 	"enforce": true,
 	"warn":    true,
+}
+
+// validVerifyPolicies is the enforce/warn set shared by the gpg / provenance /
+// signed_refs / tofu verification blocks. Empty is allowed (per-block default).
+var validVerifyPolicies = map[string]bool{
+	"":        true,
+	"enforce": true,
+	"warn":    true,
+}
+
+// validOnPrivateDown is the allowed set for dependency-confusion fail behaviour.
+var validOnPrivateDown = map[string]bool{
+	"":            true, // empty defaults to "fail_closed"
+	"fail_closed": true,
+	"serve_stale": true,
 }
 
 // Validate checks a loaded Config for consistency and completeness.
@@ -125,6 +141,38 @@ func Validate(cfg *Config) error {
 		if proto.SumDB != nil && !validSumDBPolicies[proto.SumDB.Policy] {
 			add("protocols.%s.sumdb.policy: must be \"enforce\" or \"warn\" "+
 				"(GOSUMDB=off is forbidden), got %q", name, proto.SumDB.Policy)
+		}
+
+		// Structured verification sub-blocks (apt gpg / helm provenance / git
+		// signed_refs / tofu policy). All policies are enforce|warn (or empty).
+		vc := proto.Verification
+		if vc.GPG != nil && !validVerifyPolicies[vc.GPG.Policy] {
+			add("protocols.%s.verification.gpg.policy: must be \"enforce\" or \"warn\", got %q",
+				name, vc.GPG.Policy)
+		}
+		if vc.Provenance != nil && !validVerifyPolicies[vc.Provenance.Policy] {
+			add("protocols.%s.verification.provenance.policy: must be \"enforce\" or \"warn\", got %q",
+				name, vc.Provenance.Policy)
+		}
+		if vc.SignedRefs != nil && !validVerifyPolicies[vc.SignedRefs.Policy] {
+			add("protocols.%s.verification.signed_refs.policy: must be \"enforce\" or \"warn\", got %q",
+				name, vc.SignedRefs.Policy)
+		}
+		if !validVerifyPolicies[vc.Tofu] {
+			add("protocols.%s.verification.tofu: must be \"enforce\" or \"warn\", got %q",
+				name, vc.Tofu)
+		}
+		if dc := vc.DependencyConfusion; dc != nil && !validOnPrivateDown[dc.OnPrivateDown] {
+			add("protocols.%s.verification.dependency_confusion.on_private_down: "+
+				"must be \"fail_closed\" or \"serve_stale\", got %q", name, dc.OnPrivateDown)
+		}
+
+		// git block: validate the sync_stale_after duration string when set.
+		if proto.Git != nil && strings.TrimSpace(proto.Git.SyncStaleAfter) != "" {
+			if _, err := time.ParseDuration(proto.Git.SyncStaleAfter); err != nil {
+				add("protocols.%s.git.sync_stale_after: invalid duration %q: %v",
+					name, proto.Git.SyncStaleAfter, err)
+			}
 		}
 	}
 

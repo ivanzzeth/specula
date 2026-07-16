@@ -3,9 +3,10 @@
 // verification chain (checksum + TOFU) and CacheManager, then serves the OCI
 // data plane on its port and the control-plane health/metrics endpoints.
 //
-// v0.2 scope: the OCI and Go module (GOPROXY) data-plane handlers serve for
-// real. The remaining six protocol ports (pypi, npm, apt, helm, tarball, git)
-// are wired as TODO stubs on the data plane and return 501.
+// v0.2 scope: all eight data-plane protocol handlers serve for real — OCI,
+// Go module (GOPROXY), pypi, npm, apt, helm, tarball and git. Protocol-native
+// signed anchors are wired where they exist (apt GPG keyring, Helm .prov GPG,
+// git signed refs); pypi/npm/tarball land on TOFU in this batch.
 package main
 
 import (
@@ -17,9 +18,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,8 +33,14 @@ import (
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/config"
+	apthandler "github.com/ivanzzeth/specula/internal/handler/apt"
+	githandler "github.com/ivanzzeth/specula/internal/handler/git"
 	"github.com/ivanzzeth/specula/internal/handler/gomod"
+	helmhandler "github.com/ivanzzeth/specula/internal/handler/helm"
+	"github.com/ivanzzeth/specula/internal/handler/npm"
 	"github.com/ivanzzeth/specula/internal/handler/oci"
+	"github.com/ivanzzeth/specula/internal/handler/pypi"
+	tarballhandler "github.com/ivanzzeth/specula/internal/handler/tarball"
 	"github.com/ivanzzeth/specula/internal/stats"
 	blobstore "github.com/ivanzzeth/specula/internal/store/blob"
 	"github.com/ivanzzeth/specula/internal/store/local"
@@ -93,16 +102,34 @@ func run() error {
 	log.Info("specula: storage ready",
 		"blob_driver", cfg.Storage.Blob.Driver, "meta_driver", cfg.Storage.Meta.Driver)
 
+	// ── Protocol-native signed verifiers ────────────────────────────────────
+	// Each is built from config paths and self-gates by ref.Protocol (like the Go
+	// sumdb verifier), so a single shared chain carries all of them without one
+	// protocol's verifier acting on another's artifacts. A missing/unreadable
+	// keyring downgrades that protocol's ceiling to tofu and warns — never crashes.
+	gpgV := buildGPGVerifier(cfg, log)           // apt  → signed (GPG keyring)
+	helmProvV := buildHelmProvVerifier(cfg, log) // helm → signed (.prov GPG)
+	gitSignedV := buildGitSignedVerifier(cfg, log)
+
 	// ── Verification chain: checksum (transport integrity) + TOFU pin ────────
-	// The chain is global; the Go sumdb verifier self-gates (no-op StatusPass for
-	// any ref that is not an immutable gomod artifact) so a single shared chain can
-	// carry it without acting on OCI or the other protocols (DESIGN-REVIEW §1 H5).
+	// The chain is global; every verifier self-gates (no-op StatusPass for any ref
+	// outside its protocol) so a single shared chain can carry them all without
+	// acting on protocols they do not own (DESIGN-REVIEW §1 H5).
 	verifiers := []verify.Verifier{
 		verify.NewChecksumVerifier(),
 		verify.NewTofuVerifier(newMetaTofuStore(metaStore)),
 	}
 	if goSumDB := buildGoSumDBVerifier(cfg, metaStore, log); goSumDB != nil {
 		verifiers = append(verifiers, goSumDB)
+	}
+	if gpgV != nil {
+		verifiers = append(verifiers, gpgV)
+	}
+	if helmProvV != nil {
+		verifiers = append(verifiers, helmProvV)
+	}
+	if gitSignedV != nil {
+		verifiers = append(verifiers, gitSignedV)
 	}
 	chain := verify.NewChain(verifiers...)
 
@@ -115,11 +142,16 @@ func run() error {
 	// Prometheus gauges. Stops when ctx is cancelled (SIGINT/SIGTERM).
 	go collector.Run(ctx)
 
-	// ── Data plane: OCI handler + protocol stubs ─────────────────────────────
+	// ── Data plane: all eight protocol handlers ──────────────────────────────
 	dataMux := http.NewServeMux()
 	mountOCI(dataMux, cfg, cm, metaStore, log)
 	mountGoModule(dataMux, cfg, cm, metaStore, log)
-	mountProtocolStubs(dataMux, log)
+	mountPyPI(dataMux, cfg, cm, metaStore, log)
+	mountNPM(dataMux, cfg, cm, metaStore, log)
+	mountAPT(dataMux, cfg, cm, metaStore, log, gpgV)
+	mountHelm(dataMux, cfg, cm, metaStore, log, helmProvV)
+	mountTarball(dataMux, cfg, cm, metaStore, log)
+	mountGit(dataMux, cfg, metaStore, log, gitSignedV)
 	// Liveness on the data plane too, so a bare data-plane LB can probe it.
 	dataMux.HandleFunc("/healthz", healthz)
 
@@ -314,24 +346,295 @@ func policyOrDefault(p string) string {
 	return p
 }
 
-// mountProtocolStubs registers the remaining data-plane protocols as 501 stubs.
-// v0.2 serves OCI and Go; these are placeholders (ARCHITECTURE §8).
-func mountProtocolStubs(mux *http.ServeMux, log *slog.Logger) {
-	stubs := map[string]string{
-		"/pypi/":    "pypi",
-		"/npm/":     "npm",
-		"/apt/":     "apt",
-		"/helm/":    "helm",
-		"/tarball/": "tarball",
-		"/git/":     "git",
+// mountPrefix is the data-plane path prefix each non-OCI protocol is mounted on.
+// The handler self-strips it (WithPathPrefix) so it can route against a bare
+// ServeMux pattern (mux.Handle(prefix+"/", …)).
+const (
+	pypiPrefix    = "/pypi"
+	npmPrefix     = "/npm"
+	aptPrefix     = "/apt"
+	helmPrefix    = "/helm"
+	tarballPrefix = "/tarball"
+	gitPrefix     = "/git"
+)
+
+// mountPyPI wires the PyPI handler at /pypi/ using the "pypi" protocol config for
+// upstreams, mutable TTL and the optional dependency-confusion private guard.
+// pypi tops out at TOFU in this batch (no protocol-native signed anchor).
+func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger) {
+	pc, ok := cfg.Protocols["pypi"]
+	l := log.With("protocol", pypi.Protocol)
+	opts := []pypi.Option{
+		pypi.WithMeta(metaStore),
+		pypi.WithPathPrefix(pypiPrefix),
+		pypi.WithLogger(l),
 	}
-	for path, name := range stubs {
-		proto := name
-		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, fmt.Sprintf("protocol %q not yet implemented", proto), http.StatusNotImplemented)
-		})
+	if ok {
+		if len(pc.Upstreams) > 0 {
+			opts = append(opts, pypi.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+		}
+		opts = append(opts, pypi.WithMutableTTL(mutableTTL(pc, cfg)))
+		if dc := pc.Verification.DependencyConfusion; dc != nil && dc.PrivateUpstream != "" {
+			opts = append(opts,
+				pypi.WithPrivateNames(dc.PrivateNames),
+				pypi.WithPrivateUpstream(privateUpstream(dc.PrivateUpstream)),
+				pypi.WithFailClosed(dc.OnPrivateDown != "serve_stale"),
+			)
+			l.Info("specula: pypi dependency-confusion guard enabled",
+				"private_names", len(dc.PrivateNames), "on_private_down", onPrivateDownOrDefault(dc.OnPrivateDown))
+		}
 	}
-	log.Info("specula: mounted protocol stubs (501)", "count", len(stubs))
+	mux.Handle(pypiPrefix+"/", pypi.NewHandler(cm, opts...))
+	log.Info("specula: mounted PyPI handler", "path", pypiPrefix+"/", "configured", ok)
+}
+
+// mountNPM wires the npm handler at /npm/ using the "npm" protocol config for
+// upstreams, mutable TTL and the optional dependency-confusion private guard.
+// npm tops out at TOFU in this batch (scoped names are confusion-resistant).
+func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger) {
+	pc, ok := cfg.Protocols["npm"]
+	l := log.With("protocol", npm.Protocol)
+	opts := []npm.Option{
+		npm.WithMeta(metaStore),
+		npm.WithPathPrefix(npmPrefix),
+		npm.WithLogger(l),
+	}
+	if ok {
+		if len(pc.Upstreams) > 0 {
+			opts = append(opts, npm.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+		}
+		opts = append(opts, npm.WithMutableTTL(mutableTTL(pc, cfg)))
+		if dc := pc.Verification.DependencyConfusion; dc != nil && dc.PrivateUpstream != "" {
+			opts = append(opts,
+				npm.WithPrivateScopes(dc.PrivateScopes),
+				npm.WithPrivateUnscoped(dc.PrivateUnscoped),
+				npm.WithPrivateUpstream(privateUpstream(dc.PrivateUpstream)),
+				npm.WithFailClosed(dc.OnPrivateDown != "serve_stale"),
+			)
+			l.Info("specula: npm dependency-confusion guard enabled",
+				"private_scopes", len(dc.PrivateScopes), "private_unscoped", len(dc.PrivateUnscoped),
+				"on_private_down", onPrivateDownOrDefault(dc.OnPrivateDown))
+		}
+	}
+	mux.Handle(npmPrefix+"/", npm.NewHandler(cm, opts...))
+	log.Info("specula: mounted npm handler", "path", npmPrefix+"/", "configured", ok)
+}
+
+// mountAPT wires the apt handler at /apt/ using the "apt" protocol config. The
+// GPG chain verifier (apt's signed anchor) is passed in when configured; the same
+// instance is already registered in the shared verify chain so verify-on-write and
+// the handler share one stateful anchor. Without it, apt tops out at tofu.
+func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, gpgV *verify.GPGVerifier) {
+	pc, ok := cfg.Protocols["apt"]
+	opts := []apthandler.Option{
+		apthandler.WithMeta(metaStore),
+		apthandler.WithPathPrefix(aptPrefix),
+		apthandler.WithLogger(log.With("protocol", apthandler.Protocol)),
+	}
+	if ok {
+		if len(pc.Upstreams) > 0 {
+			opts = append(opts, apthandler.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+		}
+		opts = append(opts, apthandler.WithMutableTTL(mutableTTL(pc, cfg)))
+	}
+	if gpgV != nil {
+		opts = append(opts, apthandler.WithGPGVerifier(gpgV))
+	}
+	mux.Handle(aptPrefix+"/", apthandler.NewHandler(cm, opts...))
+	log.Info("specula: mounted APT handler",
+		"path", aptPrefix+"/", "configured", ok, "signed", gpgV != nil)
+}
+
+// mountHelm wires the classic-HTTP Helm handler at /helm/ using the "helm"
+// protocol config. The .prov GPG verifier (helm's signed anchor) is passed in
+// when configured; the same instance is registered in the shared chain. Without
+// it, helm tops out at tofu.
+func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, provV *verify.HelmProvVerifier) {
+	pc, ok := cfg.Protocols["helm"]
+	opts := []helmhandler.Option{
+		helmhandler.WithMeta(metaStore),
+		helmhandler.WithPathPrefix(helmPrefix),
+		helmhandler.WithLogger(log.With("protocol", helmhandler.Protocol)),
+	}
+	if ok {
+		if len(pc.Upstreams) > 0 {
+			opts = append(opts, helmhandler.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+		}
+		opts = append(opts, helmhandler.WithMutableTTL(mutableTTL(pc, cfg)))
+	}
+	if provV != nil {
+		opts = append(opts, helmhandler.WithProvenanceVerifier(provV))
+	}
+	mux.Handle(helmPrefix+"/", helmhandler.NewHandler(cm, opts...))
+	log.Info("specula: mounted Helm handler",
+		"path", helmPrefix+"/", "configured", ok, "signed", provV != nil)
+}
+
+// mountTarball wires the generic URL-keyed tarball handler at /tarball/ using the
+// "tarball" protocol config. The allowed-host allowlist is derived from the
+// configured upstream base URLs (a request host outside the list is rejected).
+// tarball tops out at TOFU (immutable digest pin) in this batch.
+func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger) {
+	pc, ok := cfg.Protocols["tarball"]
+	opts := []tarballhandler.Option{
+		tarballhandler.WithMeta(metaStore),
+		tarballhandler.WithPathPrefix(tarballPrefix),
+		tarballhandler.WithLogger(log.With("protocol", tarballhandler.Protocol)),
+	}
+	hosts := []string{}
+	if ok {
+		if len(pc.Upstreams) > 0 {
+			opts = append(opts, tarballhandler.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+		}
+		hosts = upstreamHosts(pc.Upstreams)
+		opts = append(opts, tarballhandler.WithAllowedHosts(hosts))
+	}
+	mux.Handle(tarballPrefix+"/", tarballhandler.NewHandler(cm, opts...))
+	log.Info("specula: mounted tarball handler",
+		"path", tarballPrefix+"/", "configured", ok, "allowed_hosts", len(hosts))
+}
+
+// mountGit wires the git-clone acceleration handler at /git/ using the "git"
+// protocol config. Unlike the CAS-backed handlers git has no CacheManager: its
+// byte cache is the on-disk bare mirror. The host allowlist and mirror settings
+// come from the git-specific config block; the signed-refs verifier lifts a ref
+// to the signed tier when an allowed-signers file is configured.
+func mountGit(mux *http.ServeMux, cfg *config.Config, metaStore metastore.MetadataStore, log *slog.Logger, signedV *verify.GitSignedVerifier) {
+	pc, ok := cfg.Protocols["git"]
+	opts := []githandler.Option{
+		githandler.WithMeta(metaStore),
+		githandler.WithPathPrefix(gitPrefix),
+		githandler.WithLogger(log.With("protocol", githandler.Protocol)),
+	}
+	if ok {
+		opts = append(opts, githandler.WithMutableTTL(mutableTTL(pc, cfg)))
+		if gc := pc.Git; gc != nil {
+			opts = append(opts,
+				githandler.WithMirrorDir(gc.MirrorDir),
+				githandler.WithAllowedUpstreams(gc.AllowedUpstreams),
+				githandler.WithPublicOnly(gc.PublicOnly),
+				githandler.WithFailClosed(gc.FailClosed),
+			)
+			if d, err := time.ParseDuration(gc.SyncStaleAfter); err == nil && gc.SyncStaleAfter != "" {
+				opts = append(opts, githandler.WithSyncStaleAfter(d))
+			}
+		}
+	}
+	if signedV != nil {
+		opts = append(opts, githandler.WithSignedRefsVerifier(signedV))
+	}
+	mux.Handle(gitPrefix+"/", githandler.NewHandler(opts...))
+	log.Info("specula: mounted git handler",
+		"path", gitPrefix+"/", "configured", ok, "signed", signedV != nil)
+}
+
+// buildGPGVerifier constructs the apt InRelease→Packages→.deb GPG chain verifier
+// from the "apt" protocol's verification.gpg.keyring path. Returns nil (and warns)
+// when the keyring is unset or unreadable so apt downgrades to tofu without crashing.
+func buildGPGVerifier(cfg *config.Config, log *slog.Logger) *verify.GPGVerifier {
+	pc, ok := cfg.Protocols["apt"]
+	if !ok || pc.Verification.GPG == nil || strings.TrimSpace(pc.Verification.GPG.Keyring) == "" {
+		log.Warn("specula: apt GPG keyring not configured — apt tops out at tofu tier")
+		return nil
+	}
+	keyring := pc.Verification.GPG.Keyring
+	v, err := verify.NewGPGVerifier(keyring)
+	if err != nil {
+		log.Warn("specula: apt GPG verifier disabled (keyring load failed) — downgrading apt to tofu",
+			"keyring", keyring, "err", err)
+		return nil
+	}
+	log.Info("specula: apt GPG signed verification enabled",
+		"keyring", keyring, "policy", policyOrWarn(pc.Verification.GPG.Policy))
+	return v
+}
+
+// buildHelmProvVerifier constructs the Helm .prov detached-GPG verifier from the
+// "helm" protocol's verification.provenance.keyring path. Returns nil (and warns)
+// when unset or unreadable so helm downgrades to tofu without crashing.
+func buildHelmProvVerifier(cfg *config.Config, log *slog.Logger) *verify.HelmProvVerifier {
+	pc, ok := cfg.Protocols["helm"]
+	if !ok || pc.Verification.Provenance == nil || strings.TrimSpace(pc.Verification.Provenance.Keyring) == "" {
+		log.Warn("specula: helm provenance keyring not configured — helm tops out at tofu tier")
+		return nil
+	}
+	keyring := pc.Verification.Provenance.Keyring
+	v, err := verify.NewHelmProvVerifier(keyring)
+	if err != nil {
+		log.Warn("specula: helm provenance verifier disabled (keyring load failed) — downgrading helm to tofu",
+			"keyring", keyring, "err", err)
+		return nil
+	}
+	log.Info("specula: helm provenance signed verification enabled",
+		"keyring", keyring, "policy", policyOrWarn(pc.Verification.Provenance.Policy))
+	return v
+}
+
+// buildGitSignedVerifier constructs the git signed tag/commit verifier from the
+// "git" protocol's verification.signed_refs.allowed_signers path. Returns nil (and
+// warns) when unset or unreadable so git stays at tofu without crashing.
+func buildGitSignedVerifier(cfg *config.Config, log *slog.Logger) *verify.GitSignedVerifier {
+	pc, ok := cfg.Protocols["git"]
+	if !ok || pc.Verification.SignedRefs == nil || strings.TrimSpace(pc.Verification.SignedRefs.AllowedSigners) == "" {
+		log.Warn("specula: git allowed-signers not configured — git tops out at tofu tier")
+		return nil
+	}
+	signers := pc.Verification.SignedRefs.AllowedSigners
+	v, err := verify.NewGitSignedVerifier(signers)
+	if err != nil {
+		log.Warn("specula: git signed-refs verifier disabled (allowed-signers load failed) — downgrading git to tofu",
+			"allowed_signers", signers, "err", err)
+		return nil
+	}
+	log.Info("specula: git signed-refs verification enabled",
+		"allowed_signers", signers, "policy", policyOrWarn(pc.Verification.SignedRefs.Policy))
+	return v
+}
+
+// policyOrWarn renders an effective enforce/warn policy for logging ("" → warn).
+// gpg/provenance/signed_refs blocks default to warn (degrade rather than fail).
+func policyOrWarn(p string) string {
+	if p == "" {
+		return "warn"
+	}
+	return p
+}
+
+// onPrivateDownOrDefault renders the effective dependency-confusion fail behaviour
+// for logging ("" → fail_closed).
+func onPrivateDownOrDefault(v string) string {
+	if v == "" {
+		return "fail_closed"
+	}
+	return v
+}
+
+// privateUpstream builds a synthetic upstream.Upstream for a dependency-confusion
+// private index/registry base URL. Marked Official since it is the authoritative
+// source for the private names it owns.
+func privateUpstream(baseURL string) upstream.Upstream {
+	return upstream.Upstream{Name: "private", BaseURL: baseURL, Priority: 0, Official: true}
+}
+
+// upstreamHosts extracts the distinct hostnames from a list of upstream base URLs,
+// used to build the tarball handler's fetch host allowlist. Unparseable entries
+// are skipped.
+func upstreamHosts(ups []config.UpstreamConfig) []string {
+	seen := make(map[string]struct{}, len(ups))
+	out := make([]string, 0, len(ups))
+	for _, u := range ups {
+		parsed, err := url.Parse(u.BaseURL)
+		if err != nil || parsed.Host == "" {
+			continue
+		}
+		host := parsed.Hostname()
+		if _, dup := seen[host]; dup {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	return out
 }
 
 // toUpstreams converts config upstream entries into the upstream package type.

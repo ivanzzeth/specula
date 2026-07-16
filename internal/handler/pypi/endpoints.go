@@ -1,0 +1,513 @@
+// Package pypi — endpoint implementations.
+//
+// serveIndex and serveFile are the real, production-grade endpoint handlers.
+// They follow the same two-tier CAS + verify-on-write pipeline as the OCI and
+// Go-module handlers (internal/handler/oci, internal/handler/gomod) and mirror
+// the mutable / immutable design documented in ARCHITECTURE.md §3 and §8.
+package pypi
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/upstream"
+)
+
+// Content-type constants for PyPI HTTP responses.
+const (
+	// ctSimpleHTML is the default MIME type for PEP 503 HTML simple indexes.
+	ctSimpleHTML = "text/html; charset=utf-8"
+	// ctSimpleJSON is the PEP 691 JSON simple index MIME type.
+	ctSimpleJSON = "application/vnd.pypi.simple.v1+json"
+	// ctWheel is used for wheel / sdist binary file downloads.
+	ctWheel = "application/octet-stream"
+
+	// indexVersionJSON is the ArtifactRef.Version sentinel for a PEP 691 JSON
+	// simple index, distinct from indexVersion ("simple") so the two formats
+	// occupy separate mutable-tier cache slots.
+	indexVersionJSON = "simple-json"
+)
+
+// staler is an optional CacheManager extension for serve-stale-on-upstream-failure
+// (DESIGN-REVIEW H1 / gomod handler pattern).
+type staler interface {
+	LookupStale(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error)
+}
+
+// wantsJSON reports whether the client signals a preference for the PEP 691
+// JSON simple index via its Accept header.
+func wantsJSON(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Accept"), ctSimpleJSON)
+}
+
+// indexRefForRequest builds the mutable ArtifactRef for a /simple/<project>/
+// request, scoped by the requested content format (HTML vs JSON) so the two
+// formats have independent mutable-tier cache entries.
+func indexRefForRequest(project string, r *http.Request) artifact.ArtifactRef {
+	version := indexVersion // "simple" for HTML (from pypi.go)
+	if wantsJSON(r) {
+		version = indexVersionJSON
+	}
+	return artifact.ArtifactRef{
+		Protocol: Protocol,
+		Name:     project,
+		Version:  version,
+		Mutable:  true,
+	}
+}
+
+// contentTypeForRequest returns the HTTP Content-Type for the simple index
+// format the client requested.
+func contentTypeForRequest(r *http.Request) string {
+	if wantsJSON(r) {
+		return ctSimpleJSON
+	}
+	return ctSimpleHTML
+}
+
+// pypiMutableKey returns the MetadataStore key for a mutable PyPI ArtifactRef.
+// Mirrors cache.mutableKey (unexported): protocol + ":" + name + ":" + version.
+func pypiMutableKey(ref artifact.ArtifactRef) string {
+	return ref.Protocol + ":" + ref.Name + ":" + ref.Version
+}
+
+// --------------------------------------------------------------------------
+// isPrivate / selectUpstreams — dependency-confusion guard (DESIGN-REVIEW §4)
+// --------------------------------------------------------------------------
+
+// isPrivate reports whether the PEP 503-normalised project name appears in
+// h.privateNames. Private names must resolve only from the private upstream;
+// they are never queried against the public mirrors.
+func (h *Handler) isPrivate(project string) bool {
+	norm := normalizeProject(project)
+	for _, n := range h.privateNames {
+		if normalizeProject(n) == norm {
+			return true
+		}
+	}
+	return false
+}
+
+// selectUpstreams returns the upstream list for the given project name.
+//
+//   - Private name + private upstream configured → single-item private list.
+//   - Private name + no private upstream → fail-closed error (never public).
+//   - Public name → h.upstreams (public mirror list).
+func (h *Handler) selectUpstreams(project string) ([]upstream.Upstream, error) {
+	if !h.isPrivate(project) {
+		return h.upstreams, nil
+	}
+	if h.privateUpstream == nil {
+		return nil, fmt.Errorf("private name %q: no private upstream configured (fail-closed)", project)
+	}
+	return []upstream.Upstream{*h.privateUpstream}, nil
+}
+
+// --------------------------------------------------------------------------
+// serveIndex — GET/HEAD /simple/<project>/ (mutable, short TTL)
+// --------------------------------------------------------------------------
+
+// serveIndex handles GET/HEAD /simple/<project>/ (PEP 503 HTML + PEP 691 JSON).
+// The index page is mutable (new releases appear over time) and is cached in
+// the short-TTL mutable tier with conditional-GET revalidation.
+func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, project string) {
+	ups, err := h.selectUpstreams(project)
+	if err != nil {
+		// Private name but no private upstream configured.
+		if h.failClosed {
+			h.log.Warn("pypi: private name — no private upstream configured (fail-closed)",
+				"project", project)
+			writeError(w, http.StatusServiceUnavailable,
+				"private package source not available")
+			return
+		}
+		// failClosed=false: fall through to the public mirror list.
+		ups = h.upstreams
+	}
+
+	ref := indexRefForRequest(project, r)
+	ct := contentTypeForRequest(r)
+	h.serveMutable(w, r, ref, ct, ups)
+}
+
+// serveMutable is the shared pipeline for the mutable /simple/ index endpoint:
+//
+//  1. Check the short-TTL cache (fresh → serve immediately).
+//  2. If stale: attempt conditional GET (ETag / Last-Modified). 304 → extend TTL.
+//  3. Complete miss or 200: fresh fetch → quarantine → verify-on-write → store → serve.
+//  4. If upstream down and stale content exists → serve stale (H1 fix).
+func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ct string, ups []upstream.Upstream) {
+	ctx := r.Context()
+
+	// 1. Fresh cache lookup (TTL-gated).
+	entry, err := h.cache.Lookup(ctx, ref)
+	if err != nil {
+		h.log.Error("pypi: mutable lookup", "ref", ref, "err", err)
+		writeError(w, http.StatusInternalServerError, "cache lookup failed")
+		return
+	}
+	if entry != nil {
+		h.serveFromCache(w, r, ref, entry, ct)
+		return
+	}
+
+	// Capture stale entry for serve-stale-on-upstream-failure fallback
+	// (requires the production CacheManager that implements staler).
+	var staleEntry *artifact.CacheEntry
+	if sm, ok := h.cache.(staler); ok {
+		staleEntry, _ = sm.LookupStale(ctx, ref)
+	}
+
+	// 2. Upstream required for revalidation or fresh fetch.
+	if h.upstreamClt == nil || len(ups) == 0 {
+		if staleEntry != nil {
+			h.log.Warn("pypi: no upstream configured; serving stale", "ref", ref)
+			h.serveFromCache(w, r, ref, staleEntry, ct)
+			return
+		}
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	// 3. Conditional GET revalidation when stale entry is available.
+	if prevMeta, hasPrev := h.getMutableUpstreamMeta(ctx, ref); hasPrev && staleEntry != nil {
+		body, umeta, notModified, revalErr := h.upstreamClt.Revalidate(ctx, ref, prevMeta, ups)
+		if revalErr == nil {
+			if notModified {
+				h.extendMutableTTL(ctx, ref, umeta)
+				h.serveFromCache(w, r, ref, staleEntry, ct)
+				return
+			}
+			// 200: store the new body and serve it.
+			defer body.Close()
+			if newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta); storeErr == nil && newEntry != nil {
+				h.serveFromCache(w, r, ref, newEntry, ct)
+				return
+			}
+			// Store failed: fall through to a fresh full fetch.
+		}
+	}
+
+	// 4. Fresh fetch.
+	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, ups)
+	if fetchErr != nil {
+		// Private name + private upstream down → fail-closed (DESIGN-REVIEW §4).
+		if h.isPrivate(ref.Name) && h.failClosed {
+			h.log.Error("pypi: private upstream failed (fail-closed)",
+				"project", ref.Name, "err", fetchErr)
+			writeError(w, http.StatusServiceUnavailable, "private upstream unavailable")
+			return
+		}
+		if staleEntry != nil {
+			h.log.Warn("pypi: upstream failed; serving stale", "ref", ref, "err", fetchErr)
+			h.serveFromCache(w, r, ref, staleEntry, ct)
+			return
+		}
+		h.log.Error("pypi: mutable fetch", "ref", ref, "err", fetchErr)
+		writeError(w, http.StatusBadGateway, "upstream fetch failed")
+		return
+	}
+	defer body.Close()
+
+	newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta)
+	if storeErr != nil {
+		h.log.Error("pypi: store mutable index", "ref", ref, "err", storeErr)
+		writeError(w, http.StatusBadGateway, "failed to cache upstream response")
+		return
+	}
+	h.serveFromCache(w, r, ref, newEntry, ct)
+}
+
+// --------------------------------------------------------------------------
+// serveFile — GET/HEAD /packages/<path>/<file> (immutable, CAS, TOFU)
+// --------------------------------------------------------------------------
+
+// serveFile handles GET/HEAD /packages/<path>/<file>. Wheel and sdist files
+// are immutable (a released file never changes) and are promoted to the
+// permanent CAS tier. TOFU pins the sha256 computed during streaming on first
+// fetch and fails-closed if the same version is later re-fetched with different
+// content (DESIGN-REVIEW §5).
+func (h *Handler) serveFile(w http.ResponseWriter, r *http.Request, name, file string) {
+	// Dependency-confusion guard: parse the project name from the filename and
+	// apply private-upstream routing when it matches h.privateNames.
+	project := extractProjectFromFile(file)
+	ups := h.upstreams
+	if project != "" && h.isPrivate(project) {
+		if h.privateUpstream == nil {
+			if h.failClosed {
+				h.log.Warn("pypi: private name — no private upstream (fail-closed)",
+					"project", project)
+				writeError(w, http.StatusServiceUnavailable,
+					"private package source not available")
+				return
+			}
+			// failClosed=false: fall through to public mirrors.
+		} else {
+			ups = []upstream.Upstream{*h.privateUpstream}
+		}
+	}
+
+	ref := fileRef(name, file)
+	h.serveImmutable(w, r, ref, ups)
+}
+
+// serveImmutable is the shared pipeline for immutable wheel/sdist files:
+//
+//  1. Look up the verified CAS entry (fast path — no upstream contact).
+//  2. Cache miss: fetch from upstream → quarantine → verify-on-write → CAS → serve.
+func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ups []upstream.Upstream) {
+	ctx := r.Context()
+
+	// 1. Verified CAS lookup (fast path).
+	entry, err := h.cache.Lookup(ctx, ref)
+	if err != nil {
+		h.log.Error("pypi: immutable lookup", "ref", ref, "err", err)
+		writeError(w, http.StatusInternalServerError, "cache lookup failed")
+		return
+	}
+	if entry != nil {
+		h.serveFromCache(w, r, ref, entry, ctWheel)
+		return
+	}
+
+	// 2. Cache miss — upstream required.
+	if h.upstreamClt == nil || len(ups) == 0 {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	// 3. Fetch → quarantine → verify-on-write → CAS.
+	entry, err = h.fetchAndStoreFile(ctx, ref, ups)
+	if err != nil {
+		h.log.Error("pypi: fetch immutable", "ref", ref, "err", err)
+		writeError(w, http.StatusBadGateway, "upstream fetch failed")
+		return
+	}
+	if entry == nil {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	h.serveFromCache(w, r, ref, entry, ctWheel)
+}
+
+// --------------------------------------------------------------------------
+// Shared fetch / store helpers
+// --------------------------------------------------------------------------
+
+// fetchBodyAndStore quarantines an already-opened mutable response body,
+// stores it via the verify-on-write pipeline, and overrides the mutable-tier
+// TTL pointer with h.mutableTTLSec (mirroring the gomod handler pattern).
+func (h *Handler) fetchBodyAndStore(ctx context.Context, ref artifact.ArtifactRef, rc io.Reader, umeta artifact.UpstreamMeta) (*artifact.CacheEntry, error) {
+	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
+	if err != nil {
+		return nil, fmt.Errorf("quarantine: %w", err)
+	}
+
+	entry, storeErr := h.cache.Store(ctx, ref, art)
+	if storeErr != nil {
+		cleanup() // no-op if Store already removed art.Path
+		return nil, fmt.Errorf("store: %w", storeErr)
+	}
+	// cache.Store removes art.Path on success; cleanup() is safe no-op.
+
+	// Override the mutable-tier TTL written by cache.Store (default = 0 = always
+	// revalidate) with the configured short TTL so repeated requests within
+	// h.mutableTTLSec do not hit the upstream.
+	if h.meta != nil {
+		me := artifact.MutableEntry{
+			Key:          pypiMutableKey(ref),
+			Protocol:     ref.Protocol,
+			Digest:       art.Digest,
+			ETag:         umeta.ETag,
+			LastModified: umeta.LastModified,
+			TTLSeconds:   h.mutableTTLSec,
+			Upstream:     umeta.Upstream,
+			FetchedAt:    time.Now().UTC(),
+		}
+		if putErr := h.meta.PutMutable(ctx, me); putErr != nil {
+			h.log.Warn("pypi: write mutable TTL pointer", "ref", ref, "err", putErr)
+		}
+	}
+
+	return entry, nil
+}
+
+// fetchAndStoreFile fetches an immutable wheel/sdist from upstream, streams it
+// through the quarantine / verify-on-write pipeline, and promotes it to CAS.
+//
+// # ref.Digest and upstream URL routing
+//
+// PyPI file refs have ref.Digest="" before the content is fetched (the digest
+// is not known from the download URL alone). upstream.buildPath for "pypi" uses
+// the condition (ref.Mutable || ref.Digest == "") to distinguish the mutable
+// simple-index path ("simple/<name>/") from the immutable package path
+// ("packages/<name>/<version>"):
+//
+//	if ref.Mutable || ref.Digest == "" → "simple/<name>/"   ← WRONG for file fetch
+//	else                               → "packages/<name>/<version>"
+//
+// To get the correct "packages/" path we create a temporary copy of ref with
+// Digest="pending" (any non-empty sentinel) for the Fetch call. The real store
+// call uses the original ref (Digest="") so:
+//
+//   - ChecksumVerifier: ref.Digest=="" → no reference check → StatusPass.
+//   - TofuVerifier: pins art.Digest on first sight; detects tampering on re-fetch.
+func (h *Handler) fetchAndStoreFile(ctx context.Context, ref artifact.ArtifactRef, ups []upstream.Upstream) (*artifact.CacheEntry, error) {
+	// Build a fetch ref: Digest != "" so buildPath uses "packages/<name>/<version>".
+	fetchRef := ref
+	fetchRef.Digest = "pending" // sentinel; never stored or validated
+
+	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)
+	if err != nil {
+		return nil, fmt.Errorf("upstream fetch: %w", err)
+	}
+	defer rc.Close()
+
+	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
+	if err != nil {
+		return nil, fmt.Errorf("quarantine: %w", err)
+	}
+
+	// Store with original ref (Digest=""):
+	//  - ChecksumVerifier PASS (no reference digest to compare).
+	//  - TofuVerifier pins art.Digest on first fetch (StatusWarn = first-lock);
+	//    on re-fetch with a different digest → StatusFail (TOFU mismatch).
+	entry, storeErr := h.cache.Store(ctx, ref, art)
+	if storeErr != nil {
+		cleanup()
+		return nil, fmt.Errorf("store: %w", storeErr)
+	}
+	return entry, nil
+}
+
+// --------------------------------------------------------------------------
+// Serve helper
+// --------------------------------------------------------------------------
+
+// serveFromCache writes the artifact identified by ref to the HTTP response.
+// Only already-verified CAS content is ever served (fix C2).
+func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, entry *artifact.CacheEntry, ct string) {
+	ctx := r.Context()
+	rc, cacheEntry, err := h.cache.Serve(ctx, ref, 0, -1)
+	if err != nil {
+		if errors.Is(err, cache.ErrCacheMiss) {
+			writeError(w, http.StatusNotFound, "artifact not in cache")
+		} else {
+			h.log.Error("pypi: serve from cache", "ref", ref, "err", err)
+			writeError(w, http.StatusInternalServerError, "cache serve failed")
+		}
+		return
+	}
+	if rc == nil {
+		writeError(w, http.StatusNotFound, "artifact not in cache")
+		return
+	}
+	defer rc.Close()
+
+	// Prefer size from the CacheEntry returned by Serve; fall back to the one
+	// supplied by the caller (which may have been obtained earlier via Lookup).
+	var size int64
+	if cacheEntry != nil && cacheEntry.Size > 0 {
+		size = cacheEntry.Size
+	} else if entry != nil && entry.Size > 0 {
+		size = entry.Size
+	}
+
+	w.Header().Set("Content-Type", ct)
+	if size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+
+	if r.Method == http.MethodGet {
+		_, _ = io.Copy(w, rc)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Mutable revalidation helpers (mirror gomod handler pattern)
+// --------------------------------------------------------------------------
+
+// getMutableUpstreamMeta returns ETag/LastModified for a mutable entry from
+// the MetadataStore (used for conditional-GET revalidation). Returns (zero,
+// false) when h.meta is nil, the entry is absent, or there is no revalidation
+// state.
+func (h *Handler) getMutableUpstreamMeta(ctx context.Context, ref artifact.ArtifactRef) (artifact.UpstreamMeta, bool) {
+	if h.meta == nil {
+		return artifact.UpstreamMeta{}, false
+	}
+	key := pypiMutableKey(ref)
+	me, err := h.meta.GetMutable(ctx, key)
+	if err != nil || me == nil || (me.ETag == "" && me.LastModified == "") {
+		return artifact.UpstreamMeta{}, false
+	}
+	return artifact.UpstreamMeta{
+		ETag:         me.ETag,
+		LastModified: me.LastModified,
+		Upstream:     me.Upstream,
+	}, true
+}
+
+// extendMutableTTL refreshes FetchedAt in the MetadataStore after a 304
+// Not Modified response, renewing the TTL without a byte transfer.
+func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef, umeta artifact.UpstreamMeta) {
+	if h.meta == nil {
+		return
+	}
+	key := pypiMutableKey(ref)
+	me, err := h.meta.GetMutable(ctx, key)
+	if err != nil || me == nil {
+		return
+	}
+	me.FetchedAt = time.Now().UTC()
+	if umeta.ETag != "" {
+		me.ETag = umeta.ETag
+	}
+	if putErr := h.meta.PutMutable(ctx, *me); putErr != nil {
+		h.log.Warn("pypi: extend mutable TTL", "ref", ref, "err", putErr)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Dependency-confusion helper
+// --------------------------------------------------------------------------
+
+// extractProjectFromFile parses the distribution name from a wheel or sdist
+// filename using the PEP 427 / PEP 625 naming conventions: the project name
+// is the first '-'-delimited component of the basename (before the version).
+// The result is PEP 503-normalised so it can be compared to h.privateNames.
+//
+// Examples:
+//
+//	"numpy-1.21.0-cp39-cp39-linux_x86_64.whl" → "numpy"
+//	"Flask-2.3.0.tar.gz"                       → "flask"
+//	"Django-4.0-py3-none-any.whl"              → "django"
+//	"my_lib-0.1.0.whl"                         → "my-lib"
+//
+// Returns "" when the filename does not follow the convention (no '-').
+func extractProjectFromFile(file string) string {
+	// Strip recognised archive extensions (longest suffix wins).
+	base := file
+	for _, ext := range []string{
+		".whl", ".tar.gz", ".tar.bz2", ".tar.xz", ".zip", ".egg",
+	} {
+		if strings.HasSuffix(base, ext) {
+			base = base[:len(base)-len(ext)]
+			break
+		}
+	}
+	idx := strings.IndexByte(base, '-')
+	if idx <= 0 {
+		return ""
+	}
+	return normalizeProject(base[:idx])
+}
