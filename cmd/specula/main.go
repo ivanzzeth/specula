@@ -16,6 +16,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -274,6 +275,17 @@ func run() error {
 		dataMux.Handle("/token", tokenHandler)
 		log.Info("specula: mounted registry token endpoint", "path", "/token", "planes", "control+data")
 	}
+
+	// Unmatched /api/** must fail as JSON, not as the SPA. The admin routes are
+	// registered as individual patterns on this same mux, so without this guard a
+	// typo'd or removed endpoint would fall through to the "/" catch-all below and
+	// answer an API client with 200 + index.html — a silent, confusing failure.
+	// ServeMux longest-pattern-wins keeps every real /api/v1/... route ahead of it.
+	ctrlMux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"no such API endpoint"}`+"\n")
+	})
 
 	// Embedded WebUI SPA (ARCHITECTURE §11): the "/" catch-all serves the Vite
 	// build output; hashed assets get an immutable long cache, index.html is

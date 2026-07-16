@@ -18,6 +18,28 @@ var knownProtocols = map[string]struct{}{
 	"apt": {}, "helm": {}, "git": {}, "tarball": {},
 }
 
+// protocolAliases maps a user-facing protocol name onto the value the handler
+// actually stores in ArtifactRef.Protocol.
+//
+// The Go module handler stores "gomod" (gomod.Protocol) while the config block,
+// the docs, and the UI tab all say "go". Both names are accepted above, but
+// without this mapping GET /admin/cache/go passes validation and then queries a
+// protocol no row ever carries — producing exactly the silently-empty,
+// misleading "nothing is cached" page the validation exists to prevent. Caught
+// by a real local deployment: stats reported gomod=10 objects while the Go tab
+// showed zero.
+var protocolAliases = map[string]string{
+	"go": "gomod",
+}
+
+// canonicalProtocol resolves a request's protocol name to its stored form.
+func canonicalProtocol(p string) string {
+	if canon, ok := protocolAliases[p]; ok {
+		return canon
+	}
+	return p
+}
+
 // parseTier maps a tier name from the query string onto artifact.Tier.
 // Returns ok=false for an unrecognised name so the handler can 400 rather than
 // silently ignore the filter (which would show the operator the wrong rows
@@ -85,7 +107,7 @@ func (s *Server) handleListCache(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "metadata store not configured")
 		return
 	}
-	protocol := r.PathValue("protocol")
+	protocol := canonicalProtocol(r.PathValue("protocol"))
 	if _, ok := knownProtocols[protocol]; !ok {
 		writeError(w, http.StatusNotFound, "unknown protocol")
 		return
@@ -204,7 +226,7 @@ func (s *Server) handleDeleteCacheEntry(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotImplemented, "metadata store not configured")
 		return
 	}
-	protocol := r.PathValue("protocol")
+	protocol := canonicalProtocol(r.PathValue("protocol"))
 	if _, ok := knownProtocols[protocol]; !ok {
 		writeError(w, http.StatusNotFound, "unknown protocol")
 		return
@@ -238,7 +260,7 @@ func (s *Server) handlePinCacheEntry(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotImplemented, "metadata store not configured")
 		return
 	}
-	protocol := r.PathValue("protocol")
+	protocol := canonicalProtocol(r.PathValue("protocol"))
 	if _, ok := knownProtocols[protocol]; !ok {
 		writeError(w, http.StatusNotFound, "unknown protocol")
 		return
