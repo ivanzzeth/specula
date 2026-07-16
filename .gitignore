@@ -1,0 +1,18 @@
+# Binaries
+/specula
+/bin/
+*.test
+*.out
+
+# Local runtime state
+*.db
+*.db-shm
+*.db-wal
+/specula.yaml
+
+# Blob store / data dirs
+/var/
+/data/
+
+# OS/editor
+.DS_Store

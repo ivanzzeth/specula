@@ -1,0 +1,280 @@
+# specula.example.yaml — reference configuration for Specula v0.2
+#
+# Copy to specula.yaml and edit for your environment.
+# Any value can be overridden with an environment variable:
+#   SPECULA_<LEVEL>__<KEY>=value
+# Example: SPECULA_AUTH__JWT_SECRET=my-secret
+#
+# TTL sentinels (from DESIGN-REVIEW §3, mirrors Nexus convention):
+#   -1 = never revalidate (treat as immutable, permanent cache)
+#    0 = revalidate on every request
+#   >0 = cache for N seconds
+#
+# Trust tier hierarchy (honest tiered trust, ARCHITECTURE §5):
+#   signed     → cryptographic anchor (apt keyring / Go sumdb / cosign keyed / Helm .prov / git signed tag)
+#   consensus  → cross-source quorum (N independent mirrors agree on digest)
+#   tofu       → first-use pin + change alert (including git force-push / history rewrite detection)
+#   checksum   → transport integrity only (prevents bit-rot, NOT a supply-chain guarantee)
+
+# ── Server ────────────────────────────────────────────────────────────────────
+server:
+  # Data plane: all 8 protocol handlers, no consumer auth.
+  # Configure your network policy / mTLS / firewall at the perimeter.
+  data_plane_addr: ":5000"
+
+  # Control plane: embedded WebUI + Admin API (email auth, first user = admin).
+  control_plane_addr: ":8080"
+
+# ── Storage ───────────────────────────────────────────────────────────────────
+storage:
+  blob:
+    # CAS blob store driver: "local" or "s3"
+    driver: local
+    local:
+      # Content-addressed directory tree.  Specula writes blobs as
+      # <root>/<first2hex>/<digest_hex> and hard-links duplicates.
+      root: /var/lib/specula/blobs
+
+    # Uncomment and set driver: s3 to use S3-compatible object storage.
+    # s3:
+    #   bucket: specula-blobs
+    #   endpoint: https://minio.internal:9000   # empty = AWS S3
+    #   region: us-east-1
+    #   access_key_id: ""       # empty → SDK credential chain (IAM role / env)
+    #   secret_access_key: ""
+    #   use_path_style: true    # required for MinIO; false for AWS S3
+
+  meta:
+    # Metadata store driver: "sqlite" (single-node) or "postgres" (HA).
+    # SQLite: WAL mode; use only for DaemonSet / single-instance deployments.
+    # Postgres: concurrent-safe ON CONFLICT upsert; recommended for HA.
+    driver: sqlite
+    dsn: /var/lib/specula/meta.db
+
+    # PostgreSQL example:
+    # driver: postgres
+    # dsn: postgres://specula:changeme@pg.internal:5432/specula?sslmode=require
+
+# ── Cache ─────────────────────────────────────────────────────────────────────
+cache:
+  # Fallback mutable TTL used when a protocol does not set its own.
+  # Mutable metadata = tags, index pages, packuments, refs.
+  # -1 = never revalidate | 0 = always revalidate | >0 = seconds
+  default_mutable_ttl_seconds: 300   # 5 minutes
+
+  # How long to cache 404 (Not Found) responses.
+  # 0 = do not cache 404s; >0 = cache for N seconds.
+  # Matches Artifactory default (1800s) to absorb miss-stampedes.
+  negative_ttl_seconds: 1800
+
+# ── Auth (control plane) ──────────────────────────────────────────────────────
+auth:
+  # HS256 JWT signing key for session cookies.
+  # Leave empty to auto-generate on first start and persist to the DB.
+  # Changing this invalidates all existing sessions.
+  jwt_secret: ""
+
+  # Break-glass admin bearer token. Leave empty to disable.
+  # Should be a high-entropy random string kept in a secret manager.
+  admin_key: ""
+
+  # Set true when the control plane is served over HTTPS.
+  # This sets the Secure flag on the session cookie.
+  cookie_secure: false
+
+# ── Protocols ─────────────────────────────────────────────────────────────────
+# Each key is the protocol name used internally and in metrics/logs.
+# Supported: oci, pypi, npm, go, apt, helm, tarball, git
+protocols:
+
+  # ── OCI ───────────────────────────────────────────────────────────────────
+  oci:
+    # Mutable TTL for tag→digest mappings.
+    # Harbor lesson (#19429): a long TTL here serves stale manifests.
+    # Use HEAD probing (no pull quota consumed) to keep tags fresh.
+    mutable_ttl_seconds: 300   # 5 minutes
+
+    upstreams:
+      - name: daocloud
+        base_url: https://docker.m.daocloud.io
+        priority: 1
+        official: false
+      - name: aliyun
+        base_url: https://registry.aliyuncs.com
+        priority: 2
+        official: false
+      - name: docker-hub
+        base_url: https://registry-1.docker.io
+        priority: 3
+        official: true
+
+    verification:
+      # Without a cosign_key, OCI tops out at consensus or tofu.
+      # Set cosign_key + tiers: [signed, tofu, checksum] for keyed verification.
+      tiers: [tofu, checksum]
+      quorum: 2
+      # cosign_key: /etc/specula/keys/cosign.pub
+
+  # ── PyPI ──────────────────────────────────────────────────────────────────
+  pypi:
+    # PyPI is a flat namespace — dependency confusion is a structural risk.
+    # Specula acts as the SOLE index; clients use only --index-url, never
+    # --extra-index-url. Private-name packages are served from private sources
+    # only; public-name packages are proxied and TOFU-pinned.
+    mutable_ttl_seconds: 1800   # 30 minutes (devpi default)
+
+    upstreams:
+      - name: tuna
+        base_url: https://pypi.tuna.tsinghua.edu.cn
+        priority: 1
+        official: false
+      - name: aliyun
+        base_url: https://mirrors.aliyun.com/pypi
+        priority: 2
+        official: false
+      - name: pypi-org
+        base_url: https://pypi.org
+        priority: 3
+        official: true
+
+    verification:
+      # PEP 740 attestations use Sigstore/Rekor (blocked in CN) with ~5% coverage.
+      # Best achievable in CN: consensus quorum + TOFU.
+      tiers: [consensus, tofu, checksum]
+      quorum: 2
+
+  # ── npm ───────────────────────────────────────────────────────────────────
+  npm:
+    # Scoped packages (@org/pkg) are immune to dependency confusion by design.
+    # Unscoped private packages must be listed in a denylist (no upstream query).
+    mutable_ttl_seconds: 120   # 2 minutes (verdaccio default)
+
+    upstreams:
+      - name: npmmirror
+        base_url: https://registry.npmmirror.com
+        priority: 1
+        official: false
+      - name: npm-registry
+        base_url: https://registry.npmjs.org
+        priority: 2
+        official: true
+
+    verification:
+      # npm provenance uses Sigstore/Rekor (blocked in CN) with ~3–12% coverage.
+      # Best achievable: consensus + TOFU.
+      tiers: [consensus, tofu, checksum]
+      quorum: 2
+
+  # ── Go modules ────────────────────────────────────────────────────────────
+  go:
+    # Go modules use domain-scoped paths — structurally immune to dependency
+    # confusion. sumdb provides Ed25519-signed Merkle tree proofs.
+    # Routed via sum.golang.google.cn or /sumdb/ endpoint of goproxy.cn.
+    mutable_ttl_seconds: 300   # 5 minutes for @v/list, @latest
+
+    upstreams:
+      - name: goproxy-cn
+        base_url: https://goproxy.cn
+        priority: 1
+        official: false
+      - name: goproxy-io
+        base_url: https://goproxy.io
+        priority: 2
+        official: false
+      - name: golang-proxy
+        base_url: https://proxy.golang.org
+        priority: 3
+        official: true
+
+    verification:
+      # sumdb provides signed verification — highest trust in CN.
+      tiers: [signed, tofu, checksum]
+      quorum: 1
+      # sumdb_key pins the Go checksum database public key.
+      # Leave empty to use the default key embedded in x/mod.
+      sumdb_key: ""
+
+  # ── apt ───────────────────────────────────────────────────────────────────
+  apt:
+    # apt uses GPG-signed InRelease → Packages → per-file SHA256 chain.
+    # This is end-to-end verifiable (transport-agnostic) even through Specula.
+    # The distro keyring is obtained out-of-band and cannot be forged by a mirror.
+    mutable_ttl_seconds: 0   # always revalidate: InRelease has its own expiry field
+
+    upstreams:
+      - name: tuna
+        base_url: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+        priority: 1
+        official: false
+      - name: aliyun
+        base_url: https://mirrors.aliyun.com/ubuntu
+        priority: 2
+        official: false
+      - name: ubuntu-archive
+        base_url: https://archive.ubuntu.com/ubuntu
+        priority: 3
+        official: true
+
+    verification:
+      tiers: [signed, tofu, checksum]
+      quorum: 1
+      # keyring: /etc/specula/keyrings/ubuntu-archive-keyring.gpg
+
+  # ── Helm ──────────────────────────────────────────────────────────────────
+  helm:
+    # Classic HTTP repo mode: index.yaml + tgz + optional .prov GPG signature.
+    # OCI-format Helm charts are handled by the oci protocol above.
+    mutable_ttl_seconds: 1800   # 30 minutes for index.yaml
+
+    upstreams:
+      - name: bitnami
+        base_url: https://charts.bitnami.com/bitnami
+        priority: 1
+        official: true
+
+    verification:
+      # .prov GPG signature provides "signed" tier when keyring is configured.
+      tiers: [tofu, checksum]
+      quorum: 1
+      # keyring: /etc/specula/keyrings/helm-signing.gpg
+
+  # ── Tarball ───────────────────────────────────────────────────────────────
+  tarball:
+    # URL-keyed generic download cache. Content is addressed by sha256 digest.
+    # No mutable layer: every URL maps to one digest; re-fetch on cache miss.
+    mutable_ttl_seconds: -1   # immutable once cached
+
+    upstreams:
+      - name: default
+        base_url: https://github.com
+        priority: 1
+        official: true
+
+    verification:
+      tiers: [consensus, tofu, checksum]
+      quorum: 2
+
+  # ── git ───────────────────────────────────────────────────────────────────
+  git:
+    # Public git clone acceleration via bare mirrors (git http-backend CGI).
+    # Push / Authorization-bearing requests are passed through without caching.
+    # refs (branch→SHA) are the mutable layer; git objects are immutable by SHA.
+    mutable_ttl_seconds: 30   # 30 seconds for refs
+
+    upstreams:
+      - name: github
+        base_url: https://github.com
+        priority: 1
+        official: true
+      - name: gitee
+        base_url: https://gitee.com
+        priority: 2
+        official: false
+
+    verification:
+      # tofu: pins ref→SHA on first fetch; alerts on non-fast-forward updates
+      # (force-push / history rewrite detection per ARCHITECTURE §5).
+      # signed: verifies signed tags/commits via allowed_signers when configured.
+      tiers: [tofu, checksum]
+      quorum: 1
+      # allowed_signers: /etc/specula/keys/git-allowed-signers

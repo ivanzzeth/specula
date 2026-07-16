@@ -1,0 +1,232 @@
+// Package config defines the Specula configuration model (server ports, storage
+// blob/meta drivers, cache TTLs with -1/0 sentinels, per-protocol upstreams +
+// verification) and loads it from a YAML file with optional SPECULA_* environment
+// variable overrides.
+//
+// Environment override convention:
+//
+//	SPECULA_ prefix, double-underscore (__) as level separator.
+//	Example: SPECULA_SERVER__DATA_PLANE_ADDR overrides server.data_plane_addr.
+package config
+
+import (
+	"fmt"
+
+	"github.com/knadh/koanf/parsers/yaml"
+	"github.com/knadh/koanf/providers/file"
+	"github.com/knadh/koanf/v2"
+)
+
+// TTL sentinel values (from DESIGN-REVIEW §3, mirrors Nexus convention):
+//
+//	-1 = never revalidate (treat as immutable CAS content)
+//	 0 = revalidate on every request
+const (
+	TTLNeverRevalidate  int64 = -1
+	TTLAlwaysRevalidate int64 = 0
+)
+
+// EnvPrefix is the prefix for all environment variable overrides.
+const EnvPrefix = "SPECULA_"
+
+// Config is the root configuration model.
+type Config struct {
+	Server    ServerConfig              `koanf:"server"`
+	Storage   StorageConfig             `koanf:"storage"`
+	Cache     CacheConfig               `koanf:"cache"`
+	Auth      AuthConfig                `koanf:"auth"`
+	Protocols map[string]ProtocolConfig `koanf:"protocols"`
+}
+
+// ServerConfig holds the two-plane listen addresses (ARCHITECTURE §1).
+type ServerConfig struct {
+	// DataPlaneAddr is the listen address for the 8-protocol data plane.
+	// Consumers hit this address; no authentication is applied here.
+	// Example: ":5000"
+	DataPlaneAddr string `koanf:"data_plane_addr"`
+
+	// ControlPlaneAddr is the listen address for the embedded WebUI +
+	// Admin API (email-authenticated management plane). Example: ":8080"
+	ControlPlaneAddr string `koanf:"control_plane_addr"`
+}
+
+// StorageConfig selects the blob (CAS) and metadata backends.
+type StorageConfig struct {
+	Blob BlobStorageConfig `koanf:"blob"`
+	Meta MetaStorageConfig `koanf:"meta"`
+}
+
+// BlobStorageConfig configures the content-addressed blob store (CAS).
+// Two drivers are supported: "local" (disk-based, hard-link dedup) and
+// "s3" (S3-compatible: AWS S3, MinIO, Ceph RGW, R2).
+type BlobStorageConfig struct {
+	// Driver is "local" or "s3".
+	Driver string          `koanf:"driver"`
+	Local  LocalBlobConfig `koanf:"local"`
+	S3     S3BlobConfig    `koanf:"s3"`
+}
+
+// LocalBlobConfig configures the local-disk CAS driver.
+type LocalBlobConfig struct {
+	// Root is the directory where blobs are stored in a content-addressed
+	// layout (first two hex chars of digest as subdir).
+	Root string `koanf:"root"`
+}
+
+// S3BlobConfig configures the S3-compatible CAS driver.
+type S3BlobConfig struct {
+	Bucket          string `koanf:"bucket"`
+	Endpoint        string `koanf:"endpoint"`          // empty = AWS; set for MinIO/R2/OSS
+	Region          string `koanf:"region"`            // e.g. "us-east-1" or "auto"
+	AccessKeyID     string `koanf:"access_key_id"`     // empty = SDK credential chain
+	SecretAccessKey string `koanf:"secret_access_key"` // empty = SDK credential chain
+	UsePathStyle    bool   `koanf:"use_path_style"`    // required for MinIO
+}
+
+// MetaStorageConfig configures the metadata store (CacheEntry, MutableEntry, Users).
+// Two drivers are supported: "sqlite" (single-instance, WAL mode) and
+// "postgres" (HA, ON CONFLICT upsert).
+type MetaStorageConfig struct {
+	// Driver is "sqlite" or "postgres".
+	Driver string `koanf:"driver"`
+	// DSN is the data source name. For SQLite: file path (e.g. /var/lib/specula/meta.db).
+	// For PostgreSQL: connection string (e.g. postgres://user:pass@host:5432/specula).
+	DSN string `koanf:"dsn"`
+}
+
+// CacheConfig holds global cache defaults that apply to all protocols unless
+// overridden per-protocol.
+type CacheConfig struct {
+	// DefaultMutableTTLSeconds is the fallback TTL for mutable metadata (tags,
+	// index pages, packuments). Use TTLNeverRevalidate (-1) or TTLAlwaysRevalidate (0)
+	// as sentinels; positive values are seconds.
+	DefaultMutableTTLSeconds int64 `koanf:"default_mutable_ttl_seconds"`
+
+	// NegativeTTLSeconds is how long to cache 404 responses (negative cache).
+	// 0 disables negative caching; positive values are seconds.
+	// Default matches Artifactory's 1800s (30 min) to absorb miss stampedes.
+	NegativeTTLSeconds int64 `koanf:"negative_ttl_seconds"`
+}
+
+// AuthConfig configures control-plane authentication (ARCHITECTURE §11).
+type AuthConfig struct {
+	// JWTSecret is the HS256 signing key for session cookies. Empty means
+	// auto-generated on first start and persisted. Must be kept stable across
+	// restarts or all sessions are invalidated.
+	JWTSecret string `koanf:"jwt_secret"`
+
+	// AdminKey is a break-glass Bearer token that bypasses normal session
+	// auth. Should be a high-entropy random string. Empty disables it.
+	AdminKey string `koanf:"admin_key"`
+
+	// CookieSecure sets the Secure flag on session cookies. Set true when
+	// the control plane is behind HTTPS (recommended for production).
+	CookieSecure bool `koanf:"cookie_secure"`
+}
+
+// ProtocolConfig holds per-protocol upstreams and verification policy.
+// Keys in Config.Protocols correspond to protocol names: "oci", "pypi",
+// "npm", "go", "apt", "helm", "tarball", "git".
+type ProtocolConfig struct {
+	// Upstreams is the ordered fallback chain. The handler tries each
+	// in ascending Priority order; lower Priority = tried first.
+	Upstreams []UpstreamConfig `koanf:"upstreams"`
+
+	// Verification configures the chain for this protocol.
+	Verification VerificationConfig `koanf:"verification"`
+
+	// MutableTTLSeconds overrides CacheConfig.DefaultMutableTTLSeconds for
+	// this protocol. TTLNeverRevalidate (-1), TTLAlwaysRevalidate (0), or >0.
+	MutableTTLSeconds int64 `koanf:"mutable_ttl_seconds"`
+}
+
+// UpstreamConfig describes one mirror in the fallback chain for a protocol.
+type UpstreamConfig struct {
+	// Name is a human-readable identifier used in logs and metrics.
+	Name string `koanf:"name"`
+
+	// BaseURL is the root URL for this upstream (no trailing slash).
+	// Example: "https://registry-1.docker.io"
+	BaseURL string `koanf:"base_url"`
+
+	// Priority controls fallback order. Lower = higher priority (tried first).
+	Priority int `koanf:"priority"`
+
+	// Official marks this upstream as the authoritative source. Used by the
+	// consensus verifier as the "origin-check" witness.
+	Official bool `koanf:"official"`
+}
+
+// VerificationConfig configures the verification chain for one protocol
+// (ARCHITECTURE §5, DESIGN-REVIEW §1.2).
+type VerificationConfig struct {
+	// Tiers lists which verification tiers to run for this protocol.
+	// Valid values: "checksum", "tofu", "consensus", "signed".
+	// The chain runs in ascending trust order; the highest tier reached
+	// is recorded in the CacheEntry.
+	Tiers []string `koanf:"tiers"`
+
+	// Quorum is the minimum number of independent upstreams that must
+	// agree on a digest for the "consensus" tier to pass. Must be >= 1
+	// when "consensus" is in Tiers.
+	Quorum int `koanf:"quorum"`
+
+	// CosignKey is the path to a cosign public key (PEM format) for
+	// keyed OCI image verification (--insecure-ignore-tlog).
+	CosignKey string `koanf:"cosign_key"`
+
+	// Keyring is the path to a GPG keyring for apt InRelease / Helm .prov
+	// signature verification.
+	Keyring string `koanf:"keyring"`
+
+	// AllowedSigners is the path to a git allowed-signers file for
+	// verifying signed tags/commits.
+	AllowedSigners string `koanf:"allowed_signers"`
+
+	// SumDBKey is the Go checksum database note verifier key
+	// (golang.org/x/mod/sumdb/note format). Defaults to the Go module
+	// proxy key if empty; explicitly setting it enables pinning.
+	SumDBKey string `koanf:"sumdb_key"`
+}
+
+// Load reads and parses the YAML config file at path, applies SPECULA_*
+// environment variable overrides (highest precedence), validates the result,
+// and returns the populated Config.
+//
+// Validation is fail-fast: all detected errors are joined into a single
+// error value with clear field paths.
+//
+// Environment override format:
+//
+//	SPECULA_<LEVEL>__<LEVEL>__<KEY>
+//
+// Examples:
+//
+//	SPECULA_SERVER__DATA_PLANE_ADDR=:5000
+//	SPECULA_STORAGE__BLOB__DRIVER=s3
+//	SPECULA_PROTOCOLS__OCI__MUTABLE_TTL_SECONDS=300
+func Load(path string) (*Config, error) {
+	k := koanf.New(".")
+
+	// Layer 1: YAML file (base configuration).
+	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
+		return nil, fmt.Errorf("config: load file %q: %w", path, err)
+	}
+
+	// Layer 2: Environment variable overrides.
+	// Provider returns nil, nil from ReadBytes so koanf calls Read().
+	if err := k.Load(newEnvProvider(EnvPrefix), nil); err != nil {
+		return nil, fmt.Errorf("config: load env: %w", err)
+	}
+
+	var cfg Config
+	if err := k.Unmarshal("", &cfg); err != nil {
+		return nil, fmt.Errorf("config: unmarshal: %w", err)
+	}
+
+	if err := Validate(&cfg); err != nil {
+		return nil, err
+	}
+
+	return &cfg, nil
+}
