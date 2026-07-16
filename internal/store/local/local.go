@@ -7,7 +7,6 @@ package local
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/ivanzzeth/specula/internal/digestutil"
 	"github.com/ivanzzeth/specula/internal/store/blob"
 )
 
@@ -156,7 +156,12 @@ func (d *LocalDiskDriver) Put(ctx context.Context, digest string, r io.Reader, s
 	}()
 
 	// Stream: hash and write simultaneously — never holds entire blob in memory.
-	h := sha256.New()
+	// The hash algorithm is selected from the digest's own algorithm prefix so
+	// the CAS is digest-algorithm agnostic (sha256 / sha384 / sha512).
+	h, err := digestutil.HasherFor(digest)
+	if err != nil {
+		return fmt.Errorf("local: %w", err)
+	}
 	mw := io.MultiWriter(tmp, h)
 	written, err := io.Copy(mw, r)
 	if err != nil {

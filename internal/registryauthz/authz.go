@@ -154,12 +154,18 @@ func pullOnly(requested []string) []string {
 // Authorize is the data-plane write chokepoint. It trusts the token scope
 // already verified by the /v2/ Bearer middleware (defense-in-depth re-check of
 // the claims) and resolves the org-owned repo, creating it on a first push.
-func (a *Authz) Authorize(ctx context.Context, repoName string, needWrite bool) (*repo.Repo, error) {
-	action := registrytoken.ActionPull
-	if needWrite {
-		action = registrytoken.ActionPush
-	}
-
+//
+// The action re-checked here is the one the request actually needs, matching the
+// action the middleware challenged for. Checking a DELETE against "push" would
+// deny a correctly scoped delete, because the client's token carries only the
+// delete grant it was challenged for.
+//
+// Permission is decided BEFORE existence: a caller without the grant gets
+// acl.ErrForbidden (403); a caller who holds the grant but names a repo that
+// does not exist gets repo.ErrNotFound (404) — an authorized caller must never
+// be told "forbidden" merely because the row is missing (OCI Distribution
+// expects 202/404/405 on delete, never 403).
+func (a *Authz) Authorize(ctx context.Context, repoName, action string) (*repo.Repo, error) {
 	claims, ok := registrytoken.ClaimsFromContext(ctx)
 	if !ok || claims == nil {
 		return nil, acl.ErrForbidden // no verified token present
@@ -180,7 +186,9 @@ func (a *Authz) Authorize(ctx context.Context, repoName string, needWrite bool) 
 	if !errors.Is(err, repo.ErrNotFound) {
 		return nil, err
 	}
-	if !needWrite {
+	// Only a push may bring a repo into existence. A pull or delete against a
+	// missing repo is a 404 for an authorized caller.
+	if action != registrytoken.ActionPush {
 		return nil, repo.ErrNotFound
 	}
 

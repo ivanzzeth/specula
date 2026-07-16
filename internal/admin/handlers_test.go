@@ -218,6 +218,7 @@ func (m *fakeMetaStore) GetMutable(_ context.Context, _ string) (*artifact.Mutab
 	return nil, nil
 }
 func (m *fakeMetaStore) PutMutable(_ context.Context, _ artifact.MutableEntry) error { return nil }
+func (m *fakeMetaStore) DeleteMutable(_ context.Context, _ string) error             { return nil }
 func (m *fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	return map[string]artifact.SizeStat{}, nil
 }

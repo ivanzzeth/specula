@@ -200,6 +200,16 @@ func (f *fakeMetaStore) PutMutable(_ context.Context, entry artifact.MutableEntr
 	return nil
 }
 
+func (f *fakeMetaStore) DeleteMutable(_ context.Context, key string) error {
+	if f.log != nil {
+		f.log.record("meta.DeleteMutable")
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.mutable, key)
+	return nil
+}
+
 func (f *fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -21,3 +21,7 @@
 /web/node_modules/
 /web/dist/*
 !/web/dist/.gitkeep
+
+# OCI conformance suite run artifacts (scripts/oci-conformance.sh writes these
+# under $WORK; this guards against the binary being run from the repo root).
+/results/

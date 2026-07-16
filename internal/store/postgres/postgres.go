@@ -189,6 +189,15 @@ func (s *PostgresStore) GetMutable(ctx context.Context, key string) (*artifact.M
 	return &e, nil
 }
 
+// DeleteMutable removes the mutable entry for key. A no-op if absent.
+func (s *PostgresStore) DeleteMutable(ctx context.Context, key string) error {
+	const q = `DELETE FROM mutable_entries WHERE key = $1`
+	if _, err := s.pool.Exec(ctx, q, key); err != nil {
+		return fmt.Errorf("postgres: delete_mutable(%s): %w", key, err)
+	}
+	return nil
+}
+
 // PutMutable upserts a MutableEntry using ON CONFLICT DO UPDATE, replacing
 // all fields so callers always hold the freshest revalidation state.
 func (s *PostgresStore) PutMutable(ctx context.Context, entry artifact.MutableEntry) error {

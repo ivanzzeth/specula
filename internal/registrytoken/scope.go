@@ -53,10 +53,12 @@ func ParseScopes(raw []string) []Scope {
 //	/v2/<name>/blobs/<digest>
 //	/v2/<name>/blobs/uploads/…
 //	/v2/<name>/tags/list
+//	/v2/<name>/referrers/<digest>
 //
 // The action is derived from the method: GET/HEAD → pull, DELETE → delete,
-// everything else (PUT/PATCH/POST) → push. isRepoReq is false for the bare
-// /v2/ version probe (no scope required) or an unrecognised path.
+// everything else (PUT/PATCH/POST) → push. The one exception is the blob-upload
+// session namespace, which is always push (see below). isRepoReq is false for
+// the bare /v2/ version probe (no scope required) or an unrecognised path.
 func ParseResourceScope(method, path string) (repoName, action string, isRepoReq bool) {
 	if path == "/v2" || path == "/v2/" {
 		return "", "", false
@@ -68,12 +70,26 @@ func ParseResourceScope(method, path string) (repoName, action string, isRepoReq
 
 	name := ""
 	switch {
+	case strings.Contains(rest, "/blobs/uploads"):
+		// An upload session is part of the push flow whatever the method: even
+		// GET /v2/<name>/blobs/uploads/<uuid> (resume — "how much have you got?")
+		// is meaningful only to a pusher and must be challenged with push scope.
+		// Deriving pull from the GET would challenge the client for a pull token,
+		// which the data-plane's push chokepoint then rejects — a 403 on a
+		// perfectly legitimate resumable upload.
+		name = rest[:strings.Index(rest, "/blobs/uploads")]
+		if name == "" {
+			return "", "", false
+		}
+		return name, ActionPush, true
 	case strings.Contains(rest, "/manifests/"):
 		name = rest[:strings.LastIndex(rest, "/manifests/")]
 	case strings.Contains(rest, "/blobs/"):
 		name = rest[:strings.LastIndex(rest, "/blobs/")]
 	case strings.HasSuffix(rest, "/tags/list"):
 		name = strings.TrimSuffix(rest, "/tags/list")
+	case strings.Contains(rest, "/referrers/"):
+		name = rest[:strings.LastIndex(rest, "/referrers/")]
 	default:
 		return "", "", false
 	}

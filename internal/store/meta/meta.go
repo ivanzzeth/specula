@@ -26,6 +26,12 @@ type MetadataStore interface {
 	GetMutable(ctx context.Context, key string) (*artifact.MutableEntry, error)
 	// PutMutable upserts a MutableEntry with its TTL + revalidation state.
 	PutMutable(ctx context.Context, entry artifact.MutableEntry) error
+	// DeleteMutable removes the mutable entry for key. A no-op if absent.
+	//
+	// The mutable tier is a pointer layer (tag→digest), so deleting a name must
+	// remove the pointer, not merely the bytes it points at: a stale pointer with
+	// a never-revalidate TTL would keep resolving a deleted tag forever.
+	DeleteMutable(ctx context.Context, key string) error
 	// CacheSizeByProtocol returns SUM(size),COUNT(*),MIN/MAX(created_at)
 	// grouped by protocol.
 	CacheSizeByProtocol(ctx context.Context) (map[string]artifact.SizeStat, error)

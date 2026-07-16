@@ -36,6 +36,7 @@ func (f *fakeStore) GetMutable(_ context.Context, _ string) (*artifact.MutableEn
 	return nil, nil
 }
 func (f *fakeStore) PutMutable(_ context.Context, _ artifact.MutableEntry) error { return nil }
+func (f *fakeStore) DeleteMutable(_ context.Context, _ string) error             { return nil }
 func (f *fakeStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	if f.statsErr != nil {
 		return nil, f.statsErr

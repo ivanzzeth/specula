@@ -210,6 +210,15 @@ func (s *SQLiteStore) GetMutable(ctx context.Context, key string) (*artifact.Mut
 	return &e, nil
 }
 
+// DeleteMutable removes the mutable entry for key. A no-op if absent.
+func (s *SQLiteStore) DeleteMutable(ctx context.Context, key string) error {
+	const q = `DELETE FROM mutable_entries WHERE key = ?`
+	if _, err := s.db.ExecContext(ctx, q, key); err != nil {
+		return fmt.Errorf("sqlite: delete mutable entry %q: %w", key, err)
+	}
+	return nil
+}
+
 // PutMutable upserts a MutableEntry with its TTL and conditional-revalidation
 // state (ETag / Last-Modified). FetchedAt defaults to now if zero.
 func (s *SQLiteStore) PutMutable(ctx context.Context, entry artifact.MutableEntry) error {

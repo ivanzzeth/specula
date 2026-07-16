@@ -28,14 +28,14 @@ type allowAuthz struct {
 	r *repo.Repo
 }
 
-func (a *allowAuthz) Authorize(_ context.Context, _ string, _ bool) (*repo.Repo, error) {
+func (a *allowAuthz) Authorize(_ context.Context, _ string, _ string) (*repo.Repo, error) {
 	return a.r, nil
 }
 
 // denyAuthz is an Authorizer that always returns the provided error.
 type denyAuthz struct{ err error }
 
-func (d *denyAuthz) Authorize(_ context.Context, _ string, _ bool) (*repo.Repo, error) {
+func (d *denyAuthz) Authorize(_ context.Context, _ string, _ string) (*repo.Repo, error) {
 	return nil, d.err
 }
 
@@ -161,8 +161,22 @@ func (s *memTagStore) GetTag(_ context.Context, repoID, tag string) (*repo.Tag, 
 	}
 	return t, nil
 }
+
+// ListTags returns every tag belonging to repoID. The real store orders by tag
+// name; callers that care about order sort explicitly, so the map iteration
+// order here is deliberately left unsorted to keep them honest.
 func (s *memTagStore) ListTags(_ context.Context, repoID string) ([]*repo.Tag, error) {
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []*repo.Tag
+	for _, t := range s.tags {
+		if t.RepoID != repoID {
+			continue
+		}
+		cp := *t
+		out = append(out, &cp)
+	}
+	return out, nil
 }
 func (s *memTagStore) DeleteTag(_ context.Context, repoID, tag string) error {
 	s.mu.Lock()

@@ -31,7 +31,6 @@ package registry
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -46,10 +45,25 @@ import (
 	"github.com/ivanzzeth/specula/internal/acl"
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/digestutil"
 	"github.com/ivanzzeth/specula/internal/repo"
 	blobstore "github.com/ivanzzeth/specula/internal/store/blob"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 )
+
+// Registry scope actions (OCI Distribution token scope grammar). The write
+// handler asks the Authorizer for the action the request actually needs so the
+// data-plane chokepoint checks the SAME action the token was scoped for
+// (a delete request carries a "delete" grant, not "push").
+const (
+	actionPull   = "pull"
+	actionPush   = "push"
+	actionDelete = "delete"
+)
+
+// maxManifestBytes bounds a manifest push body. OCI Distribution §"Pushing
+// Manifests" recommends registries reject manifests larger than 4 MiB.
+const maxManifestBytes = 4 << 20
 
 // Authorizer is the write-path authorization chokepoint. Implementations bind
 // repoName ("<org>/<repo>") to its owning org, resolve (or, on a first push,
@@ -57,11 +71,20 @@ import (
 // action via acl.CanAccess. The request carries the verified token claims in its
 // context (registrytoken.ClaimsFromContext), so implementations read the subject
 // from there rather than re-parsing credentials.
+//
+// action is the Distribution scope action the request actually needs — "pull",
+// "push" or "delete" — NOT a needWrite boolean. The distinction matters: the
+// /v2/ Bearer challenge middleware challenges a DELETE with scope
+// "repository:<name>:delete", so the client's token carries a delete grant and
+// no push grant. Re-checking such a request against "push" would deny a properly
+// authorized delete (OCI Distribution §"Deleting" expects 202/404/405, never
+// 403 for a correctly scoped caller).
 type Authorizer interface {
 	// Authorize returns the resolved hosted repo when the principal in ctx may
-	// perform the action (needWrite=true for push/delete) on repoName, else an
-	// error. On a first push it may create and return the new repo row.
-	Authorize(ctx context.Context, repoName string, needWrite bool) (*repo.Repo, error)
+	// perform action on repoName, else an error. Only a push may lazily create
+	// the repo row; a pull or delete against a repo that does not exist yields
+	// repo.ErrNotFound (→ 404), never a permission error.
+	Authorize(ctx context.Context, repoName, action string) (*repo.Repo, error)
 }
 
 // Handler serves the OCI Distribution write endpoints for hosted repos.
@@ -188,7 +211,42 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Anything else (e.g. /v2/<name>/tags/list) → read path.
+	// ── tag listing: /v2/<name>/tags/list ─────────────────────────────────────
+	if strings.HasSuffix(rest, "/tags/list") {
+		name := strings.TrimSuffix(rest, "/tags/list")
+		if name == "" {
+			writeError(w, http.StatusBadRequest, "NAME_INVALID", "invalid repository name")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+			h.listTags(w, r, name)
+		default:
+			w.Header().Set("Allow", "GET, HEAD")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	// ── referrers: /v2/<name>/referrers/<digest> ──────────────────────────────
+	if i := strings.LastIndex(rest, "/referrers/"); i >= 0 {
+		name := rest[:i]
+		subject := rest[i+len("/referrers/"):]
+		if name == "" || subject == "" {
+			writeError(w, http.StatusBadRequest, "NAME_INVALID", "invalid name or digest")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+			h.listReferrers(w, r, name, subject)
+		default:
+			w.Header().Set("Allow", "GET, HEAD")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+		return
+	}
+
+	// Anything else → read path.
 	h.serveRead(w, r)
 }
 
@@ -209,7 +267,7 @@ func (h *Handler) serveRead(w http.ResponseWriter, r *http.Request) {
 // Authorization is checked first so unauthenticated/unauthorised callers cannot
 // consume temp-file resources by creating unlimited upload sessions.
 func (h *Handler) startUpload(w http.ResponseWriter, r *http.Request, name string) {
-	if _, err := h.authz.Authorize(r.Context(), name, true); err != nil {
+	if _, err := h.authz.Authorize(r.Context(), name, actionPush); err != nil {
 		writeAuthzError(w, err)
 		return
 	}
@@ -233,7 +291,7 @@ func (h *Handler) startUpload(w http.ResponseWriter, r *http.Request, name strin
 // patchUpload handles PATCH /v2/<name>/blobs/uploads/<uuid> — appends the
 // request body to the session's quarantine file and reports the new offset.
 func (h *Handler) patchUpload(w http.ResponseWriter, r *http.Request, name, uuid string) {
-	if _, err := h.authz.Authorize(r.Context(), name, true); err != nil {
+	if _, err := h.authz.Authorize(r.Context(), name, actionPush); err != nil {
 		writeAuthzError(w, err)
 		return
 	}
@@ -250,6 +308,10 @@ func (h *Handler) patchUpload(w http.ResponseWriter, r *http.Request, name, uuid
 	if sess.Repo != name {
 		// Guard against cross-repo session hijacking.
 		writeError(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "upload session not found")
+		return
+	}
+
+	if !h.checkChunkContiguous(w, r, name, uuid, sess) {
 		return
 	}
 
@@ -273,6 +335,39 @@ func (h *Handler) patchUpload(w http.ResponseWriter, r *http.Request, name, uuid
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// checkChunkContiguous validates a chunk's Content-Range against what the
+// session has already accumulated, writing the error response and returning
+// false when the chunk does not start exactly at the current offset.
+//
+// OCI Distribution §"Pushing a blob in chunks": a chunk that is not contiguous
+// with the previous one MUST be rejected with 416 Requested Range Not
+// Satisfiable, and the session MUST be left untouched so the client can resume
+// from the Range echoed back. Appending a non-contiguous chunk instead would
+// silently corrupt the blob and surface much later as a baffling
+// DIGEST_INVALID at finalisation rather than an actionable 416 at the chunk
+// that was actually wrong.
+//
+// A chunk without a Content-Range header is an append at the current offset
+// (the streaming-upload form) and is always contiguous by definition.
+func (h *Handler) checkChunkContiguous(w http.ResponseWriter, r *http.Request, name, uuid string, sess *UploadSession) bool {
+	cr := r.Header.Get("Content-Range")
+	if cr == "" {
+		return true
+	}
+	start, _, ok := parseContentRange(cr)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "BLOB_UPLOAD_INVALID", "malformed Content-Range")
+		return false
+	}
+	if start != sess.Offset {
+		writeUploadRange(w, name, uuid, sess.Offset)
+		writeError(w, http.StatusRequestedRangeNotSatisfiable, "BLOB_UPLOAD_INVALID",
+			fmt.Sprintf("chunk starts at %d but upload is at offset %d", start, sess.Offset))
+		return false
+	}
+	return true
+}
+
 // completeUpload handles PUT /v2/<name>/blobs/uploads/<uuid>?digest=… —
 // finalises a chunked (or monolithic single-request) blob upload:
 //
@@ -283,7 +378,7 @@ func (h *Handler) patchUpload(w http.ResponseWriter, r *http.Request, name, uuid
 //     digest is automatic; an identical digest is a no-op).
 //  4. Deletes the upload session and responds 201 Created.
 func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, uuid string) {
-	if _, err := h.authz.Authorize(r.Context(), name, true); err != nil {
+	if _, err := h.authz.Authorize(r.Context(), name, actionPush); err != nil {
 		writeAuthzError(w, err)
 		return
 	}
@@ -291,6 +386,14 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 	declaredDigest := r.URL.Query().Get("digest")
 	if declaredDigest == "" {
 		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", "digest query parameter required")
+		return
+	}
+	// Accept any digest algorithm the OCI image spec registers (sha256 canonical,
+	// sha384, sha512) — the client, not the registry, chooses. Only a malformed
+	// or genuinely unsupported algorithm is DIGEST_INVALID.
+	if err := digestutil.Validate(declaredDigest); err != nil {
+		_ = h.sessions.Delete(r.Context(), uuid)
+		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
 		return
 	}
 
@@ -305,6 +408,13 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 	}
 	if sess.Repo != name {
 		writeError(w, http.StatusNotFound, "BLOB_UPLOAD_UNKNOWN", "upload session not found")
+		return
+	}
+
+	// A closing PUT may itself carry the last chunk, so it is subject to the same
+	// contiguity rule as a PATCH: a Content-Range that skips a gap is 416, not a
+	// blind append that would later fail the digest check.
+	if !h.checkChunkContiguous(w, r, name, uuid, sess) {
 		return
 	}
 
@@ -325,7 +435,8 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 		return
 	}
 
-	// Open the quarantine file and compute the sha256 digest of the full content.
+	// Open the quarantine file and compute the digest of the full content using
+	// the algorithm the client declared.
 	f, err := os.Open(sess.Path)
 	if err != nil {
 		h.log.Error("registry: open upload file", "path", sess.Path, "err", err)
@@ -335,7 +446,13 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 	}
 	defer f.Close()
 
-	hw := sha256.New()
+	algo, _, _ := digestutil.Split(declaredDigest) // Validate above guarantees ok
+	hw, err := digestutil.NewHasher(algo)
+	if err != nil {
+		_ = h.sessions.Delete(r.Context(), uuid)
+		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
+		return
+	}
 	size, err := io.Copy(hw, f)
 	if err != nil {
 		h.log.Error("registry: hash upload file", "err", err)
@@ -344,7 +461,7 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 		return
 	}
 
-	actualDigest := "sha256:" + hex.EncodeToString(hw.Sum(nil))
+	actualDigest := algo + ":" + hex.EncodeToString(hw.Sum(nil))
 	if actualDigest != declaredDigest {
 		// Digest mismatch — discard the upload and report the error.
 		_ = h.sessions.Delete(r.Context(), uuid)
@@ -393,7 +510,7 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 // uploadStatus handles GET /v2/<name>/blobs/uploads/<uuid> — reports the
 // current upload offset so clients can resume interrupted uploads.
 func (h *Handler) uploadStatus(w http.ResponseWriter, r *http.Request, name, uuid string) {
-	if _, err := h.authz.Authorize(r.Context(), name, true); err != nil {
+	if _, err := h.authz.Authorize(r.Context(), name, actionPush); err != nil {
 		writeAuthzError(w, err)
 		return
 	}
@@ -430,7 +547,7 @@ func (h *Handler) uploadStatus(w http.ResponseWriter, r *http.Request, name, uui
 // TODO(R2+): validate that every blob digest referenced inside the manifest
 // body exists in the CAS before accepting the push (OCI Distribution §4.2.2).
 func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref string) {
-	repoRow, err := h.authz.Authorize(r.Context(), name, true)
+	repoRow, err := h.authz.Authorize(r.Context(), name, actionPush)
 	if err != nil {
 		writeAuthzError(w, err)
 		return
@@ -441,10 +558,13 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref 
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	// Bound the read: OCI Distribution recommends registries reject manifests
+	// larger than 4 MiB, and an unbounded io.ReadAll on a request body is a
+	// trivial memory-exhaustion vector on an authenticated-but-hostile push.
+	body, err := readLimited(r.Body, maxManifestBytes)
 	if err != nil {
-		h.log.Error("registry: read manifest body", "name", name, "ref", ref, "err", err)
-		writeError(w, http.StatusInternalServerError, "MANIFEST_INVALID", "failed to read manifest body")
+		h.log.Warn("registry: read manifest body", "name", name, "ref", ref, "err", err)
+		writeError(w, http.StatusBadRequest, "MANIFEST_INVALID", "manifest body too large or unreadable")
 		return
 	}
 	if len(body) == 0 {
@@ -452,9 +572,32 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref 
 		return
 	}
 
-	// Compute the content digest of the manifest bytes.
-	sum := sha256.Sum256(body)
-	digest := "sha256:" + hex.EncodeToString(sum[:])
+	// Compute the content digest of the manifest bytes. When the client pushes by
+	// digest it has declared the algorithm, so honour it (sha256 | sha384 |
+	// sha512) and verify the bytes match; a tag push uses the canonical sha256.
+	digestAlgo := "sha256"
+	if isDigestRef(ref) {
+		if err := digestutil.Validate(ref); err != nil {
+			writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
+			return
+		}
+		digestAlgo, _, _ = digestutil.Split(ref)
+	}
+	hw, err := digestutil.NewHasher(digestAlgo)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
+		return
+	}
+	_, _ = hw.Write(body)
+	digest := digestAlgo + ":" + hex.EncodeToString(hw.Sum(nil))
+
+	// A by-digest push must match the bytes actually received (OCI Distribution
+	// §"Pushing Manifests": the registry MUST reject a mismatching digest).
+	if isDigestRef(ref) && ref != digest {
+		writeError(w, http.StatusBadRequest, "DIGEST_INVALID",
+			fmt.Sprintf("digest mismatch: declared %s actual %s", ref, digest))
+		return
+	}
 
 	// Store the manifest bytes in the shared CAS. BlobStore.Put is idempotent
 	// (same digest → same bytes → no-op), so a repeated push of the same
@@ -484,6 +627,22 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref 
 		h.recordHostedTag(r.Context(), name, ref, digest)
 	}
 
+	// Referrers (OCI 1.1): a manifest carrying a `subject` descriptor is a
+	// referrer of that subject. Index it so GET /v2/<name>/referrers/<subject>
+	// can report it, and echo OCI-Subject so the client knows the registry
+	// understood the link (rather than silently dropping it, which is the signal
+	// to fall back to the tag schema).
+	if meta := parseManifestMeta(body); meta != nil && meta.Subject != nil && meta.Subject.Digest != "" {
+		h.recordReferrer(r.Context(), name, ociDescriptor{
+			MediaType:    meta.MediaType,
+			Digest:       digest,
+			Size:         int64(len(body)),
+			ArtifactType: meta.effectiveArtifactType(),
+			Annotations:  meta.Annotations,
+		}, meta.Subject.Digest)
+		w.Header().Set("OCI-Subject", meta.Subject.Digest)
+	}
+
 	location := fmt.Sprintf("/v2/%s/manifests/%s", name, digest)
 	w.Header().Set("Location", location)
 	w.Header().Set("Content-Length", "0")
@@ -496,23 +655,24 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref 
 // A tag ref deletes the tag→digest pointer; a digest ref removes the manifest
 // blob from the CAS (affects all repos sharing that digest — org admin only).
 func (h *Handler) deleteManifest(w http.ResponseWriter, r *http.Request, name, ref string) {
-	repoRow, err := h.authz.Authorize(r.Context(), name, true)
+	repoRow, err := h.authz.Authorize(r.Context(), name, actionDelete)
 	if err != nil {
 		writeAuthzError(w, err)
 		return
 	}
 
 	if isDigestRef(ref) {
-		// Delete by content digest: remove the blob from CAS.
-		if h.blobs != nil {
-			if delErr := h.blobs.Delete(r.Context(), ref); delErr != nil {
-				h.log.Warn("registry: delete manifest blob", "name", name, "digest", ref, "err", delErr)
-				writeError(w, http.StatusInternalServerError, "MANIFEST_UNKNOWN", "failed to delete manifest blob")
-				return
-			}
+		// Delete by content digest: the manifest itself goes away, so every tag
+		// that resolves to it must go too — otherwise the tag would keep
+		// resolving to a digest whose bytes no longer exist.
+		if delErr := h.deleteManifestByDigest(r.Context(), repoRow, name, ref); delErr != nil {
+			h.log.Error("registry: delete manifest by digest", "name", name, "digest", ref, "err", delErr)
+			writeError(w, http.StatusInternalServerError, "MANIFEST_UNKNOWN", "failed to delete manifest")
+			return
 		}
 	} else {
-		// Delete tag: remove the tag→digest pointer.
+		// Delete tag: remove the tag→digest pointer. The manifest bytes stay in
+		// CAS — they may still be referenced by digest or by another tag.
 		if delErr := h.tags.DeleteTag(r.Context(), repoRow.ID, ref); delErr != nil {
 			if !errors.Is(delErr, repo.ErrNotFound) {
 				h.log.Error("registry: delete tag", "repo", repoRow.ID, "tag", ref, "err", delErr)
@@ -521,6 +681,11 @@ func (h *Handler) deleteManifest(w http.ResponseWriter, r *http.Request, name, r
 			}
 			// Tag not found is a no-op (idempotent delete).
 		}
+		// The tag store row is the authoritative record, but the pull path
+		// resolves tags through the mutable metadata mirror written by
+		// putManifest. Leaving that mirror behind (TTL -1 = never revalidate)
+		// makes a deleted tag keep serving its old manifest forever.
+		h.removeHostedTag(r.Context(), name, ref)
 	}
 
 	w.Header().Set("Content-Length", "0")
@@ -533,7 +698,7 @@ func (h *Handler) deleteManifest(w http.ResponseWriter, r *http.Request, name, r
 // and shared across all orgs, callers should be org admins (enforced via
 // Authorizer + token scope).
 func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request, name, digest string) {
-	if _, err := h.authz.Authorize(r.Context(), name, true); err != nil {
+	if _, err := h.authz.Authorize(r.Context(), name, actionDelete); err != nil {
 		writeAuthzError(w, err)
 		return
 	}
@@ -542,6 +707,30 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request, name, diges
 		writeError(w, http.StatusNotImplemented, "UNSUPPORTED", "blob store not configured")
 		return
 	}
+
+	// A syntactically invalid digest can never name a blob.
+	if err := digestutil.Validate(digest); err != nil {
+		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
+		return
+	}
+
+	// Deleting a blob that is not there is 404 BLOB_UNKNOWN, not 202: the spec
+	// distinguishes "I removed it" from "there was nothing to remove", and
+	// clients use the difference to detect a no-op.
+	exists, err := h.blobs.Exists(r.Context(), digest)
+	if err != nil {
+		h.log.Error("registry: blob exists check", "digest", digest, "err", err)
+		writeError(w, http.StatusInternalServerError, "UNKNOWN", "failed to check blob")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
+		return
+	}
+
+	// Metadata row first, then bytes: a reader must never find a live pointer to
+	// bytes that are already gone.
+	h.removeHostedBlob(r.Context(), name, digest)
 
 	if err := h.blobs.Delete(r.Context(), digest); err != nil {
 		h.log.Error("registry: delete blob", "digest", digest, "err", err)
@@ -590,6 +779,73 @@ func (h *Handler) recordHostedBlob(ctx context.Context, name, digest string, siz
 	}
 }
 
+// deleteManifestByDigest removes a manifest from a hosted repo: every tag that
+// currently resolves to it, its mutable pointers, its CAS metadata row, and
+// finally the bytes themselves.
+//
+// Order matters: pointers first, bytes last. A reader that races this sees
+// either a live pointer to live bytes or no pointer at all — never a pointer to
+// bytes that have already been unlinked.
+func (h *Handler) deleteManifestByDigest(ctx context.Context, repoRow *repo.Repo, name, digest string) error {
+	// 1. Drop every tag resolving to this digest (both the authoritative tag row
+	//    and the mutable mirror the pull path reads).
+	tags, err := h.tags.ListTags(ctx, repoRow.ID)
+	if err != nil {
+		return fmt.Errorf("list tags for digest delete: %w", err)
+	}
+	for _, t := range tags {
+		if t.Digest != digest {
+			continue
+		}
+		if delErr := h.tags.DeleteTag(ctx, repoRow.ID, t.Tag); delErr != nil && !errors.Is(delErr, repo.ErrNotFound) {
+			return fmt.Errorf("delete tag %q: %w", t.Tag, delErr)
+		}
+		h.removeHostedTag(ctx, name, t.Tag)
+	}
+
+	// 2. Drop the CAS metadata row so the pull path stops advertising the blob
+	//    even if the bytes linger (shared CAS: another repo may hold the same
+	//    digest and keep the file alive).
+	h.removeHostedBlob(ctx, name, digest)
+
+	// 3. Remove the bytes. The CAS is shared and content-addressed, so this is
+	//    best-effort: Delete is idempotent and already-absent is not an error.
+	if h.blobs != nil {
+		if delErr := h.blobs.Delete(ctx, digest); delErr != nil {
+			return fmt.Errorf("delete manifest blob: %w", delErr)
+		}
+	}
+	return nil
+}
+
+// removeHostedTag deletes the OCI mutable tag→digest pointer written by
+// recordHostedTag. Best-effort: the authoritative tag row is removed separately.
+func (h *Handler) removeHostedTag(ctx context.Context, name, tag string) {
+	if h.meta == nil {
+		return
+	}
+	if err := h.meta.DeleteMutable(ctx, hostedOCIProtocol+":"+name+":"+tag); err != nil {
+		h.log.Warn("registry: remove hosted tag pointer", "name", name, "tag", tag, "err", err)
+	}
+}
+
+// removeHostedBlob deletes the immutable CacheEntry recorded by
+// recordHostedBlob, so the pull path no longer resolves the digest in this repo.
+func (h *Handler) removeHostedBlob(ctx context.Context, name, digest string) {
+	if h.meta == nil {
+		return
+	}
+	ref := artifact.ArtifactRef{
+		Protocol: hostedOCIProtocol,
+		Name:     name,
+		Version:  digest,
+		Digest:   digest,
+	}
+	if err := h.meta.Delete(ctx, ref); err != nil {
+		h.log.Warn("registry: remove hosted blob metadata", "name", name, "digest", digest, "err", err)
+	}
+}
+
 // recordHostedTag mirrors a hosted tag→digest pointer into the OCI mutable tier
 // (key "oci:<name>:<tag>", never-revalidate TTL) so serveManifest resolves the
 // tag from the metadata store without probing an upstream.
@@ -619,8 +875,15 @@ func isDigestRef(ref string) bool {
 }
 
 // writeAuthzError maps authorization errors to OCI Distribution HTTP responses.
-// acl.ErrForbidden and acl.ErrReadOnly are 403 DENIED; repo.ErrNotFound is 404;
-// unexpected errors default to 403 (fail-closed).
+// acl.ErrForbidden and acl.ErrReadOnly are 403 DENIED (a real permission
+// decision); repo.ErrNotFound is 404 NAME_UNKNOWN (the caller is allowed but the
+// repo does not exist).
+//
+// An unexpected error is 500, NOT 403: "fail closed" means refusing the
+// operation, and a 500 already does that. Reporting a store failure as DENIED
+// misleads the client into thinking its credentials are wrong and violates the
+// spec's status-code contract (e.g. a delete of a repo whose row is missing must
+// surface as 404/405, never 403).
 func writeAuthzError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, acl.ErrForbidden), errors.Is(err, acl.ErrReadOnly):
@@ -628,7 +891,7 @@ func writeAuthzError(w http.ResponseWriter, err error) {
 	case errors.Is(err, repo.ErrNotFound):
 		writeError(w, http.StatusNotFound, "NAME_UNKNOWN", "repository not known")
 	default:
-		writeError(w, http.StatusForbidden, "DENIED", "access denied")
+		writeError(w, http.StatusInternalServerError, "UNKNOWN", "authorization check failed")
 	}
 }
 
@@ -650,9 +913,4 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Docker-Distribution-Api-Version", "registry/2.0")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
-}
-
-// notImplemented is the uniform 501 for a not-yet-built write endpoint.
-func notImplemented(w http.ResponseWriter, what string) {
-	writeError(w, http.StatusNotImplemented, "UNSUPPORTED", what+" not implemented")
 }
