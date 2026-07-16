@@ -82,8 +82,8 @@ func TestLoad_ExampleFile(t *testing.T) {
 	require.NoError(t, err, "example file must load and validate cleanly")
 
 	// Server
-	assert.Equal(t, ":5000", cfg.Server.DataPlaneAddr)
-	assert.Equal(t, ":8080", cfg.Server.ControlPlaneAddr)
+	assert.Equal(t, ":7732", cfg.Server.DataPlaneAddr)
+	assert.Equal(t, ":7733", cfg.Server.ControlPlaneAddr)
 
 	// Storage
 	assert.Equal(t, "local", cfg.Storage.Blob.Driver)
@@ -835,4 +835,53 @@ func TestLoad_MissingFile(t *testing.T) {
 
 func TestEnvPrefix(t *testing.T) {
 	assert.Equal(t, "SPECULA_", config.EnvPrefix)
+}
+
+// TestLoad_PortsAreBakedIn guards the product's ports being real defaults rather
+// than a suggestion that only exists in specula.example.yaml.
+//
+// Before this, a config omitting server.* did not start at all — the ports were
+// documented but not built in, so every deployment had to restate them and any
+// omission was a hard startup failure rather than a sensible default.
+func TestLoad_PortsAreBakedIn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "minimal.yaml")
+	// Deliberately no `server:` block at all.
+	require.NoError(t, os.WriteFile(path, []byte(`
+storage:
+  blob:
+    driver: local
+    local:
+      root: /tmp/specula-test-blobs
+  meta:
+    driver: sqlite
+    dsn: /tmp/specula-test.db
+`), 0o600))
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err, "a config without a server block must start on the built-in ports")
+	assert.Equal(t, config.DefaultDataPlaneAddr, cfg.Server.DataPlaneAddr)
+	assert.Equal(t, config.DefaultControlPlaneAddr, cfg.Server.ControlPlaneAddr)
+	assert.Equal(t, ":7732", cfg.Server.DataPlaneAddr, "SPEC on a phone keypad; not 5000")
+	assert.Equal(t, ":7733", cfg.Server.ControlPlaneAddr, "not 8080")
+}
+
+// TestLoad_ExplicitPortsOverrideDefaults keeps the defaults from becoming a floor
+// an operator cannot move.
+func TestLoad_ExplicitPortsOverrideDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "custom.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+server:
+  data_plane_addr: ":19999"
+  control_plane_addr: ":19998"
+storage:
+  blob: {driver: local, local: {root: /tmp/b}}
+  meta: {driver: sqlite, dsn: /tmp/m.db}
+`), 0o600))
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, ":19999", cfg.Server.DataPlaneAddr)
+	assert.Equal(t, ":19998", cfg.Server.ControlPlaneAddr)
 }

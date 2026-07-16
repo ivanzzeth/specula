@@ -13,6 +13,7 @@ import (
 	"fmt"
 
 	"github.com/knadh/koanf/parsers/yaml"
+	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 )
@@ -458,6 +459,13 @@ type DependencyConfusionConfig struct {
 func Load(path string) (*Config, error) {
 	k := koanf.New(".")
 
+	// Layer 0: built-in defaults. These are the product's ports, not a suggestion
+	// living in an example file — a config that omits them must still start, and
+	// start on Specula's own ports rather than refusing to boot.
+	if err := k.Load(confmap.Provider(defaults(), "."), nil); err != nil {
+		return nil, fmt.Errorf("config: load defaults: %w", err)
+	}
+
 	// Layer 1: YAML file (base configuration).
 	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
 		return nil, fmt.Errorf("config: load file %q: %w", path, err)
@@ -479,4 +487,28 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// Default listen addresses. These are Specula's ports, baked into the binary —
+// a config that omits them starts here rather than failing to boot.
+//
+// 7732/7733 spell "SPEC" on a phone keypad (S=7 P=7 E=3 C=2): Specula, and the
+// specs it exists to conform to. They are deliberately not 5000/8080. Port 5000
+// is the Docker registry / zot default — the single most likely thing to already
+// be listening on a host that wants an OCI cache — and 8080 needs no
+// explanation; on the development host both were already taken, as was 9090.
+// A collision here is not a cosmetic problem: it has already caused a
+// conformance run to silently grade a different server.
+const (
+	DefaultDataPlaneAddr    = ":7732"
+	DefaultControlPlaneAddr = ":7733"
+)
+
+// defaults returns the built-in configuration, applied beneath the YAML file and
+// environment overrides.
+func defaults() map[string]any {
+	return map[string]any{
+		"server.data_plane_addr":    DefaultDataPlaneAddr,
+		"server.control_plane_addr": DefaultControlPlaneAddr,
+	}
 }
