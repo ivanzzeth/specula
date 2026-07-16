@@ -342,10 +342,14 @@ func TestGomodSecondFetchCacheHit(t *testing.T) {
 //   - @v/{v}.mod is an IMMUTABLE endpoint backed by the permanent CAS. A second
 //     fetch never contacts the upstream regardless of elapsed time.
 //
-// The TTL is set to 1 s and the test sleeps 1.1 s between the two list fetches
-// to reliably trigger TTL expiry.
+// A long mutable TTL keeps the "fresh" assertions immune to CPU contention;
+// expiry is forced deterministically by backdating fetched_at (ageMutableEntries)
+// instead of sleeping, so the test never races the wall clock.
 func TestGomodListIsMutable(t *testing.T) {
-	const mutableTTL = int64(1) // 1-second TTL for deterministic expiry
+	// A long TTL so the "within TTL" assertions can never expire spuriously
+	// under CPU contention; expiry is then forced deterministically by
+	// backdating fetched_at (see ageMutableEntries) rather than by sleeping.
+	const mutableTTL = int64(3600)
 
 	tmp := t.TempDir()
 	s := newSpeculaStack(t, tmp)
@@ -373,8 +377,8 @@ func TestGomodListIsMutable(t *testing.T) {
 	assert.Equal(t, hitList1, atomic.LoadInt64(&cnt.list),
 		"immediate second @v/list (within TTL) must NOT re-contact upstream")
 
-	// ── Wait for TTL to expire (1 s + 100 ms margin) ────────────────────────
-	time.Sleep(1100 * time.Millisecond)
+	// ── Force TTL expiry deterministically (no sleep, no wall-clock race) ────
+	ageMutableEntries(t, s.metaStore, 2*time.Hour)
 
 	// ── Third @v/list — TTL expired → upstream re-contacted ──────────────────
 	status, body = httpGet(t, srv.URL+"/"+fakeMod+"/@v/list")

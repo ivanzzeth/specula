@@ -484,9 +484,13 @@ func TestAptTamperedDebFAIL(t *testing.T) {
 //
 //   - InRelease and Packages are MUTABLE: a second request within the TTL is served
 //     from the mutable cache without contacting the upstream.
-//   - After TTL expiry (1 s TTL + 1.1 s sleep), the upstream is re-contacted.
+//   - After TTL expiry (forced by backdating fetched_at, not by sleeping), the
+//     upstream is re-contacted.
 func TestAptDistsCachingMutable(t *testing.T) {
-	const mutableTTL = int64(1) // 1-second TTL for deterministic expiry
+	// A long TTL so the "within TTL" assertions can never expire spuriously
+	// under CPU contention; expiry is then forced deterministically by
+	// backdating fetched_at (see ageMutableEntries) rather than by sleeping.
+	const mutableTTL = int64(3600)
 
 	tmp := t.TempDir()
 	fix := newAptFixture(t)
@@ -516,8 +520,8 @@ func TestAptDistsCachingMutable(t *testing.T) {
 	hits2 := atomic.LoadInt64(&cnt.inRelease)
 	assert.Equal(t, hits1, hits2, "round2 (within TTL): upstream must NOT be re-contacted")
 
-	// Wait for TTL to expire.
-	time.Sleep(1100 * time.Millisecond)
+	// Force TTL expiry deterministically (no sleep, no wall-clock race).
+	ageMutableEntries(t, s.metaStore, 2*time.Hour)
 
 	// Round 3: post-TTL — upstream must be re-contacted.
 	status, body = aptGet(t, srv.URL+inReleasePath)
