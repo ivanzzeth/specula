@@ -23,6 +23,22 @@ import (
 // A mirror cannot forge the signature without the publisher's private key, so a
 // passing check attests real publisher authenticity, not transport integrity.
 //
+// # Provenance format
+//
+// The .prov file is a PGP clear-signed document whose plaintext body is a YAML
+// block that mirrors the chart's Chart.yaml, followed by a "files:" mapping
+// whose values are "sha256:<hex>":
+//
+//	files:
+//	  <chart>.tgz: sha256:<64-char-hex>
+//
+// This is the exact format produced and consumed by helm.sh/helm/v3/pkg/provenance
+// (see pkg/provenance/provenance.go GenerateKey / Verify). We implement the same
+// verification without importing helm.sh/helm/v3 (which drags in k8s.io and bumps
+// the Go floor — see DEPS phase note). The cryptographic primitive used is
+// ProtonMail/go-crypto's clearsign package, which is the official successor to
+// the deprecated golang.org/x/crypto/openpgp used by older helm versions.
+//
 // # Tier
 //
 // Tier() is TierSigned. When no .prov attachment is present the caller

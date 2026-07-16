@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
-	"github.com/ProtonMail/go-crypto/openpgp/clearsign"
+	debcontrol "pault.ag/go/debian/control"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 )
@@ -168,6 +168,12 @@ func isPackagesFile(version string) bool {
 // quarantine file, verifies the signature against the local keyring, and
 // populates the suiteSHA256s cache so subsequent Packages verifications can
 // confirm their content hash against the signed release.
+//
+// GPG verification and RFC2822 paragraph parsing are both delegated to
+// pault.ag/go/debian/control.NewParagraphReader, which uses
+// ProtonMail/go-crypto under the hood — the same stack we use for helmprov.
+// This replaces the former hand-rolled bufio.Scanner parse of the SHA256
+// section with a spec-correct control-file parser.
 func (v *GPGVerifier) verifyInRelease(ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	data, err := os.ReadFile(art.Path)
 	if err != nil {
@@ -178,27 +184,33 @@ func (v *GPGVerifier) verifyInRelease(ref artifact.ArtifactRef, art *artifact.Ar
 		}, fmt.Errorf("gpg: read InRelease: %w", err)
 	}
 
-	// Parse the clear-signed PGP message. Decode returns nil on malformed input.
-	block, _ := clearsign.Decode(data)
-	if block == nil {
+	// NewParagraphReader detects the "-----BEGIN PGP " header, verifies the
+	// clear-signed GPG signature against v.keyring, and positions the reader
+	// on the signed plaintext. An error means the signature is invalid or
+	// the document is malformed — either case is a fatal chain break.
+	pr, err := debcontrol.NewParagraphReader(bytes.NewReader(data), &v.keyring)
+	if err != nil {
 		return artifact.Result{
 			Status:  artifact.StatusFail,
 			Tier:    artifact.TierSigned,
-			Message: "gpg: InRelease is not a valid clear-signed PGP message",
+			Message: fmt.Sprintf("gpg: InRelease GPG verification failed: %v", err),
 		}, nil
 	}
 
-	// Verify the embedded PGP signature against the local keyring.
-	if _, err := block.VerifySignature(v.keyring, nil); err != nil {
+	// Read the single RFC2822 paragraph that constitutes the InRelease body.
+	para, err := pr.Next()
+	if err != nil {
 		return artifact.Result{
 			Status:  artifact.StatusFail,
 			Tier:    artifact.TierSigned,
-			Message: fmt.Sprintf("gpg: InRelease GPG signature verification failed: %v", err),
+			Message: fmt.Sprintf("gpg: InRelease paragraph parse failed: %v", err),
 		}, nil
 	}
 
-	// Parse SHA256 sums from the signed plaintext.
-	sha256s := parseInReleaseSHA256s(block.Plaintext)
+	// Parse SHA256 sums from the "SHA256:" multi-line field in the paragraph.
+	// The library stores continuation lines (leading space stripped) joined by
+	// "\n", so each line is "<sha256hex> <size> <relpath>".
+	sha256s := parseInReleaseSHA256Field(para.Values["SHA256"])
 
 	// Derive suite from the dists path: "noble/InRelease" → "noble".
 	suite := strings.TrimSuffix(ref.Version, "/InRelease")
@@ -271,6 +283,8 @@ func (v *GPGVerifier) verifyPackages(ref artifact.ArtifactRef, art *artifact.Art
 	}
 
 	// Parse Packages content to extract pool .deb SHA256s.
+	// Use pault.ag/go/debian/control.ParseBinaryIndex for spec-correct RFC2822
+	// stanza parsing instead of a hand-rolled bufio.Scanner.
 	data, err := os.ReadFile(art.Path)
 	if err != nil {
 		return artifact.Result{
@@ -280,7 +294,21 @@ func (v *GPGVerifier) verifyPackages(ref artifact.ArtifactRef, art *artifact.Art
 		}, fmt.Errorf("gpg: read Packages: %w", err)
 	}
 
-	poolHashes := parsePackagesSHA256s(data)
+	entries, err := debcontrol.ParseBinaryIndex(bufio.NewReader(bytes.NewReader(data)))
+	if err != nil {
+		return artifact.Result{
+			Status:  artifact.StatusFail,
+			Tier:    artifact.TierSigned,
+			Message: fmt.Sprintf("gpg: parse Packages index %q: %v", relPath, err),
+		}, nil
+	}
+
+	poolHashes := make(map[string]string, len(entries))
+	for i := range entries {
+		if entries[i].Filename != "" && entries[i].SHA256 != "" {
+			poolHashes[entries[i].Filename] = entries[i].SHA256
+		}
+	}
 
 	// Merge into the shared pool SHA256s map.
 	v.mu.Lock()
@@ -339,78 +367,23 @@ func (v *GPGVerifier) verifyPool(ref artifact.ArtifactRef, art *artifact.Artifac
 // Parsing helpers
 // --------------------------------------------------------------------------
 
-// parseInReleaseSHA256s extracts the SHA256 field from the signed plaintext of
-// an InRelease file. Returns a map from relative-to-suite file path to SHA256 hex.
+// parseInReleaseSHA256Field extracts the per-file SHA256 entries from the
+// value of the "SHA256:" field as stored by pault.ag/go/debian/control's
+// ParagraphReader. That library strips the leading space from each
+// continuation line and joins them with "\n", so each line is:
 //
-// The SHA256 section format is:
+//	<sha256hex> <size> <relpath>
 //
-//	SHA256:
-//	 <sha256hex> <size> <relpath>
-//	 <sha256hex> <size> <relpath>
-func parseInReleaseSHA256s(plaintext []byte) map[string]string {
+// The returned map is from relative-to-suite file path to SHA256 hex.
+func parseInReleaseSHA256Field(value string) map[string]string {
 	result := make(map[string]string)
-	scanner := bufio.NewScanner(bytes.NewReader(plaintext))
-	inSHA256 := false
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "SHA256:" {
-			inSHA256 = true
-			continue
-		}
-		if inSHA256 {
-			if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-				// " <sha256hex> <size> <relpath>"
-				fields := strings.Fields(strings.TrimLeft(line, " \t"))
-				if len(fields) == 3 {
-					sha256hex := fields[0]
-					relPath := fields[2]
-					result[relPath] = sha256hex
-				}
-			} else {
-				// Non-indented line ends the SHA256 section.
-				inSHA256 = false
-			}
+	for _, line := range strings.Split(value, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 {
+			// <sha256hex> <size> <relpath>
+			result[fields[2]] = fields[0]
 		}
 	}
-	return result
-}
-
-// parsePackagesSHA256s extracts Filename and SHA256 from a debian Packages index.
-// Returns a map from pool path (e.g. "pool/main/l/libc6/libc6_2.35_amd64.deb")
-// to SHA256 hex.
-//
-// Packages files consist of RFC822-style stanzas separated by blank lines.
-func parsePackagesSHA256s(data []byte) map[string]string {
-	result := make(map[string]string)
-	var filename, sha256sum string
-
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	// Increase the scanner buffer for large Packages files.
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-
-	commit := func() {
-		if filename != "" && sha256sum != "" {
-			result[filename] = sha256sum
-		}
-		filename, sha256sum = "", ""
-	}
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			commit()
-			continue
-		}
-		switch {
-		case strings.HasPrefix(line, "Filename: "):
-			filename = strings.TrimPrefix(line, "Filename: ")
-		case strings.HasPrefix(line, "SHA256: "):
-			sha256sum = strings.TrimPrefix(line, "SHA256: ")
-		}
-	}
-	// Commit the last stanza (Packages files may or may not end with a blank line).
-	commit()
 	return result
 }
 

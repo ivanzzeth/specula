@@ -1,13 +1,15 @@
 package verify
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
+
+	"golang.org/x/net/html"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 )
@@ -52,9 +54,6 @@ var _ MirrorDigestFetcher = (*HTTPMirrorDigestFetcher)(nil)
 // hostile or oversized mirror response can never exhaust memory (the consensus
 // path must stay cheap — it is metadata, not a blob).
 const maxIndexBytes = 4 << 20 // 4 MiB
-
-// pep503SHA256 matches a "sha256=<64 hex>" URL fragment in a simple-index href.
-var pep503SHA256 = regexp.MustCompile(`sha256=([0-9a-fA-F]{64})`)
 
 // FetchDigest returns the sha256 digest the mirror advertises for ref, using a
 // single metadata request. See the type doc for per-protocol behaviour.
@@ -131,41 +130,73 @@ func (f *HTTPMirrorDigestFetcher) fetchPyPISHA256(ctx context.Context, base stri
 	if err != nil {
 		return "", err
 	}
-	hex, ok := pep503DigestForFile(string(body), filename)
+	hex, ok := pep503DigestForFile(body, filename)
 	if !ok {
 		return "", fmt.Errorf("consensus: pypi index for %s has no sha256 for file %q", ref.Name, filename)
 	}
 	return "sha256:" + strings.ToLower(hex), nil
 }
 
-// pep503DigestForFile scans a simple-index HTML page for an anchor referencing
-// filename and returns the sha256 hex from its "#sha256=" fragment. It matches
-// the anchor whose href path segment ends with filename so a substring of a
-// longer filename cannot be mistaken for it.
-func pep503DigestForFile(html, filename string) (string, bool) {
-	for _, seg := range strings.Split(html, "href=") {
-		// Isolate the quoted href value: href="...."
-		q := strings.IndexAny(seg, `"'`)
-		if q < 0 {
-			continue
+// pep503DigestForFile parses a PEP 503 simple-index HTML page using
+// golang.org/x/net/html and returns the sha256 hex advertised for the given
+// filename. Per PEP 503 the sha256 is in the URL fragment of an <a> element:
+//
+//	<a href="…/<filename>#sha256=<64-hex-chars>">…</a>
+//
+// Using a real HTML parser rather than regex/string-splitting ensures we
+// handle any valid HTML that a PyPI-compatible server might emit, including
+// whitespace variations, entity encoding, and attribute ordering.
+func pep503DigestForFile(body []byte, filename string) (string, bool) {
+	doc, err := html.Parse(bytes.NewReader(body))
+	if err != nil {
+		return "", false
+	}
+	return walkHTMLForDigest(doc, filename)
+}
+
+// walkHTMLForDigest recursively walks the HTML node tree looking for <a>
+// elements whose href references filename with a sha256 fragment.
+func walkHTMLForDigest(n *html.Node, filename string) (string, bool) {
+	if n.Type == html.ElementNode && n.Data == "a" {
+		for _, a := range n.Attr {
+			if a.Key == "href" {
+				if hex, ok := extractSHA256FromHref(a.Val, filename); ok {
+					return hex, true
+				}
+			}
 		}
-		rest := seg[q+1:]
-		end := strings.IndexAny(rest, `"'`)
-		if end < 0 {
-			continue
-		}
-		href := rest[:end]
-		// The path (before the fragment) must reference this exact filename.
-		pathPart := href
-		if h := strings.IndexByte(pathPart, '#'); h >= 0 {
-			pathPart = pathPart[:h]
-		}
-		if !strings.HasSuffix(pathPart, "/"+filename) && pathPart != filename && !strings.HasSuffix(pathPart, filename) {
-			continue
-		}
-		if m := pep503SHA256.FindStringSubmatch(href); m != nil {
-			return m[1], true
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		if hex, ok := walkHTMLForDigest(c, filename); ok {
+			return hex, true
 		}
 	}
 	return "", false
+}
+
+// extractSHA256FromHref splits an href on '#', checks the path suffix matches
+// the exact filename, and extracts the sha256 hex from the fragment.
+// Returns ("", false) when the href doesn't match or has no sha256 fragment.
+func extractSHA256FromHref(href, filename string) (string, bool) {
+	pathPart := href
+	fragment := ""
+	if h := strings.IndexByte(href, '#'); h >= 0 {
+		pathPart = href[:h]
+		fragment = href[h+1:]
+	}
+	// The path component must end with "/" + filename or equal filename exactly,
+	// preventing a shorter name from matching a longer one (e.g. "foo" ≠ "foobar").
+	if !strings.HasSuffix(pathPart, "/"+filename) && pathPart != filename {
+		return "", false
+	}
+	const pfx = "sha256="
+	if !strings.HasPrefix(fragment, pfx) {
+		return "", false
+	}
+	hex := fragment[len(pfx):]
+	// A SHA256 hex digest is always exactly 64 hex characters.
+	if len(hex) != 64 {
+		return "", false
+	}
+	return hex, true
 }
