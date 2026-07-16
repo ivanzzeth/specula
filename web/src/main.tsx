@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider } from 'react-router-dom';
 import { router } from './App';
 import { AuthProvider } from './components/auth';
-import Spinner from './ui/Spinner';
 import './index.css';
 
 // After a new deploy, any still-open tab's old index.html references stale hashed chunk names.
@@ -24,8 +23,14 @@ createRoot(document.getElementById('root')!).render(
     <AuthProvider>
       <Suspense
         fallback={
+          // The root fallback: amber arc on the app background, matching the
+          // one in RequireAuth so the boot sequence never changes character.
           <div className="grid min-h-screen place-items-center bg-slate-950">
-            <Spinner />
+            <span
+              role="status"
+              aria-label="Loading"
+              className="inline-block size-5 animate-spin rounded-full border-2 border-slate-800 border-t-brand"
+            />
           </div>
         }
       >

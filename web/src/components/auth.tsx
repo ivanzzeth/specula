@@ -2,6 +2,8 @@
 //   - Logged in → render app; RequireAdmin gates admin pages by system_role.
 //   - Not logged in → RequireAuth renders LoginScreen (email/password login or register).
 // First registered user automatically becomes admin (backend enforced).
+//
+// Migrated from ../ui/* (deprecated) to @/components/ui/* (members-tokens agent, §DEPRECATED.md).
 
 import {
   createContext,
@@ -12,11 +14,12 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react';
-import { getMe, login, register, logout as apiLogout, ApiError } from '../api/client';
+import { AlertCircle } from 'lucide-react';
+import { ApiError, getMe, login, logout as apiLogout, register } from '../api/client';
 import type { UserDTO } from '../api/types';
-import Button from '../ui/Button';
-import Spinner from '../ui/Spinner';
-import { Input, Field } from '../ui/Field';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 interface AuthCtx {
   user: UserDTO | null;
@@ -67,7 +70,9 @@ export function useAuth(): AuthCtx {
   return useContext(Ctx);
 }
 
-// LoginScreen: shown when unauthenticated.
+// ── LoginScreen ───────────────────────────────────────────────────────────────
+
+/** LoginScreen is shown when the user is not authenticated. */
 function LoginScreen() {
   const { refresh } = useAuth();
   const [mode, setMode] = useState<'login' | 'register'>('login');
@@ -88,74 +93,123 @@ function LoginScreen() {
       }
       refresh();
     } catch (ex) {
-      setErr(ex instanceof ApiError ? ex.detail || ex.message : 'Login failed, please retry');
+      setErr(ex instanceof ApiError ? ex.detail || ex.message : 'Authentication failed — please retry');
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="grid min-h-screen place-items-center bg-slate-950">
-      <div className="w-full max-w-sm rounded-xl border border-slate-800 bg-slate-900 p-8 text-center">
-        {/* Logo mark */}
-        <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-lg bg-brand text-brand-fg font-bold text-xl">
-          S
+    <div className="grid min-h-screen place-items-center bg-slate-950 px-4">
+      <div className="w-full max-w-xs">
+        {/* Brand mark — the amber square that appears once in the chrome */}
+        <div className="mb-6 flex flex-col items-center gap-2">
+          <div
+            className="grid size-10 place-items-center rounded bg-brand font-bold text-brand-fg"
+            style={{ fontSize: '18px' }}
+          >
+            S
+          </div>
+          <div className="text-center">
+            <h1 className="text-section font-semibold tracking-tight text-slate-100">Specula</h1>
+            <p className="mt-0.5 text-data text-slate-400">
+              {mode === 'login'
+                ? 'Sign in to continue'
+                : 'The first registered user becomes system admin'}
+            </p>
+          </div>
         </div>
-        <h1 className="text-lg font-semibold text-slate-100">Specula</h1>
-        <p className="mt-1 mb-6 text-sm text-slate-400">
-          {mode === 'login'
-            ? 'Sign in to continue'
-            : '首个注册用户自动成为管理员'}
-        </p>
 
-        <form className="space-y-3 text-left" onSubmit={submit}>
-          <Field label="Email">
-            <Input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              autoComplete="email"
-              required
-            />
-          </Field>
-          <Field label="Password" hint={mode === 'register' ? 'At least 8 characters' : undefined}>
-            <Input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
-              autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
-              minLength={mode === 'register' ? 8 : undefined}
-              required
-            />
-          </Field>
-          {err && <p className="text-xs text-red-400">{err}</p>}
-          <Button type="submit" className="w-full" disabled={busy}>
-            {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Register'}
-          </Button>
-        </form>
+        {/* Panel */}
+        <div className="rounded border border-slate-800 bg-slate-900">
+          <form className="space-y-3 p-4" onSubmit={(e) => void submit(e)}>
+            <div className="space-y-1.5">
+              <Label htmlFor="auth-email">Email</Label>
+              <Input
+                id="auth-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                required
+                autoFocus
+              />
+            </div>
 
-        <button
-          className="mt-4 text-xs text-slate-500 hover:text-slate-300 transition-colors"
-          onClick={() => {
-            setMode(mode === 'login' ? 'register' : 'login');
-            setErr('');
-          }}
-        >
-          {mode === 'login' ? 'No account? Register' : 'Already have an account? Sign in'}
-        </button>
+            <div className="space-y-1.5">
+              <Label htmlFor="auth-password">Password</Label>
+              <Input
+                id="auth-password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                autoComplete={mode === 'register' ? 'new-password' : 'current-password'}
+                minLength={mode === 'register' ? 8 : undefined}
+                required
+              />
+              {mode === 'register' && (
+                <p className="text-micro text-slate-500">At least 8 characters</p>
+              )}
+            </div>
+
+            {err && (
+              <p className="flex items-center gap-1.5 text-data text-destructive">
+                <AlertCircle className="size-3.5 shrink-0" />
+                {err}
+              </p>
+            )}
+
+            <Button
+              type="submit"
+              variant="default"
+              size="default"
+              className="w-full"
+              disabled={busy}
+            >
+              {busy
+                ? 'Please wait…'
+                : mode === 'login'
+                  ? 'Sign in'
+                  : 'Create account'}
+            </Button>
+          </form>
+
+          {/* Mode toggle — hairline-separated footer */}
+          <div className="border-t border-slate-800 px-4 py-3 text-center">
+            <button
+              type="button"
+              className="text-data text-slate-500 transition-colors duration-fast hover:text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+              onClick={() => {
+                setMode(mode === 'login' ? 'register' : 'login');
+                setErr('');
+              }}
+            >
+              {mode === 'login'
+                ? 'No account yet? Register'
+                : 'Already have an account? Sign in'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
+
+// ── Guards ────────────────────────────────────────────────────────────────────
 
 export function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) {
     return (
       <div className="grid min-h-screen place-items-center bg-slate-950">
-        <Spinner />
+        {/* Inline spinner — no deprecated import needed */}
+        <span
+          role="status"
+          aria-label="Loading"
+          className="inline-block size-5 animate-spin rounded-full border-2 border-slate-800 border-t-brand"
+        />
       </div>
     );
   }
@@ -168,7 +222,7 @@ export function RequireAdmin({ children }: { children: ReactNode }) {
   if (loading) return null;
   if (!isAdmin) {
     return (
-      <div className="rounded-lg border border-slate-800 bg-slate-900 p-8 text-center text-sm text-slate-400">
+      <div className="rounded border border-slate-800 bg-slate-900 p-8 text-center text-data text-slate-400">
         Admin access required. Ask an existing admin to elevate your account.
       </div>
     );
