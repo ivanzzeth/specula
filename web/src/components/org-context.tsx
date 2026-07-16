@@ -10,6 +10,8 @@ import {
 
 import { getMe, listOrgs, setActiveOrg as setClientOrg } from '@/api/client';
 import type { OrgDTO } from '@/api/types';
+import { CreateOrgDialog } from '@/components/create-org-dialog';
+import { Button } from '@/components/ui/button';
 
 const STORAGE_KEY = 'specula:activeOrgId';
 
@@ -159,20 +161,59 @@ export function RequireOrg({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!activeOrg) {
-    return (
-      <div className="rounded border border-slate-800 bg-slate-900 p-8 text-center">
-        <p className="text-data text-slate-100">
-          {orgs.length === 0 ? 'You are not a member of any organisation.' : 'No organisation selected.'}
-        </p>
-        <p className="mt-1 text-data text-slate-400">
-          {orgs.length === 0
-            ? 'Ask an administrator to invite you, or create one from the organisation switcher.'
-            : 'Pick one from the switcher in the top bar to continue.'}
-        </p>
-      </div>
-    );
-  }
+  if (!activeOrg) return <NoOrgPanel hasOrgs={orgs.length > 0} />;
 
   return <>{children}</>;
+}
+
+/**
+ * NoOrgPanel is the answer to "why is this page refusing me?".
+ *
+ * Two genuinely different situations, so two different answers:
+ *
+ *  - member of nothing → membership is invitation-only, and the account has no
+ *    invitation. That is an authorization decision, not a fault, so it is
+ *    stated plainly AND paired with the one action that resolves it without
+ *    anyone else's help: create your own org. Without that action this panel is
+ *    a dead end — the user can only wait to be invited by someone they may have
+ *    no way to contact.
+ *  - a member, but none selected → just pick one.
+ */
+function NoOrgPanel({ hasOrgs }: { hasOrgs: boolean }) {
+  const { refresh, switchOrg } = useOrg();
+  const [createOpen, setCreateOpen] = useState(false);
+
+  return (
+    <div className="rounded border border-slate-800 bg-slate-900 p-8 text-center">
+      <p className="text-data text-slate-100">
+        {hasOrgs ? 'No organisation selected.' : 'You are not a member of any organisation.'}
+      </p>
+      <p className="mt-1 text-data text-slate-400">
+        {hasOrgs
+          ? 'Pick one from the switcher in the top bar to continue.'
+          : 'Organisations are invitation-only — ask an administrator to invite this email address.'}
+      </p>
+
+      {!hasOrgs && (
+        <>
+          <div className="mx-auto mt-5 flex max-w-xs items-center gap-3">
+            <span className="h-px flex-1 bg-slate-800" />
+            <span className="text-micro uppercase tracking-wider text-slate-600">or</span>
+            <span className="h-px flex-1 bg-slate-800" />
+          </div>
+          <Button className="mt-5" onClick={() => setCreateOpen(true)}>
+            Create your own organisation
+          </Button>
+          <CreateOrgDialog
+            open={createOpen}
+            onOpenChange={setCreateOpen}
+            onCreated={(o) => {
+              refresh();
+              switchOrg(o.id);
+            }}
+          />
+        </>
+      )}
+    </div>
+  );
 }

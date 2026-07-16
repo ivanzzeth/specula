@@ -15,10 +15,20 @@ export interface LoginResponse {
 export interface MeResponse {
   user: UserDTO;
   is_admin: boolean;
-  /** The caller's active org, resolved server-side (or via the X-Org-Id header). */
+  /**
+   * The caller's active org, resolved from the X-Org-Id header. Absent when the
+   * caller named no org, or belongs to none — the server never invents one, so
+   * `undefined` here means "no active org", not "the default org".
+   */
   active_org_id?: string;
   active_org_role?: string;
-  orgs?: OrgDTO[];
+  /** The active org is an implicit system-role read-only view, not a membership. */
+  active_org_system_access?: boolean;
+  /**
+   * Every org the caller is a member of. Always present (possibly empty) — an
+   * empty list is the actionable "you belong to no organization" state.
+   */
+  orgs: OrgDTO[];
 }
 
 export interface ProtocolStat {
@@ -274,6 +284,11 @@ export interface OrgDTO {
   created_at: string;
   /** The caller's effective role in this org, when known. */
   role?: string;
+  /**
+   * True when this org is visible only through a system-role holder's implicit
+   * read-only view rather than a real membership.
+   */
+  system_access?: boolean;
 }
 
 export interface OrgsResponse {
@@ -282,7 +297,8 @@ export interface OrgsResponse {
 
 export interface CreateOrgRequest {
   name: string;
-  slug: string;
+  /** Optional: the server derives the slug from the name when omitted. */
+  slug?: string;
 }
 
 export interface MemberDTO {
@@ -320,9 +336,14 @@ export interface InvitationDTO {
   created_at: string;
 }
 
+export interface InvitationsResponse {
+  invitations: InvitationDTO[];
+}
+
 export interface CreateInvitationRequest {
   email: string;
-  role: string;
+  /** Omit for the least-privilege default (viewer). "owner" is never accepted. */
+  role?: string;
   expires_at?: string;
 }
 

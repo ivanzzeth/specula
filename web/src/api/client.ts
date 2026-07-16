@@ -24,6 +24,7 @@ import type {
   OrgsResponse,
   CreateOrgRequest,
   MembersResponse,
+  InvitationsResponse,
   MemberDTO,
   AddMemberRequest,
   PatchMemberRequest,
@@ -332,8 +333,35 @@ export function createInvitation(
   });
 }
 
-export function acceptInvitation(token: string): Promise<void> {
-  return reqVoid('/invitations/accept', { method: 'POST', body: JSON.stringify({ token }) });
+export function listInvitations(orgId: string): Promise<InvitationsResponse> {
+  return reqJSON<InvitationsResponse>(`/orgs/${seg(orgId)}/invitations`);
+}
+
+/**
+ * Respond to an invitation. The invitation's status is a property of the
+ * resource, so accepting is a PATCH of it rather than an action endpoint.
+ *
+ * Accepting returns the membership row that was just written — the caller uses
+ * its org_id to switch straight into the org they joined.
+ *
+ * Error taxonomy the caller should surface distinctly:
+ *   403 — the invitation is addressed to a different email
+ *   404 — no such invitation
+ *   409 — already accepted/declined (a spent token)
+ *   410 — expired
+ */
+export function acceptInvitation(token: string): Promise<MemberDTO> {
+  return reqJSON<MemberDTO>(`/invitations/${seg(token)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'accepted' }),
+  });
+}
+
+export function declineInvitation(token: string): Promise<InvitationDTO> {
+  return reqJSON<InvitationDTO>(`/invitations/${seg(token)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status: 'declined' }),
+  });
 }
 
 // ---- API keys ----

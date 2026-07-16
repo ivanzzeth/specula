@@ -13,6 +13,7 @@ import { RepoDetail } from './pages/RepoDetail';
 import { PushGuide } from './pages/PushGuide';
 import { CacheBrowser } from './pages/CacheBrowser';
 import { Members } from './pages/Members';
+import { InvitationAccept } from './pages/InvitationAccept';
 import { Tokens } from './pages/Tokens';
 
 /**
@@ -101,6 +102,12 @@ export const router = createBrowserRouter([
           </RequireAdmin>
         ),
       },
+
+      // ── Invitation acceptance ─────────────────────────────────────────────
+      // Deliberately NOT RequireOrg: the invitee has no org — that is why they
+      // were sent this link. Guarding it with RequireOrg would refuse the one
+      // page that gives them one.
+      { path: '/invitations/:token', element: <InvitationAccept /> },
 
       // ── Registry zone ─────────────────────────────────────────────────────
       // Org-scoped: every request here is X-Org-Id'd, and the push commands are

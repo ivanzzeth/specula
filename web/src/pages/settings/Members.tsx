@@ -15,9 +15,10 @@
  *   removeMember(orgId, email)   → 204
  */
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
-import { AlertCircle, Trash2, UserPlus } from 'lucide-react';
+import { AlertCircle, Send, Trash2, UserPlus } from 'lucide-react';
 
 import { useAuth } from '@/components/auth';
+import { InviteMemberDialog } from '@/components/invite-member-dialog';
 import { useOrg } from '@/components/org-context';
 import { addMember, listMembers, patchMember, removeMember } from '@/api/client';
 import type { MemberDTO } from '@/api/types';
@@ -95,6 +96,9 @@ export function Members() {
   const [members, setMembers] = useState<MemberDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
+
+  // Invite dialog (consent-based: writes no membership until accepted)
+  const [inviteOpen, setInviteOpen] = useState(false);
 
   // Add member dialog
   const [addOpen, setAddOpen] = useState(false);
@@ -236,10 +240,18 @@ export function Members() {
       <div className="flex items-start justify-between gap-4">
         <PageHeading orgSlug={activeOrg?.slug} />
         {canAdminOrg && (
-          <Button variant="default" size="sm" onClick={() => setAddOpen(true)}>
-            <UserPlus />
-            Add member
-          </Button>
+          <div className="flex items-center gap-2">
+            {/* Invite is the consent-based path and the common one, so it leads;
+                Add member grants access outright and stays secondary. */}
+            <Button variant="ghost" size="sm" onClick={() => setAddOpen(true)}>
+              <UserPlus />
+              Add member
+            </Button>
+            <Button variant="default" size="sm" onClick={() => setInviteOpen(true)}>
+              <Send />
+              Invite
+            </Button>
+          </div>
         )}
       </div>
 
@@ -392,6 +404,15 @@ export function Members() {
             />
           </CardContent>
         </Card>
+      )}
+
+      {/* ── Invite dialog ─────────────────────────────────────────────────── */}
+      {activeOrg && (
+        <InviteMemberDialog
+          orgId={activeOrg.id}
+          open={inviteOpen}
+          onOpenChange={setInviteOpen}
+        />
       )}
 
       {/* ── Add member dialog ─────────────────────────────────────────────── */}
