@@ -136,8 +136,36 @@ docker push specula.local/myorg/app:v1
 
 ## 5. WebUI（符合用户心智 —— 覆盖全部 8 协议，不止镜像）
 
-信息架构对齐用户既有心智（Docker Hub / Harbor / GHCR / 各语言 registry），沿用工程控制台主题
-（IBM Plex Mono + 琥珀 + 暗色）。**两条主线 + 运维分区**：
+信息架构对齐用户既有心智（Docker Hub / Harbor / GHCR / 各语言 registry）。**两条主线 + 运维分区**。
+
+### 5.0 技术栈与设计方向（硬性约束）
+
+**组件底座：shadcn/ui**（Radix primitives + CVA + Tailwind；组件 copy-in 进仓库，非运行时依赖）。
+配合已有 React18 + Vite + TypeScript + Tailwind。图表 recharts（经 shadcn chart 封装）。
+
+**视觉方向：工程控制台 / 仪表盘（industrial instrument panel）—— 选定即坚决执行，不混搭。**
+
+> ⚠️ **反模板铁律**（`rules/web/design-quality.md` + `frontend-design` skill）：
+> **禁止交付"看起来像默认 shadcn/Tailwind 模板"的界面**。shadcn 只作**行为底座**
+> （可访问性、键盘导航、焦点管理），视觉必须按下列令牌**全量改造**，不得沿用其默认外观。
+
+| 令牌 | 值 | 理由 |
+|---|---|---|
+| 字体 | **IBM Plex Mono**（单一等宽，sans/mono 同源，自托管） | 仪表/终端气质，有性格，非默认字体栈 |
+| 强调色 | **仪表琥珀 `#ffb02e`**（fg `#1a1200`），**唯一**强调色 | 一个主导场 + 选择性强调，拒绝彩虹调色板 |
+| 中性阶 | slate 重映射为**暖近黑**：950 应用底 / 900 面板 / 800 边框 / 400 次要 / 100 主要文字 | 暗色优先，深度靠层次不靠阴影 |
+| 圆角 | **2–3px（近直角）** | 反 shadcn 默认大圆角 |
+| 分隔 | **发丝线（1px hairline）取代阴影** | 工业仪表感 |
+| 导航态 | **文字色即状态**（active = 琥珀，无 pill 背景） | 克制、非模板 |
+| 密度 | **偏密** | 运维/开发者工具，密度是优点 |
+| 动效 | 克制：仅用于**揭示层级 / 暂存信息 / 强化操作**，一两个记忆点，不撒微交互 | frontend-design skill |
+
+**必须达到（design-quality.md 要求 ≥4 项）**：尺度对比造层级、间距有节奏（非到处等距）、
+**语义化用色**（状态 / 信任档 / 健康度的颜色有含义而非装饰）、hover/focus/active 是设计过的、
+**数据可视化是设计系统的一部分**（非事后附加）。
+
+**实施前必读技能**：`frontend-design`（视觉方向与执行规则）；**写任何图表代码前必读 `dataviz`**
+（缓存仪表盘、容量趋势、信任档分布、命中率都算）。
 
 ### 5.1 主线 A —— Registry（OCI，可写托管）
 - **组织切换器**（顶栏，X-Org-Id）+ 组织列表/创建
