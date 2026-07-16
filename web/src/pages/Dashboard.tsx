@@ -1,26 +1,45 @@
+/**
+ * Dashboard — the cache overview, and the app's landing route ("/").
+ *
+ * This is the Cache zone's "Overview" (REGISTRY-DESIGN §5.3): what the proxy is
+ * holding right now, how much room is left, and how it grew. It is the first
+ * surface an operator sees, so it carries the design language rather than
+ * apologising for it.
+ *
+ * ── INTEGRATION NOTE (R3) ────────────────────────────────────────────────────
+ * The stats overview previously existed TWICE: here (pre-R3, off-token) and as
+ * Config.tsx's "Overview" tab (on-token, built by the ops agent). One overview,
+ * one home: this route owns it, and Config.tsx is now configuration-only. The
+ * charts moved to components/charts/CacheCharts.tsx because they are no longer
+ * an ops-page detail — they are this page's primary content.
+ *
+ * HONESTY CONTRACT (REGISTRY-DESIGN §5.0):
+ *   · No hit/miss ratio — the API does not expose one. We do not invent it.
+ *   · No tier distribution here — that needs per-protocol cache queries; the
+ *     Cache Browser answers "was this verified?" per entry instead.
+ *   · `backend_disk_*` is the backend store's disk, not necessarily the host's.
+ *   · Unknown values render "—", never a fake 0.
+ */
+
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { getStats, getStatsSeries } from '../api/client';
-import type { StatsResponse, SeriesResponse } from '../api/types';
-import Spinner from '../ui/Spinner';
+import { Link } from 'react-router-dom';
 
-// Recharts loaded lazily so it only pulls in on first navigation to this page.
-const Charts = lazy(() => import('./DashboardCharts'));
+import { getStats, getStatsSeries } from '@/api/client';
+import type { StatsResponse, SeriesResponse } from '@/api/types';
+import { Card, CardContent, CardHeader, CardTitle, Readout } from '@/components/ui/card';
+import { SkeletonRows } from '@/components/ui/skeleton';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { formatBytes } from '@/lib/utils';
 
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
-function StatCard({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-      <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-1">{label}</div>
-      <div className="text-2xl font-semibold text-slate-100 tabular-nums">{value}</div>
-    </div>
-  );
-}
+// recharts is heavy — it only enters the bundle once this route renders.
+const CacheCharts = lazy(() => import('@/components/charts/CacheCharts'));
 
 export function Dashboard() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
@@ -29,7 +48,9 @@ export function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([getStats(), getStatsSeries()])
+    // The series is supplementary: if it fails, the page is still useful, so it
+    // must not take the whole overview down with it.
+    Promise.all([getStats(), getStatsSeries().catch(() => null)])
       .then(([s, sr]) => {
         setStats(s);
         setSeries(sr);
@@ -40,115 +61,199 @@ export function Dashboard() {
 
   if (loading) {
     return (
-      <div className="flex items-center gap-2 text-slate-400">
-        <Spinner /> Loading stats…
+      <div className="space-y-3">
+        <PageHeading />
+        <Card>
+          <CardContent>
+            <SkeletonRows rows={6} />
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
   if (err) {
-    return <div className="text-red-400 text-sm">{err}</div>;
+    return (
+      <div className="space-y-3">
+        <PageHeading />
+        <Card>
+          <CardContent className="text-data text-destructive">{err}</CardContent>
+        </Card>
+      </div>
+    );
   }
 
   if (!stats) return null;
 
   const diskTotal = stats.backend_disk_free + stats.backend_disk_used;
-  const diskPct = diskTotal > 0 ? Math.round((stats.backend_disk_used / diskTotal) * 100) : 0;
+  const diskPct =
+    diskTotal > 0
+      ? Math.min(100, Math.round((stats.backend_disk_used / diskTotal) * 100))
+      : 0;
+
+  // Gauge colour is DATA, so it comes off the status-lamp ramp, never off the
+  // amber accent — amber means "interactive" everywhere else in this UI, and a
+  // gauge that turns amber at 80% would read as a control, not a warning.
+  const gaugeClass =
+    diskPct >= 90 ? 'bg-health-blocked' : diskPct >= 80 ? 'bg-tier-tofu' : 'bg-tier-signed';
+
+  const perProtocol = stats.per_protocol ?? [];
+  const hasPerProtocol = perProtocol.length > 0;
+  const hasSeries = (series?.points?.length ?? 0) > 0;
+  const showCharts = hasPerProtocol || hasSeries;
 
   return (
-    <div className="space-y-6 max-w-5xl">
-      <div>
-        <h1 className="text-base font-semibold text-slate-100">Dashboard</h1>
-        <p className="text-xs text-slate-500 mt-0.5">Cache statistics overview</p>
+    <div className="space-y-3">
+      <PageHeading />
+
+      {/* ── Readout tiles ─────────────────────────────────────────────────────
+          Hairline grid: the 1px gap IS the border (gap-px over a slate-800
+          field), so four tiles read as one instrument cluster rather than four
+          floating cards. */}
+      <div className="grid grid-cols-2 gap-px border border-slate-800 bg-slate-800 sm:grid-cols-4">
+        <Readout
+          label="Total Objects"
+          value={stats.total_objects.toLocaleString()}
+          accent
+          className="bg-slate-900"
+        />
+        <Readout
+          label="Total Cached"
+          value={formatBytes(stats.total_bytes)}
+          className="bg-slate-900"
+        />
+        <Readout
+          label="Disk Used"
+          value={formatBytes(stats.backend_disk_used)}
+          className="bg-slate-900"
+        />
+        <Readout
+          label="Disk Free"
+          value={formatBytes(stats.backend_disk_free)}
+          className="bg-slate-900"
+        />
       </div>
 
-      {/* Top stat cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <StatCard label="Total Objects" value={stats.total_objects.toLocaleString()} />
-        <StatCard label="Total Bytes" value={fmtBytes(stats.total_bytes)} />
-        <StatCard label="Disk Used" value={fmtBytes(stats.backend_disk_used)} />
-        <StatCard label="Disk Free" value={fmtBytes(stats.backend_disk_free)} />
-      </div>
-
-      {/* Disk usage bar */}
+      {/* ── Disk gauge ────────────────────────────────────────────────────── */}
       {diskTotal > 0 && (
-        <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-          <div className="flex justify-between text-[11px] text-slate-500 mb-2 uppercase tracking-wider">
-            <span>Disk Usage</span>
-            <span>{diskPct}%</span>
-          </div>
-          <div className="h-2 rounded-full bg-slate-800 overflow-hidden">
-            <div
-              className="h-full bg-brand transition-all"
-              style={{ width: `${diskPct}%` }}
-            />
-          </div>
-          <div className="flex justify-between text-[11px] text-slate-600 mt-1">
-            <span>{fmtBytes(stats.backend_disk_used)} used</span>
-            <span>{fmtBytes(diskTotal)} total</span>
-          </div>
-        </div>
-      )}
-
-      {/* Per-protocol table */}
-      {stats.per_protocol && stats.per_protocol.length > 0 && (
-        <div className="rounded-lg border border-slate-800 bg-slate-900 overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-800">
-            <span className="text-[11px] uppercase tracking-wider text-slate-500">
-              Per-Protocol
+        <Card>
+          <CardHeader>
+            <CardTitle>Disk usage</CardTitle>
+            <span className="tnum text-data text-slate-400">
+              {diskPct}% of {formatBytes(diskTotal)}
             </span>
-          </div>
-          <table className="w-full text-[13px]">
-            <thead>
-              <tr className="border-b border-slate-800">
-                {['Protocol', 'Objects', 'Bytes', 'Oldest', 'Newest'].map((h) => (
-                  <th
-                    key={h}
-                    className="px-4 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-slate-500"
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/70">
-              {stats.per_protocol.map((p) => (
-                <tr key={p.protocol}>
-                  <td className="px-4 py-2.5 text-brand font-medium">{p.protocol}</td>
-                  <td className="px-4 py-2.5 text-slate-300 tabular-nums">
-                    {p.objects.toLocaleString()}
-                  </td>
-                  <td className="px-4 py-2.5 text-slate-300 tabular-nums">{fmtBytes(p.bytes)}</td>
-                  <td className="px-4 py-2.5 text-slate-500 tabular-nums">
-                    {p.oldest_unix > 0 ? new Date(p.oldest_unix * 1000).toLocaleDateString() : '—'}
-                  </td>
-                  <td className="px-4 py-2.5 text-slate-500 tabular-nums">
-                    {p.newest_unix > 0 ? new Date(p.newest_unix * 1000).toLocaleDateString() : '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+          </CardHeader>
+          <CardContent>
+            <div
+              className="h-1.5 w-full overflow-hidden rounded-[1px] bg-slate-800"
+              role="meter"
+              aria-valuenow={diskPct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={`Disk usage: ${diskPct}%`}
+            >
+              <div className={`h-full transition-all ${gaugeClass}`} style={{ width: `${diskPct}%` }} />
+            </div>
+            <div className="mt-1.5 flex justify-between text-data text-slate-500">
+              <span className="tnum">{formatBytes(stats.backend_disk_used)} used</span>
+              <span className="tnum">{formatBytes(diskTotal)} total</span>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
-      {/* Time-series chart (lazy) */}
-      {series && series.points && series.points.length > 0 && (
-        <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-          <div className="text-[11px] uppercase tracking-wider text-slate-500 mb-3">
-            Bytes Over Time {series.protocol ? `— ${series.protocol}` : '(all protocols)'}
-          </div>
-          <Suspense
-            fallback={
-              <div className="flex items-center gap-2 text-slate-400 h-40">
-                <Spinner /> Loading chart…
-              </div>
-            }
-          >
-            <Charts points={series.points} />
-          </Suspense>
-        </div>
+      {/* ── Per-protocol table ────────────────────────────────────────────── */}
+      {hasPerProtocol && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Per-protocol cache</CardTitle>
+            <p className="text-data text-slate-400">
+              Objects and bytes currently held in the cache store.
+            </p>
+          </CardHeader>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Protocol</TableHead>
+                <TableHead className="w-28 text-right">Objects</TableHead>
+                <TableHead className="w-28 text-right">Bytes</TableHead>
+                <TableHead className="w-32 text-right">Oldest entry</TableHead>
+                <TableHead className="w-32 text-right">Newest entry</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {perProtocol.map((p) => (
+                <TableRow key={p.protocol}>
+                  <TableCell className="font-medium">
+                    {/* The protocol name is the way into the Cache Browser —
+                        "6,412 npm objects" is a number until you can open it. */}
+                    <Link
+                      to={`/cache/${p.protocol}`}
+                      className="text-brand transition-colors duration-fast hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      {p.protocol}
+                    </Link>
+                  </TableCell>
+                  <TableCell className="tnum text-right text-slate-300">
+                    {p.objects.toLocaleString()}
+                  </TableCell>
+                  <TableCell className="tnum text-right text-slate-300">
+                    {formatBytes(p.bytes)}
+                  </TableCell>
+                  <TableCell className="tnum text-right text-slate-500">
+                    {p.oldest_unix > 0 ? new Date(p.oldest_unix * 1000).toLocaleDateString() : '—'}
+                  </TableCell>
+                  <TableCell className="tnum text-right text-slate-500">
+                    {p.newest_unix > 0 ? new Date(p.newest_unix * 1000).toLocaleDateString() : '—'}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
       )}
+
+      {/* ── Charts (lazy) ─────────────────────────────────────────────────── */}
+      {showCharts && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Cache charts</CardTitle>
+            <p className="text-data text-slate-400">
+              In-memory metrics · per-replica · reset on restart.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <Suspense
+              fallback={
+                <div className="space-y-2 py-2">
+                  <SkeletonRows rows={5} />
+                </div>
+              }
+            >
+              <CacheCharts protocolStats={perProtocol} seriesPoints={series?.points ?? []} />
+            </Suspense>
+          </CardContent>
+        </Card>
+      )}
+
+      {!showCharts && (
+        <Card>
+          <CardContent className="text-data text-slate-400">
+            Nothing cached yet — pull an artifact through the proxy, then this page fills in.
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function PageHeading() {
+  return (
+    <div>
+      <h1 className="text-display font-semibold text-slate-100">Overview</h1>
+      <p className="mt-0.5 text-data text-slate-400">
+        What the proxy is holding right now — totals, headroom, and growth.
+      </p>
     </div>
   );
 }
