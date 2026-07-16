@@ -20,6 +20,7 @@
 package apt
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -95,6 +96,16 @@ func aptMutableKey(ref artifact.ArtifactRef) string {
 //     304 → extend TTL, serve stale.  200 → store new content.
 //  3. Complete miss: fresh fetch → quarantine → verify-on-write → store → serve.
 //  4. Upstream unreachable with stale content: serve stale.
+//
+// # TTL=0 (always-revalidate) and cache.Serve
+//
+// cache.Serve internally calls cache.Lookup, which respects TTL. When
+// mutableTTLSec==0 (Debian Repository Format §InRelease: always-revalidate),
+// Lookup returns nil immediately even for content just stored, causing
+// cache.Serve to return ErrCacheMiss. To avoid this, fresh upstream responses
+// are buffered in memory and written directly without re-reading from the cache.
+// Mutable dists/ files (InRelease: ~4 KB, Packages.xz: ~5 MB) are small enough
+// that in-memory buffering is safe.
 func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ct string) {
 	ctx := r.Context()
 
@@ -136,13 +147,18 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 				h.serveFromCache(w, r, ref, staleEntry, ct)
 				return
 			}
-			// 200: new content — store and serve.
+			// 200: new content — buffer, store, and serve directly.
+			// serveFromCache cannot be used here: with TTL=0, cache.Serve
+			// re-runs Lookup which returns nil (always expired), causing
+			// ErrCacheMiss on content we just stored.
 			defer body.Close()
-			if newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta); storeErr == nil && newEntry != nil {
-				h.serveFromCache(w, r, ref, newEntry, ct)
+			bodyBytes, readErr := io.ReadAll(body)
+			if readErr == nil {
+				_, _ = h.fetchBodyAndStore(ctx, ref, bytes.NewReader(bodyBytes), umeta)
+				h.serveBuffered(w, r, bodyBytes, ct)
 				return
 			}
-			// Fall through to fresh fetch if store failed.
+			// Fall through to fresh fetch if read failed.
 		}
 	}
 
@@ -160,13 +176,22 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	}
 	defer body.Close()
 
-	newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta)
-	if storeErr != nil {
-		h.log.Error("apt: store mutable dists", "ref", ref, "err", storeErr)
-		writeError(w, http.StatusBadGateway, "failed to cache upstream response")
+	// Buffer the freshly-fetched mutable body so we can both store it and
+	// write it to the client directly. Bypasses the TTL=0 cache.Serve miss
+	// (see package-level comment above). Debian Repository Format §InRelease,
+	// §Packages: these files top out at a few MB — buffering is safe.
+	bodyBytes, readErr := io.ReadAll(body)
+	if readErr != nil {
+		h.log.Error("apt: read mutable body", "ref", ref, "err", readErr)
+		writeError(w, http.StatusBadGateway, "upstream read failed")
 		return
 	}
-	h.serveFromCache(w, r, ref, newEntry, ct)
+
+	if _, storeErr := h.fetchBodyAndStore(ctx, ref, bytes.NewReader(bodyBytes), umeta); storeErr != nil {
+		h.log.Error("apt: store mutable dists", "ref", ref, "err", storeErr)
+		// Degrade gracefully: serve the buffered bytes even if caching failed.
+	}
+	h.serveBuffered(w, r, bodyBytes, ct)
 }
 
 // --------------------------------------------------------------------------
@@ -327,6 +352,18 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref art
 
 	if r.Method == http.MethodGet {
 		_, _ = io.Copy(w, rc)
+	}
+}
+
+// serveBuffered writes a pre-buffered response body to w, used for freshly-
+// fetched mutable content where cache.Serve would return ErrCacheMiss due to
+// the always-revalidate (TTL=0) setting.
+func (h *Handler) serveBuffered(w http.ResponseWriter, r *http.Request, buf []byte, ct string) {
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Length", strconv.Itoa(len(buf)))
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(buf)
 	}
 }
 
