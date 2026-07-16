@@ -37,6 +37,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -187,7 +188,16 @@ func WithUpstreamScheme(scheme string) Option {
 // NewHandler constructs a git-clone acceleration Handler. Unlike the CAS-backed
 // handlers there is no required CacheManager: git's byte cache is the disk bare
 // mirror (WithMirrorDir). Configure the host allowlist with WithAllowedUpstreams.
+//
+// SPECULA_GIT_UPSTREAM_SCHEME: when set to "http", overrides the upstream URL
+// scheme used for git clone --mirror and passthrough requests. Intended only for
+// integration-test environments where the upstream is a plain HTTP server.
+// Production deployments leave this unset (the default is "https").
 func NewHandler(opts ...Option) *Handler {
+	scheme := "https"
+	if s := os.Getenv("SPECULA_GIT_UPSTREAM_SCHEME"); s == "http" {
+		scheme = "http"
+	}
 	h := &Handler{
 		allowed:         map[string]struct{}{},
 		mutableTTLSec:   30, // 30 seconds default for refs
@@ -195,7 +205,7 @@ func NewHandler(opts ...Option) *Handler {
 		upstreamTimeout: defaultUpstreamTimeout,
 		publicOnly:      true,
 		failClosed:      true,
-		upstreamScheme:  "https",
+		upstreamScheme:  scheme,
 		log:             slog.Default(),
 	}
 	for _, opt := range opts {
@@ -229,7 +239,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Push (receive-pack) and Authorization-bearing requests are never cached.
-	if ref.isReceivePack() || hasAuth(r) {
+	// gitprotocol-http §push discovery: `GET /info/refs?service=git-receive-pack`
+	// encodes the service in the query string, not the path tail.  Check both so
+	// push-discovery is not incorrectly served from the (pull-only) mirror.
+	if ref.isReceivePack() || strings.Contains(r.URL.RawQuery, "git-receive-pack") || hasAuth(r) {
 		h.passthrough(w, r, ref, "push-or-auth")
 		return
 	}

@@ -95,7 +95,30 @@ func (m *mirrorStore) clone(ctx context.Context, src, path, key string) error {
 	m.mu.Lock()
 	m.lastSync[key] = time.Now()
 	m.mu.Unlock()
+
+	// Enable partial-clone support on the new mirror so clients can request
+	// --filter=blob:none, --filter=tree:0, etc.  git-clone --mirror does NOT
+	// inherit these settings from the upstream config, so they must be set
+	// explicitly.
+	//
+	// Refs: gitprotocol-capabilities §filter (uploadpack.allowFilter),
+	//       git-config(1) uploadpack.allowAnySHA1InWant.
+	m.configurePartialClone(ctx, path)
 	return nil
+}
+
+// configurePartialClone applies partial-clone server-side knobs to the bare
+// mirror at path.  These are best-effort: a failure degrades partial-clone
+// support for this mirror but does not break full clones.
+func (m *mirrorStore) configurePartialClone(ctx context.Context, path string) {
+	for _, args := range [][]string{
+		{"-C", path, "config", "uploadpack.allowFilter", "true"},
+		{"-C", path, "config", "uploadpack.allowAnySHA1InWant", "true"},
+	} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		_ = cmd.Run() // best-effort; failure is non-fatal
+	}
 }
 
 // fetch runs `git remote update --prune` to refresh an existing mirror.

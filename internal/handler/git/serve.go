@@ -39,6 +39,16 @@ func serveGitHTTPBackend(w http.ResponseWriter, r *http.Request, projectRoot, pa
 		"CONTENT_TYPE="+r.Header.Get("Content-Type"),
 		"CONTENT_LENGTH="+r.Header.Get("Content-Length"),
 	)
+	// Propagate Git-Protocol header so git-http-backend activates protocol v2
+	// when the client requests it.
+	//
+	// gitprotocol-v2 §HTTP Transport: "If the Git-Protocol header is set, this
+	// is passed through to git-upload-pack as GIT_PROTOCOL."
+	// git-http-backend reads GIT_PROTOCOL (not the CGI-conventional
+	// HTTP_GIT_PROTOCOL) to select the wire protocol version.
+	if gitProto := r.Header.Get("Git-Protocol"); gitProto != "" {
+		cmd.Env = append(cmd.Env, "GIT_PROTOCOL="+gitProto)
+	}
 	cmd.Stdin = r.Body
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
