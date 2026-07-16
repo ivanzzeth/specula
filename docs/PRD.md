@@ -266,19 +266,23 @@ protocols:
 
 ---
 
-## 8. Protocol Port Defaults
+## 8. Ports
 
-| Protocol | Port | | Protocol | Port |
-|---|---|---|---|---|
-| OCI | 5000 | | apt | 5004 |
-| PyPI | 5001 | | tarball | 5005 |
-| npm | 5002 | | helm | 5006 【新】 |
-| Go | 5003 | | git | 5007 【新】 |
-| Admin/WebUI | 8080 | | Metrics | 9090 |
+单一数据面端口按**路径前缀**分发全部 8 协议（非每协议一个端口）。
 
-`--bind-all` 单端口路径路由（DaemonSet hostNetwork 友好）。
+| 平面 | 端口 | 内容 |
+|---|---|---|
+| **数据面** | **7732** | 8 协议:`/v2/`(OCI+registry) `/pypi/` `/npm/` `/go/` `/apt/` `/helm/` `/tarball/` `/git/` + `/token` |
+| **控制面** | **7733** | 内嵌 WebUI + Admin API + `/healthz` `/readyz` `/metrics` + `/token` |
 
----
+**为什么是 7732/7733**：电话键盘上 `S-P-E-C` = `7-7-3-2` —— 既是 **Spec**ula，也是这个代理
+赖以立身的那些 **spec**（OCI Distribution / PEP 503 / Debian Repository Format …）。
+
+刻意**不用** 5000/8080：`5000` 是 Docker registry 与 zot 的默认端口，也就是"想装 OCI 缓存的
+主机上最可能已经在跑的东西"；`8080` 不必解释。同时避开 `7760-7766`（常见的 pull-through-cache
+组件栈占用该段）。
+
+两个端口均可配置（`server.data_plane_addr` / `server.control_plane_addr`）。
 
 ## 9. Milestones
 

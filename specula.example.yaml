@@ -20,10 +20,16 @@
 server:
   # Data plane: all 8 protocol handlers, no consumer auth.
   # Configure your network policy / mTLS / firewall at the perimeter.
-  data_plane_addr: ":5000"
+  # Ports 7732/7733: "SPEC" on a phone keypad (S=7 P=7 E=3 C=2) — Specula, and
+  # the specs this proxy exists to conform to. Deliberately NOT 5000/8080:
+  #   - 5000 is the Docker registry / zot default, i.e. the single most likely
+  #     thing to already be running on a host that wants an OCI cache;
+  #   - 8080 needs no explanation;
+  #   - 7760-7766 is avoided too (a common pull-through-cache stack sits there).
+  data_plane_addr: ":7732"
 
   # Control plane: embedded WebUI + Admin API (email auth, first user = admin).
-  control_plane_addr: ":8080"
+  control_plane_addr: ":7733"
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 storage:

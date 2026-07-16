@@ -42,11 +42,11 @@ type Config struct {
 type ServerConfig struct {
 	// DataPlaneAddr is the listen address for the 8-protocol data plane.
 	// Consumers hit this address; no authentication is applied here.
-	// Example: ":5000"
+	// Example: ":7732" (see the port rationale in specula.example.yaml)
 	DataPlaneAddr string `koanf:"data_plane_addr"`
 
 	// ControlPlaneAddr is the listen address for the embedded WebUI +
-	// Admin API (email-authenticated management plane). Example: ":8080"
+	// Admin API (email-authenticated management plane). Example: ":7733"
 	ControlPlaneAddr string `koanf:"control_plane_addr"`
 
 	// RegistryPublicHost is the host:port clients use to reach the OCI registry
@@ -452,7 +452,7 @@ type DependencyConfusionConfig struct {
 //
 // Examples:
 //
-//	SPECULA_SERVER__DATA_PLANE_ADDR=:5000
+//	SPECULA_SERVER__DATA_PLANE_ADDR=:7732
 //	SPECULA_STORAGE__BLOB__DRIVER=s3
 //	SPECULA_PROTOCOLS__OCI__MUTABLE_TTL_SECONDS=300
 func Load(path string) (*Config, error) {
