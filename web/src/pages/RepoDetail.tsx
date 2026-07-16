@@ -29,6 +29,7 @@ import {
 import { useOrg } from '@/components/org-context';
 import { useToast } from '@/hooks/use-toast';
 import { formatBytes, formatRelative, formatUnix } from '@/lib/utils';
+import { useRegistryHost } from '../hooks/useRegistryHost';
 
 /** Convert an RFC3339 date string to Unix seconds. Returns 0 for missing/invalid. */
 function toUnix(s: string | undefined): number {
@@ -208,7 +209,7 @@ export function RepoDetail() {
     );
   }
 
-  const host = window.location.host;
+  const host = useRegistryHost();
   // repo.name is already the full "org/repo" pull reference (e.g. "acme/app").
   const pullBase = `${host}/${repo.name}`;
   // Use the most-recently-pushed tag as the exemplar; fall back to a placeholder.

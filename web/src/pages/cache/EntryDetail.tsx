@@ -33,6 +33,7 @@ import { useToast } from '@/hooks/use-toast';
 import { cn, formatBytes, formatUnix } from '@/lib/utils';
 
 import type { ProtocolMeta, ProtocolSlug } from './types';
+import { useRegistryHost } from '../../hooks/useRegistryHost';
 
 interface EntryDetailProps {
   entry: CacheEntryDTO | null;
@@ -287,7 +288,7 @@ export function EntryDetail({
  * name a suite/component, not a package name; tarball names are already URLs.
  */
 function buildUsageHint(protocol: ProtocolSlug, entry: CacheEntryDTO): string | null {
-  const host = window.location.host;
+  const host = useRegistryHost();
   switch (protocol) {
     case 'oci':
       return `docker pull ${host}/${entry.name}:${entry.version}`;

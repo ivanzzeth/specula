@@ -544,3 +544,11 @@ type TagsResponse struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
+// InstanceResponse is GET /api/v1/instance — deployment facts the browser
+// cannot derive on its own.
+type InstanceResponse struct {
+	// RegistryHost is the host:port for `docker login` / `docker push`, i.e. the
+	// data plane. Never window.location.host, which is the control plane.
+	RegistryHost string `json:"registry_host"`
+}

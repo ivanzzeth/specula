@@ -48,6 +48,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { formatRelative } from '@/lib/utils';
+import { useRegistryHost } from '../../hooks/useRegistryHost';
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
 
@@ -202,7 +203,7 @@ export function Tokens() {
 
   const { toast } = useToast();
 
-  const host = window.location.host;
+  const host = useRegistryHost();
   const email = user?.email ?? '';
   const orgSlug = activeOrg?.slug ?? '{org}';
 

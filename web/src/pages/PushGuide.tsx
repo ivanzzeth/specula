@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useAuth } from '@/components/auth';
 import { useOrg } from '@/components/org-context';
 import { useToast } from '@/hooks/use-toast';
+import { useRegistryHost } from '../hooks/useRegistryHost';
 
 /**
  * CopyButton — clipboard copy with a transient "✓ Copied" confirmation.
@@ -75,7 +76,7 @@ export function PushGuide() {
   const [generatedKey, setGeneratedKey] = useState<KeyDTO | null>(null);
   const [creatingKey, setCreatingKey] = useState(false);
 
-  const host = typeof window !== 'undefined' ? window.location.host : '<host>';
+  const host = useRegistryHost();
   const orgSlug = activeOrg?.slug ?? '<org>';
   const email = user?.email ?? '<email>';
   // Until a key is generated, keep the placeholder literal so the operator

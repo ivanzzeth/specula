@@ -48,6 +48,17 @@ type ServerConfig struct {
 	// ControlPlaneAddr is the listen address for the embedded WebUI +
 	// Admin API (email-authenticated management plane). Example: ":8080"
 	ControlPlaneAddr string `koanf:"control_plane_addr"`
+
+	// RegistryPublicHost is the host:port clients use to reach the OCI registry
+	// (the data plane) — the value that belongs in `docker login <host>`.
+	//
+	// The WebUI cannot infer this: the browser is talking to the CONTROL plane,
+	// and the registry answers on the data plane, which is a different port and,
+	// behind an Ingress, usually a different hostname entirely. Left empty, the
+	// server derives "<host the browser used>:<data plane port>", which is right
+	// for a local single-binary run and wrong the moment a proxy is involved.
+	// Set it explicitly for any real deployment. Example: "registry.example.com"
+	RegistryPublicHost string `koanf:"registry_public_host"`
 }
 
 // StorageConfig selects the blob (CAS) and metadata backends.

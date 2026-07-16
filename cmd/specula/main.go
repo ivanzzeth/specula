@@ -276,16 +276,28 @@ func run() error {
 		log.Info("specula: mounted registry token endpoint", "path", "/token", "planes", "control+data")
 	}
 
-	// Unmatched /api/** must fail as JSON, not as the SPA. The admin routes are
-	// registered as individual patterns on this same mux, so without this guard a
-	// typo'd or removed endpoint would fall through to the "/" catch-all below and
-	// answer an API client with 200 + index.html — a silent, confusing failure.
-	// ServeMux longest-pattern-wins keeps every real /api/v1/... route ahead of it.
-	ctrlMux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, `{"error":"no such API endpoint"}`+"\n")
-	})
+	// Machine-facing prefixes must never fall through to the SPA catch-all below.
+	// Both of these were real, observed failures:
+	//
+	//   /api/**  — the admin routes are individual patterns on this same mux, so a
+	//     typo'd endpoint answered an API client with 200 + index.html.
+	//   /v2/**   — the registry lives on the DATA plane. Served from here the SPA
+	//     answered GET /v2/ with 200, which `docker login` reads as "registry
+	//     reachable, no auth required": it printed "Login Succeeded" against the
+	//     control-plane port with an entirely bogus password, and only the later
+	//     push failed, confusingly.
+	//
+	// ServeMux longest-pattern-wins keeps every real route ahead of these guards.
+	jsonNotFound := func(msg string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":`+strconv.Quote(msg)+"}\n")
+		}
+	}
+	ctrlMux.HandleFunc("/api/", jsonNotFound("no such API endpoint"))
+	ctrlMux.HandleFunc("/v2/", jsonNotFound(
+		"the OCI registry is served on the data plane, not the control plane"))
 
 	// Embedded WebUI SPA (ARCHITECTURE §11): the "/" catch-all serves the Vite
 	// build output; hashed assets get an immutable long cache, index.html is

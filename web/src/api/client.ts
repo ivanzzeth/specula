@@ -154,6 +154,21 @@ async function reqVoid(path: string, init?: RequestInit): Promise<void> {
 
 // ---- Auth ----
 
+export interface InstanceResponse {
+  /** host:port for `docker login`/`docker push` — the DATA plane, not window.location.host. */
+  registry_host: string;
+}
+
+/**
+ * Deployment facts the browser cannot derive. The UI is served by the control
+ * plane while the registry answers on the data plane — a different port locally
+ * and usually a different hostname behind an Ingress — so window.location.host
+ * is the wrong host to print into a docker command.
+ */
+export function getInstance(): Promise<InstanceResponse> {
+  return reqJSON<InstanceResponse>('/instance');
+}
+
 export function getMe(): Promise<MeResponse> {
   return reqJSON<MeResponse>('/me');
 }

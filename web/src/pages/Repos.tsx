@@ -26,6 +26,7 @@ import {
 } from '@/components/ui/table';
 import { useOrg } from '@/components/org-context';
 import { formatBytes, formatRelative } from '@/lib/utils';
+import { useRegistryHost } from '../hooks/useRegistryHost';
 
 /** Convert an RFC3339 date string to Unix seconds. Returns 0 for missing/invalid. */
 function toUnix(s: string | undefined): number {
@@ -257,7 +258,7 @@ function PageHeading({ orgSlug }: { orgSlug: string }) {
  * zero repos should know exactly what to do without leaving the page.
  */
 function EmptyStateContent({ orgSlug }: { orgSlug: string }) {
-  const host = typeof window !== 'undefined' ? window.location.host : '<host>';
+  const host = useRegistryHost();
   return (
     <div className="flex flex-col items-center gap-4 px-4 py-12 text-center">
       <div>

@@ -24,6 +24,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	adminOnly := func(h http.HandlerFunc) http.Handler { return authMW(auth.AdminRequired(h)) }
 
 	// ── public: no authentication ────────────────────────────────────────────
+	// Public: the browser needs the registry address before/without a session.
+	mux.HandleFunc("GET /api/v1/instance", s.handleInstance)
 	mux.HandleFunc("POST /api/v1/auth/register", s.handleRegister)
 	mux.HandleFunc("POST /api/v1/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/v1/auth/logout", s.handleLogout)
