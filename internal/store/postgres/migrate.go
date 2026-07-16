@@ -1,12 +1,15 @@
 package postgres
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
+	"io/fs"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
 //go:embed migrations/*.sql
@@ -17,9 +20,8 @@ var migrationsFS embed.FS
 // the metadata store uses the pgxpool directly; this gives them a handle against
 // the same database without disturbing the pool. The caller owns Close().
 //
-// NOTE: the ported org/apikey/grant SQL uses "?" placeholders (SQLite dialect).
-// PostgreSQL via database/sql expects "$N"; a rebind wrapper is still required
-// before the multi-tenant stores are query-correct on PostgreSQL (R2 hardening).
+// The ported org/apikey/grant SQL is written with "?" placeholders (SQLite
+// dialect) and rebound to "$N" for PostgreSQL by internal/dbx.
 func OpenSQLDB(dsn string) (*sql.DB, error) {
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -33,15 +35,38 @@ func OpenSQLDB(dsn string) (*sql.DB, error) {
 }
 
 // Migrate applies all pending embedded goose migrations against db using the
-// postgres dialect. Idempotent (every migration is IF NOT EXISTS); safe to run
-// at every startup. This brings a fresh database up to the full schema
-// (baseline cache/user tables + the R1 multi-tenant kernel).
+// postgres dialect. Safe to run at every startup, and — critically — safe to run
+// from every HA replica at the same time.
+//
+// Concurrency: this takes a PostgreSQL **advisory session lock** for the duration
+// of the migration, so replicas starting simultaneously serialise instead of
+// racing. This is not goose's default. goose's own docs are explicit
+// (provider_options.go): "If WithSessionLocker is not called, locking is
+// disabled." An unlocked concurrent Up() is how you get two replicas applying the
+// same migration at once — duplicate DDL, a poisoned goose_db_version table, or a
+// half-migrated schema on rollout. It must be opted into, and it is, here.
+//
+// This also uses the Provider API rather than the package-level goose.SetBaseFS /
+// SetDialect / Up helpers: those mutate global state, which is both racy and
+// wrong in a binary that can also open SQLite (each call would clobber the
+// other's dialect).
 func Migrate(db *sql.DB) error {
-	goose.SetBaseFS(migrationsFS)
-	if err := goose.SetDialect("postgres"); err != nil {
-		return fmt.Errorf("postgres: set goose dialect: %w", err)
+	fsys, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("postgres: migrations fs: %w", err)
 	}
-	if err := goose.Up(db, "migrations"); err != nil {
+
+	locker, err := lock.NewPostgresSessionLocker()
+	if err != nil {
+		return fmt.Errorf("postgres: goose session locker: %w", err)
+	}
+
+	provider, err := goose.NewProvider(goose.DialectPostgres, db, fsys,
+		goose.WithSessionLocker(locker))
+	if err != nil {
+		return fmt.Errorf("postgres: goose provider: %w", err)
+	}
+	if _, err := provider.Up(context.Background()); err != nil {
 		return fmt.Errorf("postgres: run migrations: %w", err)
 	}
 	return nil

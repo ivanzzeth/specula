@@ -14,6 +14,8 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
+	"strings"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -35,7 +37,7 @@ type SQLiteStore struct {
 // applies all pending embedded goose migrations. dsn may be a file path or an
 // SQLite URI (e.g. "file:specula.db?cache=shared").
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open("sqlite", withPragmas(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %q: %w", dsn, err)
 	}
@@ -58,12 +60,25 @@ func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
 }
 
 // runMigrations applies all pending goose SQL migrations from the embedded FS.
+//
+// Uses the Provider API rather than the package-level goose.SetBaseFS /
+// SetDialect / Up helpers: those mutate global state, so this binary — which can
+// open SQLite *and* PostgreSQL — would have one dialect clobber the other.
+//
+// No session locker here, unlike the PostgreSQL path: SQLite is node-local by
+// design (see the store's doc comment), so there is no second replica to race
+// with. The single-writer connection limit plus busy_timeout covers contention
+// within this process.
 func runMigrations(db *sql.DB) error {
-	goose.SetBaseFS(migrationsFS)
-	if err := goose.SetDialect("sqlite3"); err != nil {
-		return fmt.Errorf("sqlite: set goose dialect: %w", err)
+	fsys, err := fs.Sub(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("sqlite: migrations fs: %w", err)
 	}
-	if err := goose.Up(db, "migrations"); err != nil {
+	provider, err := goose.NewProvider(goose.DialectSQLite3, db, fsys)
+	if err != nil {
+		return fmt.Errorf("sqlite: goose provider: %w", err)
+	}
+	if _, err := provider.Up(context.Background()); err != nil {
 		return fmt.Errorf("sqlite: run migrations: %w", err)
 	}
 	return nil
@@ -291,4 +306,30 @@ func (s *SQLiteStore) CacheSizeByProtocol(ctx context.Context) (map[string]artif
 		return nil, fmt.Errorf("sqlite: iterate size stats: %w", err)
 	}
 	return result, nil
+}
+
+// withPragmas appends per-connection PRAGMAs to a SQLite DSN (modernc's
+// _pragma/_txlock query parameters). These are production hardening, not tuning:
+//
+//   - busy_timeout=5000  wait up to 5s for a lock instead of failing instantly.
+//     Without it, any momentary contention surfaces as a hard
+//     "database is locked" error to a user request.
+//   - _txlock=immediate  take the write lock when a write transaction begins,
+//     rather than upgrading a read lock mid-transaction — the deferred upgrade
+//     is what turns concurrent writers into deadlock-shaped "locked" failures.
+//
+// A DSN that already carries query parameters keeps them; a bare file path is
+// promoted to a file: URI so the parameters are parseable.
+func withPragmas(dsn string) string {
+	const params = "_pragma=busy_timeout(5000)&_txlock=immediate"
+
+	// Already a URI (file:…) or already parameterised: append.
+	if strings.Contains(dsn, "?") {
+		return dsn + "&" + params
+	}
+	if strings.HasPrefix(dsn, "file:") {
+		return dsn + "?" + params
+	}
+	// Bare path (including ":memory:") → file: URI so params are honoured.
+	return "file:" + dsn + "?" + params
 }
