@@ -1,6 +1,7 @@
 package oci
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,11 +10,16 @@ import (
 	"strings"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/cache"
 )
 
 // serveBlob handles GET/HEAD /v2/<name>/blobs/<digest>.
 // GET supports the Range header for resumable downloads (fix M2).
 // Only verified CAS content is served (verify-on-write guarantee).
+//
+// On a cache miss with an upstream client configured, the blob is fetched,
+// streamed through the quarantine/verify-on-write pipeline, and promoted
+// to the CAS before being served.
 func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, digest string) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
@@ -29,9 +35,12 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 
 	ctx := r.Context()
 
+	// G3 fix: set Version=digest so meta.Get keys on (protocol, name, digest).
+	// Without this the WHERE clause uses version='' and never matches.
 	ref := artifact.ArtifactRef{
 		Protocol: "oci",
 		Name:     imageName,
+		Version:  digest,
 		Digest:   digest,
 		Mutable:  false,
 	}
@@ -39,9 +48,28 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 	// Look up first to get the full size (needed for Content-Length and Range
 	// validation before we open the streaming reader).
 	entry, err := h.cache.Lookup(ctx, ref)
-	if err != nil || entry == nil {
-		writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
+	if err != nil {
+		h.log.Error("oci: blob lookup", "digest", digest, "err", err)
+		writeOCIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "cache lookup failed")
 		return
+	}
+
+	if entry == nil {
+		// Cache miss: fetch from upstream with verify-on-write (G1 fix).
+		if h.upstreamClt == nil || len(h.upstreams) == 0 {
+			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
+			return
+		}
+		entry, err = h.fetchAndStoreBlob(ctx, imageName, digest)
+		if err != nil {
+			h.log.Error("oci: fetch blob from upstream", "image", imageName, "digest", digest, "err", err)
+			writeOCIError(w, http.StatusBadGateway, "BLOB_UNKNOWN", "upstream fetch failed")
+			return
+		}
+		if entry == nil {
+			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
+			return
+		}
 	}
 
 	size := entry.Size
@@ -85,6 +113,56 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 	}
 
 	_, _ = io.Copy(w, rc)
+}
+
+// fetchAndStoreBlob fetches the blob identified by digest from the first
+// healthy upstream, streams it through the quarantine/verify-on-write
+// pipeline, and promotes it to the CAS. Returns the CacheEntry on success.
+//
+// The fetched bytes are verified against the requested digest before Store
+// is called. A mismatch returns an error with DIGEST_INVALID semantics.
+func (h *Handler) fetchAndStoreBlob(ctx context.Context, imageName, digest string) (*artifact.CacheEntry, error) {
+	fetchRef := artifact.ArtifactRef{
+		Protocol: "oci",
+		Name:     imageName,
+		Digest:   digest, // buildPath: v2/<name>/blobs/<digest>
+		Mutable:  false,
+	}
+
+	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, h.upstreams)
+	if err != nil {
+		return nil, fmt.Errorf("upstream fetch blob: %w", err)
+	}
+	defer rc.Close()
+
+	// Stream to quarantine file; compute real sha256 digest.
+	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
+	if err != nil {
+		return nil, fmt.Errorf("quarantine blob: %w", err)
+	}
+
+	// Verify the fetched bytes match the requested digest before promoting.
+	// This catches upstreams that silently serve wrong content.
+	if art.Digest != digest {
+		cleanup()
+		return nil, fmt.Errorf("blob digest mismatch: upstream served %s, requested %s", art.Digest, digest)
+	}
+
+	// Store in CAS keyed by digest (immutable, version=digest for meta.Get).
+	storeRef := artifact.ArtifactRef{
+		Protocol: "oci",
+		Name:     imageName,
+		Version:  digest,
+		Digest:   digest,
+		Mutable:  false,
+	}
+	entry, storeErr := h.cache.Store(ctx, storeRef, art)
+	if storeErr != nil {
+		cleanup() // safe no-op if Store already removed art.Path
+		return nil, fmt.Errorf("cache store blob: %w", storeErr)
+	}
+
+	return entry, nil
 }
 
 // parseRange parses a single "bytes=start-end" Range header against the full

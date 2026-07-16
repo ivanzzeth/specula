@@ -6,8 +6,11 @@
 //	GET/HEAD /v2/<name>/blobs/<digest>   — CAS blob with Range support
 //
 // Tag freshness is resolved via a short-TTL mutable lookup followed by an
-// upstream HEAD probe (never a GET) so Docker Hub rate limits are not consumed.
-// Only verified bytes are served (verify-on-write via CacheManager).
+// upstream fetch (only verified bytes are ever served). For cache misses
+// the handler fetches from the first healthy upstream, streams bytes through
+// the quarantine/verify-on-write pipeline, and promotes the result to CAS
+// before serving. The upstream client handles the OCI registry bearer-token
+// dance automatically.
 package oci
 
 import (
@@ -41,6 +44,7 @@ type Handler struct {
 	upstreamClt   upstream.Client     // optional: cache-miss upstream fetcher
 	upstreams     []upstream.Upstream // ordered fallback list
 	mutableTTLSec int64               // TTL for tag→digest mutable entries (seconds)
+	quarantineDir string              // directory for on-disk quarantine temp files
 	log           *slog.Logger
 }
 
@@ -64,6 +68,12 @@ func WithUpstream(c upstream.Client, ups []upstream.Upstream) Option {
 // Pass -1 for never-revalidate or 0 for always-revalidate.
 func WithMutableTTL(secs int64) Option {
 	return func(h *Handler) { h.mutableTTLSec = secs }
+}
+
+// WithQuarantineDir sets the directory used for on-disk quarantine files
+// during the verify-on-write pipeline. Defaults to the OS temp directory.
+func WithQuarantineDir(dir string) Option {
+	return func(h *Handler) { h.quarantineDir = dir }
 }
 
 // WithLogger injects a structured logger.

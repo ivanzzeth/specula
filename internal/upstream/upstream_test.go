@@ -25,6 +25,7 @@ func testClient(maxAttempts int) *fallbackClient {
 		blocker:     newBlockTrackerWith(defaultMaxFailures, defaultBlockDuration),
 		maxAttempts: maxAttempts,
 		backoffBase: time.Millisecond, // fast backoff for tests
+		tokens:      make(map[string]tokenEntry),
 	}
 }
 
@@ -605,4 +606,216 @@ func TestBlockTracker_ConcurrentSafety(t *testing.T) {
 	}
 	wg.Wait()
 	// If we reach here without a race detector report the test passes.
+}
+
+// ── parseBearerChallenge unit tests ───────────────────────────────────────────
+
+func TestParseBearerChallenge(t *testing.T) {
+	tests := []struct {
+		name        string
+		header      string
+		wantRealm   string
+		wantService string
+		wantScope   string
+		wantOK      bool
+	}{
+		{
+			name:        "full docker hub challenge",
+			header:      `Bearer realm="https://auth.docker.io/token",service="registry.docker.io",scope="repository:library/nginx:pull"`,
+			wantRealm:   "https://auth.docker.io/token",
+			wantService: "registry.docker.io",
+			wantScope:   "repository:library/nginx:pull",
+			wantOK:      true,
+		},
+		{
+			name:        "daocloud style challenge",
+			header:      `Bearer realm="https://docker.m.daocloud.io/token",service="registry.daocloud.io",scope="repository:library/hello-world:pull"`,
+			wantRealm:   "https://docker.m.daocloud.io/token",
+			wantService: "registry.daocloud.io",
+			wantScope:   "repository:library/hello-world:pull",
+			wantOK:      true,
+		},
+		{
+			name:      "realm only",
+			header:    `Bearer realm="https://example.com/token"`,
+			wantRealm: "https://example.com/token",
+			wantOK:    true,
+		},
+		{
+			name:   "not bearer",
+			header: `Basic realm="registry"`,
+			wantOK: false,
+		},
+		{
+			name:   "empty",
+			header: "",
+			wantOK: false,
+		},
+		{
+			name:   "bearer without realm",
+			header: `Bearer service="reg",scope="repo:pull"`,
+			wantOK: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			realm, service, scope, ok := parseBearerChallenge(tc.header)
+			assert.Equal(t, tc.wantOK, ok)
+			if tc.wantOK {
+				assert.Equal(t, tc.wantRealm, realm)
+				assert.Equal(t, tc.wantService, service)
+				assert.Equal(t, tc.wantScope, scope)
+			}
+		})
+	}
+}
+
+// ── Bearer token dance integration tests ─────────────────────────────────────
+
+// authServer builds an httptest.Server that mimics an OCI registry with
+// bearer auth:
+//   - On first request without Authorization, returns 401 with WWW-Authenticate.
+//   - Serves {"token":"testtoken"} at /token.
+//   - On request with Authorization: Bearer testtoken, returns 200 with body.
+//
+// tokenHits is incremented each time the /token endpoint is called.
+func authServer(t *testing.T, body string, tokenHits *atomic.Int64) *httptest.Server {
+	t.Helper()
+	const expectedToken = "testtoken"
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			tokenHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"token":"testtoken","expires_in":3600}`)
+			return
+		}
+		// Main resource endpoint.
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+expectedToken {
+			// No or wrong token: issue challenge.
+			w.Header().Set("WWW-Authenticate",
+				`Bearer realm="`+srv.URL+`/token",service="testregistry",scope="repository:library/nginx:pull"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	}))
+	return srv
+}
+
+func TestFetch_BearerTokenDance(t *testing.T) {
+	var tokenHits atomic.Int64
+	srv := authServer(t, "manifest-payload", &tokenHits)
+	defer srv.Close()
+
+	c := testClient(3)
+	body, meta, err := c.Fetch(context.Background(),
+		artifact.ArtifactRef{Protocol: "oci", Name: "library/nginx", Version: "latest", Mutable: true},
+		[]Upstream{{Name: "reg", BaseURL: srv.URL, Priority: 1}},
+		WithOCIManifestAccept(),
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, body)
+	defer body.Close()
+
+	data, _ := io.ReadAll(body)
+	assert.Equal(t, "manifest-payload", string(data))
+	assert.Equal(t, http.StatusOK, meta.StatusCode)
+	assert.Equal(t, int64(1), tokenHits.Load(), "token endpoint should be called exactly once")
+}
+
+func TestFetch_BearerTokenCached(t *testing.T) {
+	// Token should be fetched once and reused for subsequent requests.
+	var tokenHits atomic.Int64
+	srv := authServer(t, "blob-payload", &tokenHits)
+	defer srv.Close()
+
+	c := testClient(3)
+	up := []Upstream{{Name: "reg", BaseURL: srv.URL, Priority: 1}}
+	ref := artifact.ArtifactRef{Protocol: "oci", Name: "library/nginx", Version: "latest", Mutable: true}
+
+	for i := 0; i < 3; i++ {
+		body, _, err := c.Fetch(context.Background(), ref, up)
+		require.NoError(t, err, "call %d", i)
+		body.Close()
+	}
+
+	assert.Equal(t, int64(1), tokenHits.Load(),
+		"token should be fetched once and cached for subsequent calls")
+}
+
+func TestFetch_BearerToken_WrongTokenRejected(t *testing.T) {
+	// Server rejects even the new token (e.g. invalid scope) — client should
+	// surface the 401 error rather than looping forever.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"token":"badtoken","expires_in":300}`)
+			return
+		}
+		// Always return 401, even with the token.
+		w.Header().Set("WWW-Authenticate",
+			`Bearer realm="`+r.Host+`/token",service="reg",scope="repository:img:pull"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := testClient(2)
+	_, _, err := c.Fetch(context.Background(),
+		artifact.ArtifactRef{Protocol: "oci", Name: "img", Version: "latest", Mutable: true},
+		[]Upstream{{Name: "reg", BaseURL: srv.URL, Priority: 1}},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "401")
+}
+
+func TestFetch_OCIManifestAcceptHeader(t *testing.T) {
+	// Verify that WithOCIManifestAccept() causes the Accept header to be sent.
+	var gotAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccept = r.Header.Get("Accept")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+
+	c := testClient(1)
+	body, _, err := c.Fetch(context.Background(), tarballRef("img", "v1"),
+		[]Upstream{{Name: "up", BaseURL: srv.URL, Priority: 1}},
+		WithOCIManifestAccept(),
+	)
+	require.NoError(t, err)
+	body.Close()
+
+	assert.Contains(t, gotAccept, "application/vnd.oci.image.index.v1+json",
+		"OCI image index media type should be in Accept")
+	assert.Contains(t, gotAccept, "application/vnd.docker.distribution.manifest.list.v2+json",
+		"Docker manifest list media type should be in Accept")
+}
+
+func TestFetch_NoAcceptHeader_WithoutOption(t *testing.T) {
+	// Without WithOCIManifestAccept, no Accept header should be set.
+	var gotAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccept = r.Header.Get("Accept")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+
+	c := testClient(1)
+	body, _, err := c.Fetch(context.Background(), tarballRef("img", "v1"),
+		[]Upstream{{Name: "up", BaseURL: srv.URL, Priority: 1}},
+	)
+	require.NoError(t, err)
+	body.Close()
+
+	assert.Empty(t, gotAccept, "Accept header should not be set without WithOCIManifestAccept")
 }
