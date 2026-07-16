@@ -2,10 +2,12 @@ package npm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -363,10 +365,148 @@ func (h *Handler) fetchBodyAndStore(ctx context.Context, ref artifact.ArtifactRe
 }
 
 // --------------------------------------------------------------------------
+// Packument URL rewriting
+// --------------------------------------------------------------------------
+
+// speculaBaseURL derives scheme+host from the incoming request so dist.tarball
+// URLs can be rewritten to point back at Specula.
+// X-Forwarded-Proto is honoured for reverse-proxy deployments.
+func speculaBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if fp := r.Header.Get("X-Forwarded-Proto"); fp != "" {
+		scheme = fp
+	}
+	host := r.Host
+	if host == "" {
+		host = r.URL.Host
+	}
+	return scheme + "://" + host
+}
+
+// rewritePackument rewrites the dist.tarball URL in every version entry of an
+// npm packument document so that npm fetches tarballs through Specula instead
+// of going directly to the upstream registry.
+//
+// npm registry protocol §dist.tarball:
+//
+//	"A url to the tarball for this specific version of the package."
+//	(https://github.com/npm/registry/blob/master/docs/responses/package-metadata.md)
+//
+// Every conforming npm proxy (verdaccio, Artifactory, Nexus) rewrites these
+// URLs; without this, npm resolves tarballs from upstream directly and the
+// proxy is bypassed for all tarball fetches. The rewrite preserves the URL
+// path (/{pkg}/-/{file}.tgz) and replaces only scheme+host with speculaBase
+// plus the handler's pathPrefix.
+//
+// If the packument cannot be parsed or has no versions, the original bytes are
+// returned unchanged (safe fallback — npm falls through to upstream URLs).
+func rewritePackument(data []byte, speculaBase, prefix string) []byte {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return data // not parseable JSON; serve as-is
+	}
+	versionsRaw, ok := doc["versions"]
+	if !ok {
+		return data // no versions field (e.g. a corgi abbreviated packument without versions)
+	}
+	var versions map[string]json.RawMessage
+	if err := json.Unmarshal(versionsRaw, &versions); err != nil {
+		return data
+	}
+
+	changed := false
+	for ver, verRaw := range versions {
+		var vobj map[string]json.RawMessage
+		if err := json.Unmarshal(verRaw, &vobj); err != nil {
+			continue
+		}
+		distRaw, hasDist := vobj["dist"]
+		if !hasDist {
+			continue
+		}
+		var dist map[string]json.RawMessage
+		if err := json.Unmarshal(distRaw, &dist); err != nil {
+			continue
+		}
+		tarballRaw, hasTarball := dist["tarball"]
+		if !hasTarball {
+			continue
+		}
+		var tarballURL string
+		if err := json.Unmarshal(tarballRaw, &tarballURL); err != nil || tarballURL == "" {
+			continue
+		}
+		newURL := rewriteTarballURL(tarballURL, speculaBase, prefix)
+		if newURL == tarballURL {
+			continue
+		}
+		newTarballBytes, err := json.Marshal(newURL)
+		if err != nil {
+			continue
+		}
+		dist["tarball"] = json.RawMessage(newTarballBytes)
+		newDistBytes, err := json.Marshal(dist)
+		if err != nil {
+			continue
+		}
+		vobj["dist"] = json.RawMessage(newDistBytes)
+		newVerBytes, err := json.Marshal(vobj)
+		if err != nil {
+			continue
+		}
+		versions[ver] = json.RawMessage(newVerBytes)
+		changed = true
+	}
+
+	if !changed {
+		return data
+	}
+
+	newVersionsRaw, err := json.Marshal(versions)
+	if err != nil {
+		return data
+	}
+	doc["versions"] = json.RawMessage(newVersionsRaw)
+	result, err := json.Marshal(doc)
+	if err != nil {
+		return data
+	}
+	return result
+}
+
+// rewriteTarballURL replaces the scheme+host of an upstream tarball URL with
+// Specula's address, prepending pathPrefix so the resulting URL routes through
+// the npm handler.
+//
+// Example:
+//
+//	original    = "https://registry.npmjs.org/express/-/express-4.18.2.tgz"
+//	speculaBase = "http://127.0.0.1:5102"
+//	prefix      = "/npm"
+//	→ "http://127.0.0.1:5102/npm/express/-/express-4.18.2.tgz"
+func rewriteTarballURL(original, speculaBase, prefix string) string {
+	u, err := url.Parse(original)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.Path == "" {
+		return original
+	}
+	return speculaBase + prefix + u.Path
+}
+
+// --------------------------------------------------------------------------
 // Serve helpers
 // --------------------------------------------------------------------------
 
 // serveFromCache writes packument (or other mutable) content to the HTTP response.
+//
+// For packuments (ct == contentTypePackument), dist.tarball URLs are rewritten
+// in-memory to point at Specula before the response is sent. This is necessary
+// so that npm fetches tarballs through the proxy rather than going directly to
+// the upstream registry (npm registry protocol §dist.tarball). The Content-Length
+// is recomputed from the rewritten bytes. Non-packument content (tarballs, etc.)
+// is streamed from the cache unchanged.
 func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, entry *artifact.CacheEntry, ct string) {
 	ctx := r.Context()
 	rc, cacheEntry, err := h.cache.Serve(ctx, ref, 0, -1)
@@ -385,6 +525,28 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref art
 	}
 	defer rc.Close()
 
+	// Packument path: read fully so we can rewrite dist.tarball URLs.
+	// npm registry protocol §dist.tarball: the proxy must rewrite URLs so that
+	// npm fetches tarballs through Specula, not directly from upstream.
+	if ct == contentTypePackument {
+		data, readErr := io.ReadAll(rc)
+		if readErr != nil {
+			h.log.Error("npm: read packument for URL rewrite", "ref", ref, "err", readErr)
+			writeError(w, http.StatusInternalServerError, "cache serve failed")
+			return
+		}
+		base := speculaBaseURL(r)
+		rewritten := rewritePackument(data, base, h.pathPrefix)
+		w.Header().Set("Content-Type", ct)
+		w.Header().Set("Content-Length", strconv.Itoa(len(rewritten)))
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(rewritten)
+		}
+		return
+	}
+
+	// Non-packument content: stream from cache with the stored size.
 	// Prefer the size from the entry returned by Serve (post-lookup),
 	// falling back to the entry supplied by the caller (pre-lookup).
 	var size int64
