@@ -6,19 +6,37 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/ivanzzeth/specula/internal/dbx"
 )
 
 // SQLStore is the persistent Store backed by the orgs / org_members /
-// org_invitations tables (goose migration 0002_multitenant). Callers
-// construct it with the *sql.DB exposed by the sqlite or postgres stores;
-// SQL uses ? placeholders which modernc.org/sqlite and database/sql
-// understand directly.
+// org_invitations tables (goose migration 0002_multitenant). Callers construct
+// it with the *sql.DB exposed by the sqlite or postgres stores.
+//
+// The ported SQL is written with "?" positional placeholders. On SQLite the
+// driver consumes them directly; on PostgreSQL (pgx stdlib) they must be
+// rewritten to "$N". The dialect field selects the placeholder style and every
+// query is passed through rb() before execution, so one query string is correct
+// on both backends. Construct with NewSQLStore (SQLite) or NewSQLStorePostgres.
 type SQLStore struct {
-	db *sql.DB
+	db      *sql.DB
+	dialect dbx.Dialect
 }
 
-// NewSQLStore constructs a SQLStore over an already-migrated database handle.
-func NewSQLStore(db *sql.DB) *SQLStore { return &SQLStore{db: db} }
+// NewSQLStore constructs a SQLStore over an already-migrated SQLite database
+// handle ("?" placeholders passed through verbatim).
+func NewSQLStore(db *sql.DB) *SQLStore { return &SQLStore{db: db, dialect: dbx.SQLite} }
+
+// NewSQLStorePostgres constructs a SQLStore over an already-migrated PostgreSQL
+// database handle, rebinding "?" placeholders to "$N" for the pgx stdlib driver.
+func NewSQLStorePostgres(db *sql.DB) *SQLStore {
+	return &SQLStore{db: db, dialect: dbx.Postgres}
+}
+
+// rb rewrites a query's "?" placeholders for the store's dialect (no-op on
+// SQLite). Call it on every query string before handing it to database/sql.
+func (s *SQLStore) rb(query string) string { return dbx.Rebind(s.dialect, query) }
 
 // scanner abstracts *sql.Row and *sql.Rows so single-row and multi-row
 // scanning can share one scan function.
@@ -71,7 +89,7 @@ func (s *SQLStore) CreateOrg(ctx context.Context, o *Org) error {
 		created = time.Now()
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO orgs (`+orgCols+`) VALUES (?, ?, ?, ?, ?, ?)`,
+		s.rb(`INSERT INTO orgs (`+orgCols+`) VALUES (?, ?, ?, ?, ?, ?)`),
 		o.ID, o.Name, o.Slug, o.Status, o.CreatedBy,
 		created.UTC().Format(time.RFC3339Nano))
 	return err
@@ -80,19 +98,19 @@ func (s *SQLStore) CreateOrg(ctx context.Context, o *Org) error {
 // GetOrg returns the organization by ID, or ErrNotFound.
 func (s *SQLStore) GetOrg(ctx context.Context, id string) (*Org, error) {
 	return scanOrg(s.db.QueryRowContext(ctx,
-		`SELECT `+orgCols+` FROM orgs WHERE id = ?`, id))
+		s.rb(`SELECT `+orgCols+` FROM orgs WHERE id = ?`), id))
 }
 
 // GetOrgBySlug returns the organization by slug, or ErrNotFound.
 func (s *SQLStore) GetOrgBySlug(ctx context.Context, slug string) (*Org, error) {
 	return scanOrg(s.db.QueryRowContext(ctx,
-		`SELECT `+orgCols+` FROM orgs WHERE slug = ?`, slug))
+		s.rb(`SELECT `+orgCols+` FROM orgs WHERE slug = ?`), slug))
 }
 
 // ListOrgs returns all organizations newest-first.
 func (s *SQLStore) ListOrgs(ctx context.Context) ([]*Org, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+orgCols+` FROM orgs ORDER BY created_at DESC`)
+		s.rb(`SELECT `+orgCols+` FROM orgs ORDER BY created_at DESC`))
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +130,7 @@ func (s *SQLStore) ListOrgs(ctx context.Context) ([]*Org, error) {
 // fields each have dedicated paths).
 func (s *SQLStore) UpdateOrg(ctx context.Context, o *Org) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE orgs SET name = ? WHERE id = ?`, o.Name, o.ID)
+		s.rb(`UPDATE orgs SET name = ? WHERE id = ?`), o.Name, o.ID)
 	return err
 }
 
@@ -124,13 +142,13 @@ func (s *SQLStore) DeleteOrg(ctx context.Context, id string) error {
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck
-	if _, err := tx.ExecContext(ctx, `DELETE FROM org_invitations WHERE org_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, s.rb(`DELETE FROM org_invitations WHERE org_id = ?`), id); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM org_members WHERE org_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, s.rb(`DELETE FROM org_members WHERE org_id = ?`), id); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM orgs WHERE id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, s.rb(`DELETE FROM orgs WHERE id = ?`), id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -140,9 +158,9 @@ func (s *SQLStore) DeleteOrg(ctx context.Context, id string) error {
 // (newest→oldest), with Org.Role set to the member's role in that org.
 func (s *SQLStore) ListOrgsForEmail(ctx context.Context, email string) ([]*Org, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+prefixCols("o", orgCols)+`, m.role
+		s.rb(`SELECT `+prefixCols("o", orgCols)+`, m.role
 		   FROM orgs o JOIN org_members m ON m.org_id = o.id
-		  WHERE m.email = ? ORDER BY o.created_at DESC`,
+		  WHERE m.email = ? ORDER BY o.created_at DESC`),
 		strings.ToLower(strings.TrimSpace(email)))
 	if err != nil {
 		return nil, err
@@ -166,7 +184,7 @@ func (s *SQLStore) ListOrgsForEmail(ctx context.Context, email string) ([]*Org, 
 // SetOrgStatus sets the organization's lifecycle status (active|frozen).
 func (s *SQLStore) SetOrgStatus(ctx context.Context, id, status string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE orgs SET status = ? WHERE id = ?`, status, id)
+		s.rb(`UPDATE orgs SET status = ? WHERE id = ?`), status, id)
 	return err
 }
 
@@ -175,7 +193,7 @@ func (s *SQLStore) SetOrgStatus(ctx context.Context, id, status string) error {
 func (s *SQLStore) CountOrgAdmins(ctx context.Context, orgID string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(1) FROM org_members WHERE org_id = ? AND role IN (?, 'org_admin')`,
+		s.rb(`SELECT COUNT(1) FROM org_members WHERE org_id = ? AND role IN (?, 'org_admin')`),
 		orgID, RoleAdmin).Scan(&n)
 	return n, err
 }
@@ -185,7 +203,7 @@ func (s *SQLStore) CountOrgAdmins(ctx context.Context, orgID string) (int, error
 func (s *SQLStore) CountOrgOwners(ctx context.Context, orgID string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(1) FROM org_members WHERE org_id = ? AND role = ?`,
+		s.rb(`SELECT COUNT(1) FROM org_members WHERE org_id = ? AND role = ?`),
 		orgID, RoleOwner).Scan(&n)
 	return n, err
 }
@@ -194,7 +212,7 @@ func (s *SQLStore) CountOrgOwners(ctx context.Context, orgID string) (int, error
 // whether the default org must be seeded (CountOrgs()==0 → seed).
 func (s *SQLStore) CountOrgs(ctx context.Context) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM orgs`).Scan(&n)
+	err := s.db.QueryRowContext(ctx, s.rb(`SELECT COUNT(1) FROM orgs`)).Scan(&n)
 	return n, err
 }
 
@@ -226,7 +244,7 @@ func (s *SQLStore) AddOrgMember(ctx context.Context, m *Member) error {
 	// Check-then-insert: dialect-portable alternative to ON CONFLICT DO UPDATE.
 	if existing, err := s.GetOrgMember(ctx, m.OrgID, m.Email); err == nil {
 		_, e := s.db.ExecContext(ctx,
-			`UPDATE org_members SET role = ? WHERE id = ?`, m.Role, existing.ID)
+			s.rb(`UPDATE org_members SET role = ? WHERE id = ?`), m.Role, existing.ID)
 		return e
 	} else if !errors.Is(err, ErrNotFound) {
 		return err
@@ -239,7 +257,7 @@ func (s *SQLStore) AddOrgMember(ctx context.Context, m *Member) error {
 		created = time.Now()
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO org_members (`+memberCols+`) VALUES (?, ?, ?, ?, ?, ?)`,
+		s.rb(`INSERT INTO org_members (`+memberCols+`) VALUES (?, ?, ?, ?, ?, ?)`),
 		m.ID, m.OrgID, m.Email, m.Role, m.InvitedBy,
 		created.UTC().Format(time.RFC3339Nano))
 	return err
@@ -248,14 +266,14 @@ func (s *SQLStore) AddOrgMember(ctx context.Context, m *Member) error {
 // GetOrgMember returns the membership record for (orgID, email), or ErrNotFound.
 func (s *SQLStore) GetOrgMember(ctx context.Context, orgID, email string) (*Member, error) {
 	return scanMember(s.db.QueryRowContext(ctx,
-		`SELECT `+memberCols+` FROM org_members WHERE org_id = ? AND email = ?`,
+		s.rb(`SELECT `+memberCols+` FROM org_members WHERE org_id = ? AND email = ?`),
 		orgID, strings.ToLower(strings.TrimSpace(email))))
 }
 
 // ListOrgMembers returns all members of an org newest-first.
 func (s *SQLStore) ListOrgMembers(ctx context.Context, orgID string) ([]*Member, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+memberCols+` FROM org_members WHERE org_id = ? ORDER BY created_at DESC`, orgID)
+		s.rb(`SELECT `+memberCols+` FROM org_members WHERE org_id = ? ORDER BY created_at DESC`), orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +292,7 @@ func (s *SQLStore) ListOrgMembers(ctx context.Context, orgID string) ([]*Member,
 // RemoveOrgMember deletes the membership for (orgID, email). No-op if absent.
 func (s *SQLStore) RemoveOrgMember(ctx context.Context, orgID, email string) error {
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM org_members WHERE org_id = ? AND email = ?`,
+		s.rb(`DELETE FROM org_members WHERE org_id = ? AND email = ?`),
 		orgID, strings.ToLower(strings.TrimSpace(email)))
 	return err
 }
@@ -319,7 +337,7 @@ func (s *SQLStore) CreateInvitation(ctx context.Context, inv *Invitation) error 
 		expires = inv.ExpiresAt.UTC().Format(time.RFC3339Nano)
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO org_invitations (`+invitationCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.rb(`INSERT INTO org_invitations (`+invitationCols+`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		inv.ID, inv.OrgID, inv.Email, inv.Role, inv.InvitedBy,
 		inv.Token, inv.Status, expires, created.UTC().Format(time.RFC3339Nano))
 	return err
@@ -328,13 +346,13 @@ func (s *SQLStore) CreateInvitation(ctx context.Context, inv *Invitation) error 
 // GetInvitationByToken returns the invitation with the given token, or ErrNotFound.
 func (s *SQLStore) GetInvitationByToken(ctx context.Context, token string) (*Invitation, error) {
 	return scanInvitation(s.db.QueryRowContext(ctx,
-		`SELECT `+invitationCols+` FROM org_invitations WHERE token = ?`, token))
+		s.rb(`SELECT `+invitationCols+` FROM org_invitations WHERE token = ?`), token))
 }
 
 // ListInvitations returns all invitations for an org newest-first.
 func (s *SQLStore) ListInvitations(ctx context.Context, orgID string) ([]*Invitation, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+invitationCols+` FROM org_invitations WHERE org_id = ? ORDER BY created_at DESC`, orgID)
+		s.rb(`SELECT `+invitationCols+` FROM org_invitations WHERE org_id = ? ORDER BY created_at DESC`), orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +372,7 @@ func (s *SQLStore) ListInvitations(ctx context.Context, orgID string) ([]*Invita
 // (pending→accepted/declined/expired).
 func (s *SQLStore) SetInvitationStatus(ctx context.Context, id, status string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE org_invitations SET status = ? WHERE id = ?`, status, id)
+		s.rb(`UPDATE org_invitations SET status = ? WHERE id = ?`), status, id)
 	return err
 }
 

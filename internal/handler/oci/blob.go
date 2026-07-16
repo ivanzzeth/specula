@@ -17,9 +17,15 @@ import (
 // GET supports the Range header for resumable downloads (fix M2).
 // Only verified CAS content is served (verify-on-write guarantee).
 //
-// On a cache miss with an upstream client configured, the blob is fetched,
-// streamed through the quarantine/verify-on-write pipeline, and promoted
-// to the CAS before being served.
+// Flow (hosted repo):
+//  1. isHosted check — if hosted, enforce visibility before any CAS access.
+//  2. CAS lookup; serve if found.
+//  3. CAS miss → 404 (hosted repos are authoritative; never fetch upstream).
+//
+// Flow (non-hosted / pull-through):
+//  1. isHosted returns false; skip auth gate.
+//  2. CAS lookup; serve if found.
+//  3. CAS miss → fetch from upstream (verify-on-write → promote → serve).
 func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, digest string) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
@@ -34,6 +40,22 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 	}
 
 	ctx := r.Context()
+
+	// Hosted-first gate: resolve hosted status before any CAS lookup so that
+	// visibility is enforced for both cache-hit and cache-miss paths. The gate
+	// is inert (isHosted → false) until a HostedResolver is wired, preserving
+	// existing pull-through behaviour byte-for-byte.
+	hostedRepo := h.isHosted(ctx, imageName)
+	if hostedRepo {
+		if err := h.checkHostedRead(ctx, imageName); err != nil {
+			if errors.Is(err, ErrUnauthorized) {
+				writeOCIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+				return
+			}
+			writeOCIError(w, http.StatusForbidden, "DENIED", "insufficient access")
+			return
+		}
+	}
 
 	// G3 fix: set Version=digest so meta.Get keys on (protocol, name, digest).
 	// Without this the WHERE clause uses version='' and never matches.
@@ -55,7 +77,21 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 	}
 
 	if entry == nil {
-		// Cache miss: fetch from upstream with verify-on-write (G1 fix).
+		if hostedRepo {
+			// Hosted repos are authoritative local content: a CAS miss means the
+			// blob does not exist here. Never fall through to upstream.
+			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
+			return
+		}
+		// Owned-namespace names are authoritative-local even before the repo row
+		// exists (e.g. a HEAD-blob existence check on the first push): a miss is a
+		// definitive 404, never an upstream leak. This keeps push working when an
+		// OCI pull-through upstream is also configured.
+		if h.isOwnedNamespace(ctx, imageName) {
+			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
+			return
+		}
+		// Non-hosted: cache miss → fetch from upstream with verify-on-write (G1 fix).
 		if h.upstreamClt == nil || len(h.upstreams) == 0 {
 			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
 			return

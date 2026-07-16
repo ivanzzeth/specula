@@ -21,6 +21,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -42,8 +43,12 @@ import (
 	"github.com/ivanzzeth/specula/internal/handler/npm"
 	"github.com/ivanzzeth/specula/internal/handler/oci"
 	"github.com/ivanzzeth/specula/internal/handler/pypi"
+	"github.com/ivanzzeth/specula/internal/handler/registry"
 	tarballhandler "github.com/ivanzzeth/specula/internal/handler/tarball"
 	"github.com/ivanzzeth/specula/internal/org"
+	"github.com/ivanzzeth/specula/internal/registryauthz"
+	"github.com/ivanzzeth/specula/internal/registrytoken"
+	"github.com/ivanzzeth/specula/internal/repo"
 	"github.com/ivanzzeth/specula/internal/stats"
 	blobstore "github.com/ivanzzeth/specula/internal/store/blob"
 	"github.com/ivanzzeth/specula/internal/store/local"
@@ -111,12 +116,21 @@ func run() error {
 	// the embedded migrations are applied here against a stdlib handle. The org
 	// store also drives the first-user bootstrap (default org + owner) via the
 	// auth service below.
-	orgStore, keyStore, grantStore, closeMT, err := buildMultiTenantStores(cfg, metaStore)
+	orgStore, keyStore, grantStore, repoStore, closeMT, err := buildMultiTenantStores(cfg, metaStore)
 	if err != nil {
 		return fmt.Errorf("build multi-tenant stores: %w", err)
 	}
 	defer closeMT()
 	log.Info("specula: multi-tenant kernel ready", "meta_driver", cfg.Storage.Meta.Driver)
+
+	// ── Writable hosted registry (R2): RS256 token service + authz glue ──────
+	// The registry token service signs/verifies the Docker v2 Bearer tokens; the
+	// authz glue binds acl.CanAccess + org membership + hosted repo ownership to
+	// the /token, /v2/ write, and hosted-first pull seams. A key-load failure
+	// downgrades /v2/ to pull-through-only (registryEnabled=false) rather than
+	// crashing, so the cache keeps serving reads.
+	regTokenSvc, registryEnabled := buildRegistryTokenService(cfg, log)
+	regAuthz := registryauthz.New(orgStore, repoStore)
 
 	// ── Protocol-native signed verifiers ────────────────────────────────────
 	// Each is built from config paths and self-gates by ref.Protocol (like the Go
@@ -185,7 +199,7 @@ func run() error {
 
 	// ── Data plane: all eight protocol handlers ──────────────────────────────
 	dataMux := http.NewServeMux()
-	mountOCI(dataMux, cfg, cm, metaStore, log)
+	mountOCI(dataMux, cfg, cm, metaStore, log, regTokenSvc, regAuthz, repoStore, blobs, registryEnabled)
 	mountGoModule(dataMux, cfg, cm, metaStore, log)
 	mountPyPI(dataMux, cfg, cm, metaStore, log)
 	mountNPM(dataMux, cfg, cm, metaStore, log)
@@ -229,6 +243,23 @@ func run() error {
 	})
 	adminSrv.RegisterRoutes(ctrlMux)
 	log.Info("specula: mounted Admin API", "base", "/api/v1")
+
+	// ── Registry /token endpoint (Docker v2 Bearer flow) ─────────────────────
+	// Authenticates Basic credentials (email:apikey via keyStore, or
+	// email:password via the auth service) and mints RS256 tokens scoped by the
+	// same authz glue used at /v2/. Mounted on BOTH planes: the control plane
+	// (per the two-plane split) and the data plane, so a docker/crane client
+	// that only reaches the data-plane host can follow the same-origin realm.
+	if registryEnabled {
+		authn := &registrytoken.BasicAuthenticator{
+			Keys:      keyStore,
+			Passwords: &registryauthz.PasswordAuth{Svc: authSvc},
+		}
+		tokenHandler := registrytoken.NewTokenHandler(regTokenSvc, authn, regAuthz)
+		ctrlMux.Handle("/token", tokenHandler)
+		dataMux.Handle("/token", tokenHandler)
+		log.Info("specula: mounted registry token endpoint", "path", "/token", "planes", "control+data")
+	}
 
 	// Embedded WebUI SPA (ARCHITECTURE §11): the "/" catch-all serves the Vite
 	// build output; hashed assets get an immutable long cache, index.html is
@@ -306,35 +337,42 @@ func buildMetaStore(ctx context.Context, cfg *config.Config) (metastore.Metadata
 //     second connection or migration pass is needed; closeMT is a no-op.
 //   - postgres — opens a stdlib *sql.DB against the same DSN and applies the
 //     embedded goose migrations before constructing the stores; closeMT closes
-//     that handle. (Placeholder-dialect rebind for these "?"-based stores on
-//     PostgreSQL is a known R2 hardening item — see postgres.OpenSQLDB.)
-func buildMultiTenantStores(cfg *config.Config, metaStore metastore.MetadataStore) (org.Store, apikey.Store, grant.Store, func(), error) {
+//     that handle. The postgres constructors (NewSQLStorePostgres) rebind the
+//     ported "?"-placeholder SQL to "$N" for the pgx stdlib driver.
+func buildMultiTenantStores(cfg *config.Config, metaStore metastore.MetadataStore) (org.Store, apikey.Store, grant.Store, *repo.SQLStore, func(), error) {
 	switch cfg.Storage.Meta.Driver {
 	case "sqlite":
 		st, ok := metaStore.(*sqlite.SQLiteStore)
 		if !ok {
-			return nil, nil, nil, func() {}, fmt.Errorf("sqlite meta store has unexpected type %T", metaStore)
+			return nil, nil, nil, nil, func() {}, fmt.Errorf("sqlite meta store has unexpected type %T", metaStore)
 		}
 		db := st.DB()
-		return org.NewSQLStore(db), apikey.NewSQLStore(db), grant.NewSQLStore(db), func() {}, nil
+		return org.NewSQLStore(db), apikey.NewSQLStore(db), grant.NewSQLStore(db), repo.NewSQLStore(db), func() {}, nil
 	case "postgres":
 		db, err := postgres.OpenSQLDB(cfg.Storage.Meta.DSN)
 		if err != nil {
-			return nil, nil, nil, func() {}, err
+			return nil, nil, nil, nil, func() {}, err
 		}
 		if err := postgres.Migrate(db); err != nil {
 			_ = db.Close()
-			return nil, nil, nil, func() {}, err
+			return nil, nil, nil, nil, func() {}, err
 		}
-		return org.NewSQLStore(db), apikey.NewSQLStore(db), grant.NewSQLStore(db), func() { _ = db.Close() }, nil
+		return org.NewSQLStorePostgres(db), apikey.NewSQLStorePostgres(db), grant.NewSQLStorePostgres(db), repo.NewSQLStorePostgres(db), func() { _ = db.Close() }, nil
 	default:
-		return nil, nil, nil, func() {}, fmt.Errorf("unknown meta driver %q (want \"sqlite\" or \"postgres\")", cfg.Storage.Meta.Driver)
+		return nil, nil, nil, nil, func() {}, fmt.Errorf("unknown meta driver %q (want \"sqlite\" or \"postgres\")", cfg.Storage.Meta.Driver)
 	}
 }
 
-// mountOCI wires the OCI data-plane handler at /v2/ using the "oci" protocol
-// config for upstreams and mutable TTL.
-func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger) {
+// mountOCI wires the /v2/ data plane. The OCI pull-through handler always mounts
+// (serving the upstream cache for non-hosted names). When the writable registry
+// is enabled it is additionally:
+//   - given the hosted-first pull seam (HostedResolver + HostedReadAuthz) so a
+//     pushed org-owned repo is served from CAS and visibility-checked; and
+//   - wrapped by the registry WRITE handler (push endpoints) which in turn is
+//     wrapped by the registry-token Bearer challenge middleware.
+//
+// The final chain at /v2/ is: Challenge → registry(write) → oci(read).
+func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, tokenSvc *registrytoken.Service, authz *registryauthz.Authz, repoStore *repo.SQLStore, blobs blobstore.BlobStore, registryEnabled bool) {
 	pc, ok := cfg.Protocols["oci"]
 	opts := []oci.Option{
 		oci.WithMeta(metaStore),
@@ -346,8 +384,85 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 			oci.WithMutableTTL(mutableTTL(pc, cfg)),
 		)
 	}
-	mux.Handle("/v2/", oci.NewHandler(cm, opts...))
-	log.Info("specula: mounted OCI handler", "path", "/v2/", "configured", ok)
+
+	if !registryEnabled {
+		// Pull-through-only: no hosted-first seam, no write path, no auth gate.
+		mux.Handle("/v2/", oci.NewHandler(cm, opts...))
+		log.Info("specula: mounted OCI handler (pull-through only)", "path", "/v2/", "configured", ok)
+		return
+	}
+
+	// Hosted-first pull: resolve org-owned repos and enforce per-repo visibility.
+	opts = append(opts,
+		oci.WithHostedResolver(authz),
+		oci.WithHostedReadAuthz(authz),
+		oci.WithOwnedNamespaceResolver(authz),
+	)
+	ociRead := oci.NewHandler(cm, opts...)
+
+	// Write path over the shared CAS; non-write requests fall through to the
+	// pull-through read handler above.
+	writeHandler := registry.NewHandler(cm, repoStore, repoStore, authz,
+		registry.WithBlobStore(blobs),
+		registry.WithMeta(metaStore),
+		registry.WithReadHandler(ociRead),
+		registry.WithLogger(log.With("protocol", "oci", "component", "registry")),
+	)
+
+	// Bearer challenge gate. The realm is computed per-request from the Host so a
+	// single binary advertises a correct same-origin /token URL.
+	challenge := tokenSvc.ChallengeFunc(registryRealm)
+	mux.Handle("/v2/", challenge(writeHandler))
+	log.Info("specula: mounted writable registry", "path", "/v2/", "configured", ok, "auth", "registry-token")
+}
+
+// registryRealm computes the absolute /token URL to advertise in the
+// WWW-Authenticate challenge from the incoming request. It honours an
+// X-Forwarded-Proto set by a TLS-terminating proxy, defaulting to http.
+func registryRealm(r *http.Request) string {
+	scheme := "http"
+	if fp := r.Header.Get("X-Forwarded-Proto"); fp != "" {
+		scheme = fp
+	} else if r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host + "/token"
+}
+
+// buildRegistryTokenService loads (or generates) the durable RS256 registry
+// signing keypair and constructs the token Service. On any key error it warns
+// and returns enabled=false so /v2/ stays pull-through-only and the cache keeps
+// serving reads.
+func buildRegistryTokenService(cfg *config.Config, log *slog.Logger) (*registrytoken.Service, bool) {
+	keyPath := resolveRegistryKeyPath(cfg)
+	key, err := registrytoken.EnsureKeyPair(keyPath)
+	if err != nil {
+		log.Warn("specula: registry token key unavailable — /v2/ stays pull-through only (no push/private repos)",
+			"key_path", keyPath, "err", err)
+		return nil, false
+	}
+	log.Info("specula: writable registry enabled", "token_key", keyPath, "issuer", registryIssuer, "service", registryService)
+	return registrytoken.NewService(key, registryIssuer, registryService, 0), true
+}
+
+// registryIssuer / registryService are the iss/aud identities of registry
+// tokens (the service name must match the docker client's ?service= param).
+const (
+	registryIssuer  = "specula"
+	registryService = "specula"
+)
+
+// resolveRegistryKeyPath returns the configured registry token key path, else a
+// durable default next to the local blob store, else a temp-dir path (with the
+// caveat that a temp key is not stable across restarts).
+func resolveRegistryKeyPath(cfg *config.Config) string {
+	if cfg.Auth.RegistryTokenKeyPath != "" {
+		return cfg.Auth.RegistryTokenKeyPath
+	}
+	if cfg.Storage.Blob.Driver == "local" && cfg.Storage.Blob.Local.Root != "" {
+		return filepath.Join(filepath.Dir(strings.TrimRight(cfg.Storage.Blob.Local.Root, "/")), "specula-registry-token.pem")
+	}
+	return filepath.Join(os.TempDir(), "specula-registry-token.pem")
 }
 
 // goProtocolKey is the config.Protocols map key for the Go module proxy. Note

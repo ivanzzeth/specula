@@ -122,6 +122,14 @@ type AuthConfig struct {
 	// CookieSecure sets the Secure flag on session cookies. Set true when
 	// the control plane is behind HTTPS (recommended for production).
 	CookieSecure bool `koanf:"cookie_secure"`
+
+	// RegistryTokenKeyPath is the on-disk PEM file holding the RS256 signing
+	// keypair for hosted-registry Bearer tokens (the Docker v2 token flow).
+	// Distinct from JWTSecret (HS256 session cookies). Empty derives a durable
+	// default next to the local blob store (or a temp path otherwise). The key
+	// is generated on first start and must be kept stable across restarts /
+	// shared across HA replicas so issued tokens verify everywhere.
+	RegistryTokenKeyPath string `koanf:"registry_token_key_path"`
 }
 
 // ProtocolConfig holds per-protocol upstreams and verification policy.

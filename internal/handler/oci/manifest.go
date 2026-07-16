@@ -3,6 +3,7 @@ package oci
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,10 +18,15 @@ import (
 // serveManifest handles GET/HEAD /v2/<name>/manifests/<reference>.
 // reference may be a digest (sha256:…) or a mutable tag.
 //
-// Flow:
-//  1. Resolve digest from mutable-tier cache (for tags).
-//  2. Attempt to serve from the verified CAS.
-//  3. On cache miss, fetch from upstream (verify-on-write → promote → serve).
+// Flow (hosted repo):
+//  1. isHosted check — if hosted, enforce visibility before any CAS access.
+//  2. Resolve digest from mutable tier; attempt to serve from CAS.
+//  3. CAS miss → 404 (hosted repos are authoritative; never fetch upstream).
+//
+// Flow (non-hosted / pull-through):
+//  1. isHosted returns false; skip auth gate.
+//  2. Resolve digest from mutable tier; attempt to serve from CAS.
+//  3. CAS miss → fetch from upstream (verify-on-write → promote → serve).
 func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageName, reference string) {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
@@ -31,9 +37,25 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageNam
 
 	ctx := r.Context()
 
+	// Hosted-first gate: resolve hosted status before any CAS lookup so that
+	// visibility is enforced for both cache-hit and cache-miss paths. The gate
+	// is inert (isHosted → false) until a HostedResolver is wired, preserving
+	// existing pull-through behaviour byte-for-byte.
+	hostedRepo := h.isHosted(ctx, imageName)
+	if hostedRepo {
+		if err := h.checkHostedRead(ctx, imageName); err != nil {
+			if errors.Is(err, ErrUnauthorized) {
+				writeOCIError(w, http.StatusUnauthorized, "UNAUTHORIZED", "authentication required")
+				return
+			}
+			writeOCIError(w, http.StatusForbidden, "DENIED", "insufficient access")
+			return
+		}
+	}
+
 	// Step 1: resolve digest from mutable tier (tag→digest map).
-	// This returns immediately for digest refs; for tag refs it checks
-	// the mutable cache only (no upstream probe here).
+	// Returns immediately for digest refs; for tag refs checks the mutable cache
+	// only (no upstream probe here).
 	digest, _, err := h.resolveManifestDigest(ctx, imageName, reference)
 	if err != nil {
 		h.log.Error("oci: resolve manifest digest", "image", imageName, "ref", reference, "err", err)
@@ -48,7 +70,24 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageNam
 		}
 	}
 
-	// Step 3: cache miss — fetch from upstream with verify-on-write.
+	// Cache miss path.
+	if hostedRepo {
+		// Hosted repos are authoritative local content: a CAS miss means the
+		// manifest does not exist here. Never fall through to upstream.
+		writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
+		return
+	}
+
+	// Owned-namespace names are authoritative-local even before the repo row
+	// exists: a manifest miss is a definitive 404, never an upstream leak. This
+	// keeps push and pull of org namespaces correct when an OCI pull-through
+	// upstream is also configured.
+	if h.isOwnedNamespace(ctx, imageName) {
+		writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
+		return
+	}
+
+	// Non-hosted: Step 3 — fetch from upstream with verify-on-write.
 	if h.upstreamClt == nil || len(h.upstreams) == 0 {
 		writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 		return

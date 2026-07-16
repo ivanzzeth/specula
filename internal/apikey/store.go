@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/ivanzzeth/specula/internal/dbx"
 )
 
 // Compile-time assertions: both stores satisfy the Store interface.
@@ -22,12 +24,29 @@ var (
 // see each other's keys immediately. Only the SHA-256 hash of each key is
 // persisted; the plaintext is returned exactly once (at creation) and then
 // gone from memory.
+//
+// The ported SQL uses "?" positional placeholders. On PostgreSQL (pgx stdlib)
+// these must be rewritten to "$N"; the dialect field selects the style and rb()
+// is applied to every query, so one query string works on both backends.
+// Construct with NewSQLStore (SQLite) or NewSQLStorePostgres.
 type SQLStore struct {
-	db *sql.DB
+	db      *sql.DB
+	dialect dbx.Dialect
 }
 
-// NewSQLStore constructs a SQLStore over an already-migrated database handle.
-func NewSQLStore(db *sql.DB) *SQLStore { return &SQLStore{db: db} }
+// NewSQLStore constructs a SQLStore over an already-migrated SQLite database
+// handle ("?" placeholders passed through verbatim).
+func NewSQLStore(db *sql.DB) *SQLStore { return &SQLStore{db: db, dialect: dbx.SQLite} }
+
+// NewSQLStorePostgres constructs a SQLStore over an already-migrated PostgreSQL
+// database handle, rebinding "?" placeholders to "$N" for the pgx stdlib driver.
+func NewSQLStorePostgres(db *sql.DB) *SQLStore {
+	return &SQLStore{db: db, dialect: dbx.Postgres}
+}
+
+// rb rewrites a query's "?" placeholders for the store's dialect (no-op on
+// SQLite).
+func (s *SQLStore) rb(query string) string { return dbx.Rebind(s.dialect, query) }
 
 // Create issues a key for an org (no issuing user). Returns the stable id and
 // the plaintext key — the plaintext is visible only at this call.
@@ -59,7 +78,7 @@ func (s *SQLStore) sqlInsert(orgID, userID, label string, expiresAt time.Time) (
 
 	const q = `INSERT INTO api_keys(key_hash,id,label,prefix,org_id,user_id,created_at,expires_at,revoked)
 	           VALUES(?,?,?,?,?,?,?,?,0)`
-	if _, err := s.db.Exec(q, h, id, label, pfx, orgID, userID,
+	if _, err := s.db.Exec(s.rb(q), h, id, label, pfx, orgID, userID,
 		now.Format(time.RFC3339Nano), exp); err != nil {
 		return "", "", fmt.Errorf("apikey: insert: %w", err)
 	}
@@ -79,7 +98,7 @@ func (s *SQLStore) LookupSubject(token string) (string, string, bool) {
 	)
 	h := hashKey(token)
 	err := s.db.QueryRow(
-		`SELECT id, org_id, revoked, expires_at FROM api_keys WHERE key_hash=?`, h,
+		s.rb(`SELECT id, org_id, revoked, expires_at FROM api_keys WHERE key_hash=?`), h,
 	).Scan(&id, &orgID, &revoked, &expiresAt)
 	if err == sql.ErrNoRows {
 		return "", "", false
@@ -97,7 +116,7 @@ func (s *SQLStore) LookupSubject(token string) (string, string, bool) {
 		}
 	}
 	if _, err := s.db.Exec(
-		`UPDATE api_keys SET last_used_at=? WHERE key_hash=?`,
+		s.rb(`UPDATE api_keys SET last_used_at=? WHERE key_hash=?`),
 		time.Now().UTC().Format(time.RFC3339Nano), h,
 	); err != nil {
 		log.Printf("apikey: touch last_used_at: %v", err)
@@ -109,7 +128,7 @@ func (s *SQLStore) LookupSubject(token string) (string, string, bool) {
 func (s *SQLStore) List(orgID string) ([]KeyInfo, error) {
 	const q = `SELECT id,org_id,user_id,label,prefix,created_at,last_used_at,revoked,expires_at
 	           FROM api_keys WHERE org_id=? ORDER BY created_at DESC, id DESC`
-	rows, err := s.db.Query(q, orgID)
+	rows, err := s.db.Query(s.rb(q), orgID)
 	if err != nil {
 		return nil, fmt.Errorf("apikey: list: %w", err)
 	}
@@ -130,7 +149,7 @@ func (s *SQLStore) List(orgID string) ([]KeyInfo, error) {
 func (s *SQLStore) Get(orgID, id string) (KeyInfo, bool) {
 	const q = `SELECT id,org_id,user_id,label,prefix,created_at,last_used_at,revoked,expires_at
 	           FROM api_keys WHERE id=? AND org_id=?`
-	return scanKeyInfo(s.db.QueryRow(q, id, orgID))
+	return scanKeyInfo(s.db.QueryRow(s.rb(q), id, orgID))
 }
 
 // Revoke soft-deletes a key by (orgID, id). Returns (true, nil) when a
@@ -139,7 +158,7 @@ func (s *SQLStore) Get(orgID, id string) (KeyInfo, bool) {
 // (false, err) on a database error.
 func (s *SQLStore) Revoke(orgID, id string) (bool, error) {
 	const q = `UPDATE api_keys SET revoked=1 WHERE id=? AND org_id=? AND (revoked IS NULL OR revoked=0)`
-	res, err := s.db.Exec(q, id, orgID)
+	res, err := s.db.Exec(s.rb(q), id, orgID)
 	if err != nil {
 		return false, fmt.Errorf("apikey: revoke: %w", err)
 	}

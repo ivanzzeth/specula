@@ -40,11 +40,14 @@ const (
 // inside the CacheManager (fix C2 from DESIGN-REVIEW).
 type Handler struct {
 	cache         cache.CacheManager
-	meta          meta.MetadataStore  // optional: direct mutable-tier (tag→digest) access
-	upstreamClt   upstream.Client     // optional: cache-miss upstream fetcher
-	upstreams     []upstream.Upstream // ordered fallback list
-	mutableTTLSec int64               // TTL for tag→digest mutable entries (seconds)
-	quarantineDir string              // directory for on-disk quarantine temp files
+	meta          meta.MetadataStore     // optional: direct mutable-tier (tag→digest) access
+	upstreamClt   upstream.Client        // optional: cache-miss upstream fetcher
+	upstreams     []upstream.Upstream    // ordered fallback list
+	mutableTTLSec int64                  // TTL for tag→digest mutable entries (seconds)
+	quarantineDir string                 // directory for on-disk quarantine temp files
+	hosted        HostedResolver         // optional: hosted-first pull seam (R2)
+	hostedAuthz   HostedReadAuthz        // optional: visibility enforcement for hosted repos (R2)
+	owned         OwnedNamespaceResolver // optional: authoritative-local namespace gate (R2)
 	log           *slog.Logger
 }
 

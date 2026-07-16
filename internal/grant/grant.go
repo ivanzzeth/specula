@@ -17,6 +17,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/ivanzzeth/specula/internal/dbx"
 )
 
 // errNotImplemented is kept for compile-time safety; removed from live paths once
@@ -80,29 +82,45 @@ var (
 
 // ---- SQLStore: resource_grants-backed implementation -------------------------
 
-// SQLStore is the resource_grants-backed Store. Uses database/sql with ?
-// placeholders (SQLite-compatible; callers targeting PostgreSQL via
-// database/sql/stdlib should wrap with a rebind step). Ported from
-// ai-sandbox internal/controlplane/grant, adapted to Specula's Upsert/Delete
-// naming and standalone *sql.DB injection.
+// SQLStore is the resource_grants-backed Store. The ported SQL uses "?"
+// positional placeholders; on PostgreSQL (pgx stdlib) they are rebound to "$N"
+// via the dialect field so one query string works on SQLite and PostgreSQL.
+// Ported from ai-sandbox internal/controlplane/grant, adapted to Specula's
+// Upsert/Delete naming and standalone *sql.DB injection. Construct with
+// NewSQLStore (SQLite) or NewSQLStorePostgres.
+//
+// The Upsert path relies on `ON CONFLICT (…) DO UPDATE SET x = excluded.x`,
+// which is valid on both SQLite and PostgreSQL (the resource_grants PRIMARY KEY
+// backs the conflict target).
 type SQLStore struct {
-	db *sql.DB
+	db      *sql.DB
+	dialect dbx.Dialect
 }
 
-// NewSQLStore constructs the SQL grant store backed by db (SQLite or Postgres
-// via database/sql). The caller is responsible for running the 0002_multitenant
-// migration before first use so that resource_grants exists.
-func NewSQLStore(db *sql.DB) *SQLStore { return &SQLStore{db: db} }
+// NewSQLStore constructs the SQLite grant store backed by db. The caller is
+// responsible for running the 0002_multitenant migration before first use so
+// that resource_grants exists. "?" placeholders are passed through verbatim.
+func NewSQLStore(db *sql.DB) *SQLStore { return &SQLStore{db: db, dialect: dbx.SQLite} }
+
+// NewSQLStorePostgres constructs the PostgreSQL grant store backed by db,
+// rebinding "?" placeholders to "$N" for the pgx stdlib driver.
+func NewSQLStorePostgres(db *sql.DB) *SQLStore {
+	return &SQLStore{db: db, dialect: dbx.Postgres}
+}
+
+// rb rewrites a query's "?" placeholders for the store's dialect (no-op on
+// SQLite).
+func (s *SQLStore) rb(query string) string { return dbx.Rebind(s.dialect, query) }
 
 // Grants returns all grant records for the given resource, ordered by
 // (subject_type, subject_id). Returns an empty slice (not nil) when none exist.
 func (s *SQLStore) Grants(resourceType, resourceID string) ([]Grant, error) {
 	rows, err := s.db.Query(
-		`SELECT resource_type, resource_id, subject_type, subject_id,
+		s.rb(`SELECT resource_type, resource_id, subject_type, subject_id,
 		        access, granted_by, created_at
 		   FROM resource_grants
 		  WHERE resource_type = ? AND resource_id = ?
-		  ORDER BY subject_type, subject_id`,
+		  ORDER BY subject_type, subject_id`),
 		resourceType, resourceID)
 	if err != nil {
 		return nil, err
@@ -141,7 +159,7 @@ func (s *SQLStore) Upsert(g Grant) error {
 	}
 	g.Access = normAccess(g.Access)
 	_, err := s.db.Exec(
-		`INSERT INTO resource_grants
+		s.rb(`INSERT INTO resource_grants
 		        (resource_type, resource_id, subject_type, subject_id,
 		         access, granted_by, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -149,7 +167,7 @@ func (s *SQLStore) Upsert(g Grant) error {
 		 DO UPDATE SET
 		     access     = excluded.access,
 		     granted_by = excluded.granted_by,
-		     created_at = excluded.created_at`,
+		     created_at = excluded.created_at`),
 		g.ResourceType, g.ResourceID, g.SubjectType, g.SubjectID,
 		g.Access, g.GrantedBy,
 		g.CreatedAt.UTC().Format(time.RFC3339Nano),
@@ -160,9 +178,9 @@ func (s *SQLStore) Upsert(g Grant) error {
 // Delete removes the grant identified by the four-column key. No-op if absent.
 func (s *SQLStore) Delete(resourceType, resourceID, subjectType, subjectID string) error {
 	_, err := s.db.Exec(
-		`DELETE FROM resource_grants
+		s.rb(`DELETE FROM resource_grants
 		  WHERE resource_type = ? AND resource_id = ?
-		    AND subject_type  = ? AND subject_id  = ?`,
+		    AND subject_type  = ? AND subject_id  = ?`),
 		resourceType, resourceID, subjectType, subjectID,
 	)
 	return err
@@ -173,8 +191,8 @@ func (s *SQLStore) Delete(resourceType, resourceID, subjectType, subjectID strin
 // so callers can always safely pass the result into acl.CanAccessGranted.
 func (s *SQLStore) GrantedOrgs(resourceType, resourceID string) []string {
 	rows, err := s.db.Query(
-		`SELECT subject_id FROM resource_grants
-		  WHERE resource_type = ? AND resource_id = ? AND subject_type = ?`,
+		s.rb(`SELECT subject_id FROM resource_grants
+		  WHERE resource_type = ? AND resource_id = ? AND subject_type = ?`),
 		resourceType, resourceID, SubjectOrg,
 	)
 	if err != nil {
@@ -197,7 +215,7 @@ func (s *SQLStore) GrantedOrgs(resourceType, resourceID string) []string {
 // cascade cleanup when an org or user is deleted.
 func (s *SQLStore) PurgeSubject(ctx context.Context, subjectType, subjectID string) error {
 	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM resource_grants WHERE subject_type = ? AND subject_id = ?`,
+		s.rb(`DELETE FROM resource_grants WHERE subject_type = ? AND subject_id = ?`),
 		subjectType, subjectID,
 	)
 	return err

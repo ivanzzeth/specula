@@ -827,6 +827,262 @@ func TestBlobCacheMiss_BearerAuth(t *testing.T) {
 	assert.Equal(t, blobData, got)
 }
 
+// ── Hosted-first pull routing + visibility tests ─────────────────────────────
+
+// fakeHostedResolver reports names as hosted based on a pre-configured set.
+type fakeHostedResolver struct {
+	hosted map[string]bool
+}
+
+func (f *fakeHostedResolver) ResolveHosted(_ context.Context, name string) (bool, error) {
+	return f.hosted[name], nil
+}
+
+// fakeHostedReadAuthz grants or denies reads per repo name. A nil entry → allow.
+type fakeHostedReadAuthz struct {
+	deny map[string]error // repoName → error to return (nil = allow)
+}
+
+func (f *fakeHostedReadAuthz) AuthorizeRead(_ context.Context, repoName string) error {
+	return f.deny[repoName]
+}
+
+func TestHostedPrivateManifest_RequiresAuth(t *testing.T) {
+	// Private hosted repo: auth check fires before CAS; 401 returned.
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}`)
+	mDigest := sha256Digest(manifest)
+
+	fake := &fakeCacheManager{
+		entries: map[string]*artifact.CacheEntry{
+			"oci:acme/myapp:latest":     {Digest: mDigest, Size: int64(len(manifest)), Protocol: "oci"},
+			"oci:acme/myapp:" + mDigest: {Digest: mDigest, Size: int64(len(manifest)), Protocol: "oci"},
+		},
+		blobs: map[string][]byte{mDigest: manifest},
+	}
+
+	h := NewHandler(fake,
+		WithHostedResolver(&fakeHostedResolver{hosted: map[string]bool{"acme/myapp": true}}),
+		WithHostedReadAuthz(&fakeHostedReadAuthz{deny: map[string]error{"acme/myapp": ErrUnauthorized}}),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v2/acme/myapp/manifests/latest")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "UNAUTHORIZED")
+}
+
+func TestHostedPublicManifest_AnonymousOk(t *testing.T) {
+	// Public hosted repo: authz returns nil; manifest served from CAS.
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json"}`)
+	mDigest := sha256Digest(manifest)
+
+	fake := &fakeCacheManager{
+		entries: map[string]*artifact.CacheEntry{
+			"oci:acme/public:latest":     {Digest: mDigest, Size: int64(len(manifest)), Protocol: "oci"},
+			"oci:acme/public:" + mDigest: {Digest: mDigest, Size: int64(len(manifest)), Protocol: "oci"},
+		},
+		blobs: map[string][]byte{mDigest: manifest},
+	}
+
+	h := NewHandler(fake,
+		WithHostedResolver(&fakeHostedResolver{hosted: map[string]bool{"acme/public": true}}),
+		WithHostedReadAuthz(&fakeHostedReadAuthz{deny: map[string]error{}}), // no denials
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v2/acme/public/manifests/latest")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, mDigest, resp.Header.Get("Docker-Content-Digest"))
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, manifest, body)
+}
+
+func TestHostedManifest_NotInCAS_Returns404_NotUpstream(t *testing.T) {
+	// Hosted repo with content absent from CAS. Upstream is configured but must
+	// NOT be contacted; a 404 is the correct response.
+	upSrv := ociUpstreamServer(t,
+		map[string][]byte{"latest": []byte(`{"schemaVersion":2}`)},
+		nil, "",
+	)
+	defer upSrv.Close()
+
+	fc := newStoringFakeCache()
+	h := NewHandler(fc,
+		WithUpstream(
+			upstream.NewClient(),
+			[]upstream.Upstream{{Name: "fake", BaseURL: upSrv.URL, Priority: 1}},
+		),
+		WithHostedResolver(&fakeHostedResolver{hosted: map[string]bool{"acme/private": true}}),
+		WithHostedReadAuthz(&fakeHostedReadAuthz{deny: map[string]error{}}),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v2/acme/private/manifests/latest")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Must get 404, not 200 from upstream.
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "MANIFEST_UNKNOWN")
+}
+
+func TestNonHostedManifest_FallsThroughToUpstream(t *testing.T) {
+	// Resolver is wired but returns false for this name. Upstream must be used.
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{},"layers":[]}`)
+	mDigest := sha256Digest(manifest)
+
+	upSrv := ociUpstreamServer(t,
+		map[string][]byte{"stable": manifest, mDigest: manifest},
+		nil, "",
+	)
+	defer upSrv.Close()
+
+	fc := newStoringFakeCache()
+	h := NewHandler(fc,
+		WithUpstream(
+			upstream.NewClient(),
+			[]upstream.Upstream{{Name: "fake", BaseURL: upSrv.URL, Priority: 1}},
+		),
+		// Resolver present but returns false → non-hosted path unchanged.
+		WithHostedResolver(&fakeHostedResolver{hosted: map[string]bool{}}),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v2/library/img/manifests/stable")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, mDigest, resp.Header.Get("Docker-Content-Digest"))
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, manifest, body)
+}
+
+func TestHostedPrivateBlob_RequiresAuth(t *testing.T) {
+	// Private hosted repo: auth check fires before CAS; 401 returned for blob.
+	blobData := bytes.Repeat([]byte("P"), 512)
+	bDigest := sha256Digest(blobData)
+
+	fake := &fakeCacheManager{
+		entries: map[string]*artifact.CacheEntry{
+			"oci:acme/myapp:" + bDigest: {Digest: bDigest, Size: int64(len(blobData)), Protocol: "oci"},
+		},
+		blobs: map[string][]byte{bDigest: blobData},
+	}
+
+	h := NewHandler(fake,
+		WithHostedResolver(&fakeHostedResolver{hosted: map[string]bool{"acme/myapp": true}}),
+		WithHostedReadAuthz(&fakeHostedReadAuthz{deny: map[string]error{"acme/myapp": ErrUnauthorized}}),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v2/acme/myapp/blobs/" + bDigest)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "UNAUTHORIZED")
+}
+
+func TestHostedPublicBlob_AnonymousOk(t *testing.T) {
+	// Public hosted repo: authz returns nil; blob served from CAS.
+	blobData := bytes.Repeat([]byte("Q"), 512)
+	bDigest := sha256Digest(blobData)
+
+	fake := &fakeCacheManager{
+		entries: map[string]*artifact.CacheEntry{
+			"oci:acme/public:" + bDigest: {Digest: bDigest, Size: int64(len(blobData)), Protocol: "oci"},
+		},
+		blobs: map[string][]byte{bDigest: blobData},
+	}
+
+	h := NewHandler(fake,
+		WithHostedResolver(&fakeHostedResolver{hosted: map[string]bool{"acme/public": true}}),
+		WithHostedReadAuthz(&fakeHostedReadAuthz{deny: map[string]error{}}),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v2/acme/public/blobs/" + bDigest)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, bDigest, resp.Header.Get("Docker-Content-Digest"))
+	got, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, blobData, got)
+}
+
+func TestHostedForbiddenBlob_Returns403(t *testing.T) {
+	// Hosted repo: token present but insufficient scope → 403 DENIED.
+	blobData := []byte("secret-blob")
+	bDigest := sha256Digest(blobData)
+
+	fake := &fakeCacheManager{
+		entries: map[string]*artifact.CacheEntry{
+			"oci:acme/secret:" + bDigest: {Digest: bDigest, Size: int64(len(blobData)), Protocol: "oci"},
+		},
+		blobs: map[string][]byte{bDigest: blobData},
+	}
+
+	h := NewHandler(fake,
+		WithHostedResolver(&fakeHostedResolver{hosted: map[string]bool{"acme/secret": true}}),
+		WithHostedReadAuthz(&fakeHostedReadAuthz{deny: map[string]error{"acme/secret": ErrForbidden}}),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v2/acme/secret/blobs/" + bDigest)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "DENIED")
+}
+
+func TestNonHostedBlob_FallsThroughToUpstream(t *testing.T) {
+	// Resolver returns false for this name; blob must be fetched from upstream.
+	blobData := bytes.Repeat([]byte("U"), 256)
+	bDigest := sha256Digest(blobData)
+
+	upSrv := ociUpstreamServer(t, nil, map[string][]byte{bDigest: blobData}, "")
+	defer upSrv.Close()
+
+	fc := newStoringFakeCache()
+	h := NewHandler(fc,
+		WithUpstream(
+			upstream.NewClient(),
+			[]upstream.Upstream{{Name: "fake", BaseURL: upSrv.URL, Priority: 1}},
+		),
+		WithHostedResolver(&fakeHostedResolver{hosted: map[string]bool{}}),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v2/library/img/blobs/" + bDigest)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	got, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, blobData, got)
+}
+
 func TestDetectManifestMediaType(t *testing.T) {
 	tests := []struct {
 		name     string
