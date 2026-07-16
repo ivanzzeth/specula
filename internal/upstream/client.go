@@ -534,7 +534,13 @@ func buildPath(ref artifact.ArtifactRef) string {
 		return "v2/" + ref.Name + "/blobs/" + ref.Digest
 
 	case "gomod":
-		// GOPROXY: /{module}/@v/{file}
+		// GOPROXY: /{module}/@latest for the latest-version endpoint, else
+		// /{module}/@v/{file} where file is list | <v>.info | <v>.mod | <v>.zip.
+		// ref.Name is the escaped (URL-form) module path; ref.Version is the
+		// @v file component ("@latest" sentinel routes to the /@latest endpoint).
+		if ref.Version == "@latest" {
+			return ref.Name + "/@latest"
+		}
 		return ref.Name + "/@v/" + ref.Version
 
 	case "pypi":

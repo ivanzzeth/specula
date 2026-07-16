@@ -138,6 +138,43 @@ type ProtocolConfig struct {
 	// MutableTTLSeconds overrides CacheConfig.DefaultMutableTTLSeconds for
 	// this protocol. TTLNeverRevalidate (-1), TTLAlwaysRevalidate (0), or >0.
 	MutableTTLSeconds int64 `koanf:"mutable_ttl_seconds"`
+
+	// SumDB configures the Go checksum-database verification + /sumdb/
+	// passthrough. Only meaningful for the "go" protocol; nil for all others.
+	// (PRD §6 go block; DESIGN-REVIEW H5.)
+	SumDB *SumDBConfig `koanf:"sumdb"`
+}
+
+// SumDBConfig is the Go checksum-database (sumdb) configuration surface for the
+// "go" protocol (PRD §6). The proxy verifies module authenticity against a
+// signed sumdb tree head routed via a CN-reachable passthrough, and refuses to
+// forward private module names to the public sumdb.
+//
+// Trust rule (DESIGN-REVIEW H5): GOSUMDB is NEVER defaulted to "off". Policy is
+// "enforce" (default) or "warn"; anything else — including "off" — is rejected
+// by Validate.
+type SumDBConfig struct {
+	// URL is the sumdb access endpoint. CN-reachable options:
+	// "sum.golang.google.cn" or a GOPROXY "/sumdb/" passthrough base
+	// (e.g. "https://goproxy.cn/sumdb"). Empty falls back to the compiled
+	// default (sum.golang.org) — acceptable only where it is reachable.
+	URL string `koanf:"url"`
+
+	// Policy is "enforce" (fail closed on verification failure) or "warn"
+	// (log + serve, degraded tier). Empty defaults to "enforce". "off" is
+	// explicitly rejected — never disable sumdb verification globally.
+	Policy string `koanf:"policy"`
+
+	// PrivatePatterns are GONOSUMDB-style globs (Athens NoSumPatterns). Module
+	// paths matching any glob are treated as private: their names are NEVER
+	// forwarded to the public sumdb and /sumdb/ lookups for them return 403.
+	// Example: ["git.internal.corp/*", "*.corp.example.com/*"].
+	PrivatePatterns []string `koanf:"private_patterns"`
+
+	// VerifierKey pins the sumdb note verifier key ("<name>+<hash>+<base64key>",
+	// golang.org/x/mod/sumdb/note format). Empty uses the default sum.golang.org
+	// key embedded in x/mod. Setting it enables explicit key pinning.
+	VerifierKey string `koanf:"verifier_key"`
 }
 
 // UpstreamConfig describes one mirror in the fallback chain for a protocol.

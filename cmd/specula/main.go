@@ -3,9 +3,9 @@
 // verification chain (checksum + TOFU) and CacheManager, then serves the OCI
 // data plane on its port and the control-plane health/metrics endpoints.
 //
-// v0.1 scope: only the OCI data-plane handler actually serves. The other seven
-// protocol ports (pypi, npm, go, apt, helm, tarball, git) are wired as TODO
-// stubs on the data plane and return 501.
+// v0.2 scope: the OCI and Go module (GOPROXY) data-plane handlers serve for
+// real. The remaining six protocol ports (pypi, npm, apt, helm, tarball, git)
+// are wired as TODO stubs on the data plane and return 501.
 package main
 
 import (
@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/config"
+	"github.com/ivanzzeth/specula/internal/handler/gomod"
 	"github.com/ivanzzeth/specula/internal/handler/oci"
 	"github.com/ivanzzeth/specula/internal/stats"
 	blobstore "github.com/ivanzzeth/specula/internal/store/blob"
@@ -92,10 +94,17 @@ func run() error {
 		"blob_driver", cfg.Storage.Blob.Driver, "meta_driver", cfg.Storage.Meta.Driver)
 
 	// ── Verification chain: checksum (transport integrity) + TOFU pin ────────
-	chain := verify.NewChain(
+	// The chain is global; the Go sumdb verifier self-gates (no-op StatusPass for
+	// any ref that is not an immutable gomod artifact) so a single shared chain can
+	// carry it without acting on OCI or the other protocols (DESIGN-REVIEW §1 H5).
+	verifiers := []verify.Verifier{
 		verify.NewChecksumVerifier(),
 		verify.NewTofuVerifier(newMetaTofuStore(metaStore)),
-	)
+	}
+	if goSumDB := buildGoSumDBVerifier(cfg, metaStore, log); goSumDB != nil {
+		verifiers = append(verifiers, goSumDB)
+	}
+	chain := verify.NewChain(verifiers...)
 
 	// ── Cache manager: two-tier CAS + verify-on-write quarantine ─────────────
 	cm := cache.New(blobs, metaStore, chain)
@@ -109,6 +118,7 @@ func run() error {
 	// ── Data plane: OCI handler + protocol stubs ─────────────────────────────
 	dataMux := http.NewServeMux()
 	mountOCI(dataMux, cfg, cm, metaStore, log)
+	mountGoModule(dataMux, cfg, cm, metaStore, log)
 	mountProtocolStubs(dataMux, log)
 	// Liveness on the data plane too, so a bare data-plane LB can probe it.
 	dataMux.HandleFunc("/healthz", healthz)
@@ -227,13 +237,89 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	log.Info("specula: mounted OCI handler", "path", "/v2/", "configured", ok)
 }
 
-// mountProtocolStubs registers the remaining seven data-plane protocols as
-// 501 stubs. v0.1 only serves OCI; these are placeholders (ARCHITECTURE §8).
+// goProtocolKey is the config.Protocols map key for the Go module proxy. Note
+// the config keys this block "go" while the on-the-wire ArtifactRef.Protocol and
+// store rows use "gomod" (see gomod.Protocol / verify.protocolGo).
+const goProtocolKey = "go"
+
+// goMountPrefix is the data-plane mount path for the GOPROXY handler. Users set
+// GOPROXY=http://<host>/go so the go command appends /{module}/@v/... beneath it,
+// and derives sumdb requests at /go/sumdb/{name}/... (routed internally).
+const goMountPrefix = "/go"
+
+// mountGoModule wires the GOPROXY data-plane handler at /go/ using the "go"
+// protocol config for upstreams, mutable TTL and the /sumdb/ passthrough. The
+// handler self-strips the /go prefix (WithPathPrefix) so it can be mounted with
+// a bare ServeMux pattern. When the "go" protocol is absent the handler still
+// mounts (serving already-cached content) but has no upstream fallback.
+func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger) {
+	pc, ok := cfg.Protocols[goProtocolKey]
+	opts := []gomod.Option{
+		gomod.WithMeta(metaStore),
+		gomod.WithPathPrefix(goMountPrefix),
+		gomod.WithLogger(log.With("protocol", gomod.Protocol)),
+	}
+
+	sumdbEnabled := false
+	if ok {
+		if len(pc.Upstreams) > 0 {
+			opts = append(opts, gomod.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+		}
+		opts = append(opts, gomod.WithMutableTTL(mutableTTL(pc, cfg)))
+
+		// /sumdb/ passthrough: transparently proxy the go command's own signed
+		// tree-head + inclusion/consistency verification to the configured sumdb.
+		// Shares the GONOSUMDB private-module matcher with the chain verifier so a
+		// private module name is never forwarded to the public sumdb (H5).
+		if pc.SumDB != nil {
+			sh := gomod.NewSumDBHandler(pc.SumDB.URL,
+				gomod.WithSumDBPrivateMatcher(verify.NewPrivateMatcher(pc.SumDB.PrivatePatterns)),
+				gomod.WithSumDBLogger(log.With("protocol", gomod.Protocol, "component", "sumdb")),
+			)
+			opts = append(opts, gomod.WithSumDB(sh))
+			sumdbEnabled = true
+		}
+	}
+
+	mux.Handle(goMountPrefix+"/", gomod.NewHandler(cm, opts...))
+	log.Info("specula: mounted Go module proxy",
+		"path", goMountPrefix+"/", "configured", ok, "sumdb_passthrough", sumdbEnabled)
+}
+
+// buildGoSumDBVerifier constructs the Go checksum-database verifier from the "go"
+// protocol's sumdb block, or returns nil when the go protocol has no sumdb
+// config. Anti-rollback high-water tree size is persisted via the metadata store.
+func buildGoSumDBVerifier(cfg *config.Config, metaStore metastore.MetadataStore, log *slog.Logger) *verify.SumDBVerifier {
+	pc, ok := cfg.Protocols[goProtocolKey]
+	if !ok || pc.SumDB == nil {
+		return nil
+	}
+	sc := pc.SumDB
+	log.Info("specula: Go sumdb verification enabled",
+		"url", sc.URL, "policy", policyOrDefault(sc.Policy), "private_patterns", len(sc.PrivatePatterns))
+	return verify.NewSumDBVerifier(verify.SumDBConfig{
+		URL:             sc.URL,
+		VerifierKey:     sc.VerifierKey,
+		Policy:          verify.Policy(sc.Policy),
+		PrivatePatterns: sc.PrivatePatterns,
+		TreeSize:        newMetaTreeSizeStore(metaStore),
+	})
+}
+
+// policyOrDefault renders the effective sumdb policy for logging ("" → enforce).
+func policyOrDefault(p string) string {
+	if p == "" {
+		return string(verify.PolicyEnforce)
+	}
+	return p
+}
+
+// mountProtocolStubs registers the remaining data-plane protocols as 501 stubs.
+// v0.2 serves OCI and Go; these are placeholders (ARCHITECTURE §8).
 func mountProtocolStubs(mux *http.ServeMux, log *slog.Logger) {
 	stubs := map[string]string{
 		"/pypi/":    "pypi",
 		"/npm/":     "npm",
-		"/go/":      "go",
 		"/apt/":     "apt",
 		"/helm/":    "helm",
 		"/tarball/": "tarball",
@@ -388,3 +474,45 @@ func (s *metaTofuStore) SetPin(ctx context.Context, key, digest string) error {
 }
 
 func tofuKey(key string) string { return "tofu:" + key }
+
+// metaTreeSizeStore adapts a MetadataStore into the verify.TreeSizeStore used for
+// Go sumdb anti-rollback: it persists the monotonic high-water signed tree size
+// per sumdb name in the mutable tier under a "sumdb-treesize:" key namespace with
+// a never-revalidate TTL. The size is stored as a decimal string in the Digest
+// field (the mutable pointer's opaque value slot).
+type metaTreeSizeStore struct {
+	meta metastore.MetadataStore
+}
+
+func newMetaTreeSizeStore(m metastore.MetadataStore) verify.TreeSizeStore {
+	return &metaTreeSizeStore{meta: m}
+}
+
+func (s *metaTreeSizeStore) GetTreeSize(ctx context.Context, name string) (int64, error) {
+	e, err := s.meta.GetMutable(ctx, treeSizeKey(name))
+	if err != nil {
+		return 0, err
+	}
+	if e == nil || e.Digest == "" {
+		return 0, nil
+	}
+	n, parseErr := strconv.ParseInt(e.Digest, 10, 64)
+	if parseErr != nil {
+		// Corrupt persisted value: treat as "no record" rather than failing the
+		// whole verification. The next successful head write repairs it.
+		return 0, nil
+	}
+	return n, nil
+}
+
+func (s *metaTreeSizeStore) SetTreeSize(ctx context.Context, name string, size int64) error {
+	return s.meta.PutMutable(ctx, artifact.MutableEntry{
+		Key:        treeSizeKey(name),
+		Protocol:   "sumdb",
+		Digest:     strconv.FormatInt(size, 10),
+		TTLSeconds: config.TTLNeverRevalidate,
+		FetchedAt:  time.Now().UTC(),
+	})
+}
+
+func treeSizeKey(name string) string { return "sumdb-treesize:" + name }

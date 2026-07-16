@@ -194,6 +194,20 @@ protocols:
       # Leave empty to use the default key embedded in x/mod.
       sumdb_key: ""
 
+    # sumdb (Go checksum database) verification + /sumdb/ passthrough.
+    # NEVER set GOSUMDB=off — policy is enforce | warn only (DESIGN-REVIEW H5).
+    sumdb:
+      # CN-reachable sumdb: sum.golang.google.cn, or a goproxy.cn /sumdb/ base.
+      url: https://sum.golang.google.cn
+      # enforce = fail closed on verification failure; warn = degraded tier.
+      policy: enforce
+      # GONOSUMDB globs (Athens NoSumPatterns): matching module names are never
+      # forwarded to the public sumdb; /sumdb/ lookups for them return 403.
+      private_patterns:
+        - git.internal.corp/*
+      # verifier_key pins the sumdb note verifier key; empty = x/mod default.
+      verifier_key: ""
+
   # ── apt ───────────────────────────────────────────────────────────────────
   apt:
     # apt uses GPG-signed InRelease → Packages → per-file SHA256 chain.

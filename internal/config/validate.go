@@ -13,6 +13,14 @@ var validTiers = map[string]bool{
 	"signed":    true,
 }
 
+// validSumDBPolicies is the set of allowed Go sumdb policies. Note the
+// deliberate ABSENCE of "off": GOSUMDB must never be disabled (DESIGN-REVIEW H5).
+var validSumDBPolicies = map[string]bool{
+	"":        true, // empty defaults to "enforce"
+	"enforce": true,
+	"warn":    true,
+}
+
 // Validate checks a loaded Config for consistency and completeness.
 // All detected problems are collected and returned as a single error
 // with one message per line so callers see the full picture at once.
@@ -110,6 +118,13 @@ func Validate(cfg *Config) error {
 		if proto.MutableTTLSeconds < TTLNeverRevalidate {
 			add("protocols.%s.mutable_ttl_seconds: must be >= -1, got %d",
 				name, proto.MutableTTLSeconds)
+		}
+
+		// Go sumdb block (only meaningful for the "go" protocol). Policy must be
+		// enforce/warn — never "off" (DESIGN-REVIEW H5: GOSUMDB is never disabled).
+		if proto.SumDB != nil && !validSumDBPolicies[proto.SumDB.Policy] {
+			add("protocols.%s.sumdb.policy: must be \"enforce\" or \"warn\" "+
+				"(GOSUMDB=off is forbidden), got %q", name, proto.SumDB.Policy)
 		}
 	}
 
