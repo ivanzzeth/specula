@@ -17,8 +17,13 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/ivanzzeth/specula/internal/digestutil"
+	// Blank imports register sha384 and sha512 with the crypto package so that
+	// go-digest's Algorithm.Available() returns true for all three OCI-registered
+	// digest algorithms (sha256 is linked by default; sha384/sha512 are not).
+	_ "crypto/sha512"
+
 	"github.com/ivanzzeth/specula/internal/store/blob"
+	godigest "github.com/opencontainers/go-digest"
 )
 
 // Sentinel errors returned by LocalDiskDriver.
@@ -158,10 +163,11 @@ func (d *LocalDiskDriver) Put(ctx context.Context, digest string, r io.Reader, s
 	// Stream: hash and write simultaneously — never holds entire blob in memory.
 	// The hash algorithm is selected from the digest's own algorithm prefix so
 	// the CAS is digest-algorithm agnostic (sha256 / sha384 / sha512).
-	h, err := digestutil.HasherFor(digest)
-	if err != nil {
-		return fmt.Errorf("local: %w", err)
+	dgst := godigest.Digest(digest)
+	if err := dgst.Validate(); err != nil {
+		return fmt.Errorf("local: invalid digest %q: %w", digest, err)
 	}
+	h := dgst.Algorithm().Hash()
 	mw := io.MultiWriter(tmp, h)
 	written, err := io.Copy(mw, r)
 	if err != nil {

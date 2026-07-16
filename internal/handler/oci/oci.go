@@ -20,9 +20,10 @@ import (
 	"strings"
 	"time"
 
+	godigest "github.com/opencontainers/go-digest"
+
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
-	"github.com/ivanzzeth/specula/internal/digestutil"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
 )
@@ -156,18 +157,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeOCIError(w, http.StatusNotFound, "NAME_UNKNOWN", "repository not known")
 }
 
-// isDigestRef returns true when ref is a content digest (e.g. "sha256:abc…").
-// Digests carry an algorithm prefix separated by ':'; tags never contain ':'.
-//
-// Validation goes through internal/digestutil rather than go-containerregistry's
-// name.NewDigest. name.NewDigest delegates to opencontainers/go-digest, which
-// only accepts algorithms whose crypto package is linked in — and gcr links only
-// crypto/sha256. That made every sha384/sha512 reference look malformed, so
-// blobs and manifests pushed under a non-sha256 algorithm were unreadable
-// (400 DIGEST_INVALID instead of 200/404). The OCI image spec registers sha256,
-// sha384 and sha512, and the client chooses; the registry must honour all three.
+// isDigestRef returns true when ref is a well-formed OCI content digest
+// (e.g. "sha256:abc…", "sha512:abc…"). Validation uses opencontainers/go-digest
+// directly with blank imports for crypto/sha512 (registered in
+// internal/store/local) so sha384 and sha512 are recognised alongside the
+// default sha256. Tags never contain ':', so any valid digest string is
+// unambiguously a content address rather than a mutable tag.
 func isDigestRef(ref string) bool {
-	return digestutil.IsValid(ref)
+	return godigest.Digest(ref).Validate() == nil
 }
 
 // isMutableExpired reports whether a short-TTL mutable entry has exceeded its TTL.

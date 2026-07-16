@@ -31,7 +31,6 @@ package registry
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,10 +41,11 @@ import (
 	"strings"
 	"time"
 
+	godigest "github.com/opencontainers/go-digest"
+
 	"github.com/ivanzzeth/specula/internal/acl"
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
-	"github.com/ivanzzeth/specula/internal/digestutil"
 	"github.com/ivanzzeth/specula/internal/repo"
 	blobstore "github.com/ivanzzeth/specula/internal/store/blob"
 	"github.com/ivanzzeth/specula/internal/store/meta"
@@ -391,9 +391,10 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 	// Accept any digest algorithm the OCI image spec registers (sha256 canonical,
 	// sha384, sha512) — the client, not the registry, chooses. Only a malformed
 	// or genuinely unsupported algorithm is DIGEST_INVALID.
-	if err := digestutil.Validate(declaredDigest); err != nil {
+	declaredDgst, parseErr := godigest.Parse(declaredDigest)
+	if parseErr != nil {
 		_ = h.sessions.Delete(r.Context(), uuid)
-		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
+		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", parseErr.Error())
 		return
 	}
 
@@ -446,13 +447,7 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 	}
 	defer f.Close()
 
-	algo, _, _ := digestutil.Split(declaredDigest) // Validate above guarantees ok
-	hw, err := digestutil.NewHasher(algo)
-	if err != nil {
-		_ = h.sessions.Delete(r.Context(), uuid)
-		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
-		return
-	}
+	hw := declaredDgst.Algorithm().Hash() // algorithm was validated by Parse above
 	size, err := io.Copy(hw, f)
 	if err != nil {
 		h.log.Error("registry: hash upload file", "err", err)
@@ -461,7 +456,7 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 		return
 	}
 
-	actualDigest := algo + ":" + hex.EncodeToString(hw.Sum(nil))
+	actualDigest := godigest.NewDigest(declaredDgst.Algorithm(), hw).String()
 	if actualDigest != declaredDigest {
 		// Digest mismatch — discard the upload and report the error.
 		_ = h.sessions.Delete(r.Context(), uuid)
@@ -575,48 +570,45 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref 
 	// Compute the content digest of the manifest bytes. When the client pushes by
 	// digest it has declared the algorithm, so honour it (sha256 | sha384 |
 	// sha512) and verify the bytes match; a tag push uses the canonical sha256.
-	digestAlgo := "sha256"
+	digestAlgo := godigest.SHA256
 	if isDigestRef(ref) {
-		if err := digestutil.Validate(ref); err != nil {
-			writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
+		parsedRef, parseErr := godigest.Parse(ref)
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, "DIGEST_INVALID", parseErr.Error())
 			return
 		}
-		digestAlgo, _, _ = digestutil.Split(ref)
+		digestAlgo = parsedRef.Algorithm()
 	}
-	hw, err := digestutil.NewHasher(digestAlgo)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
-		return
-	}
+	hw := digestAlgo.Hash()
 	_, _ = hw.Write(body)
-	digest := digestAlgo + ":" + hex.EncodeToString(hw.Sum(nil))
+	computedDigest := godigest.NewDigest(digestAlgo, hw).String()
 
 	// A by-digest push must match the bytes actually received (OCI Distribution
 	// §"Pushing Manifests": the registry MUST reject a mismatching digest).
-	if isDigestRef(ref) && ref != digest {
+	if isDigestRef(ref) && ref != computedDigest {
 		writeError(w, http.StatusBadRequest, "DIGEST_INVALID",
-			fmt.Sprintf("digest mismatch: declared %s actual %s", ref, digest))
+			fmt.Sprintf("digest mismatch: declared %s actual %s", ref, computedDigest))
 		return
 	}
 
 	// Store the manifest bytes in the shared CAS. BlobStore.Put is idempotent
 	// (same digest → same bytes → no-op), so a repeated push of the same
 	// manifest is safe.
-	if err := h.blobs.Put(r.Context(), digest, bytes.NewReader(body), int64(len(body))); err != nil {
-		h.log.Error("registry: store manifest blob", "digest", digest, "err", err)
+	if err := h.blobs.Put(r.Context(), computedDigest, bytes.NewReader(body), int64(len(body))); err != nil {
+		h.log.Error("registry: store manifest blob", "digest", computedDigest, "err", err)
 		writeError(w, http.StatusInternalServerError, "MANIFEST_INVALID", "failed to store manifest")
 		return
 	}
 
 	// Record the immutable CacheEntry for the manifest blob so the OCI pull
 	// path can serve it by digest from CAS (hosted-first pull).
-	h.recordHostedBlob(r.Context(), name, digest, int64(len(body)))
+	h.recordHostedBlob(r.Context(), name, computedDigest, int64(len(body)))
 
 	// Record the tag→digest pointer when ref is a tag (not a content digest).
 	// A by-digest push (e.g. PUT …/manifests/sha256:abc) skips tag creation.
 	if !isDigestRef(ref) {
-		if err := h.tags.PutTag(r.Context(), repoRow.ID, ref, digest); err != nil {
-			h.log.Error("registry: write tag", "repo", repoRow.ID, "tag", ref, "digest", digest, "err", err)
+		if err := h.tags.PutTag(r.Context(), repoRow.ID, ref, computedDigest); err != nil {
+			h.log.Error("registry: write tag", "repo", repoRow.ID, "tag", ref, "digest", computedDigest, "err", err)
 			writeError(w, http.StatusInternalServerError, "MANIFEST_INVALID", "failed to record tag")
 			return
 		}
@@ -624,7 +616,7 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref 
 		// so serveManifest's resolveManifestDigest resolves the tag from the
 		// metadata store without an upstream probe. tags.PutTag above is the
 		// authoritative hosted record; this mirror feeds the shared pull path.
-		h.recordHostedTag(r.Context(), name, ref, digest)
+		h.recordHostedTag(r.Context(), name, ref, computedDigest)
 	}
 
 	// Referrers (OCI 1.1): a manifest carrying a `subject` descriptor is a
@@ -635,7 +627,7 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref 
 	if meta := parseManifestMeta(body); meta != nil && meta.Subject != nil && meta.Subject.Digest != "" {
 		h.recordReferrer(r.Context(), name, ociDescriptor{
 			MediaType:    meta.MediaType,
-			Digest:       digest,
+			Digest:       computedDigest,
 			Size:         int64(len(body)),
 			ArtifactType: meta.effectiveArtifactType(),
 			Annotations:  meta.Annotations,
@@ -643,10 +635,10 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref 
 		w.Header().Set("OCI-Subject", meta.Subject.Digest)
 	}
 
-	location := fmt.Sprintf("/v2/%s/manifests/%s", name, digest)
+	location := fmt.Sprintf("/v2/%s/manifests/%s", name, computedDigest)
 	w.Header().Set("Location", location)
 	w.Header().Set("Content-Length", "0")
-	w.Header().Set("Docker-Content-Digest", digest)
+	w.Header().Set("Docker-Content-Digest", computedDigest)
 	w.Header().Set("Docker-Distribution-Api-Version", "registry/2.0")
 	w.WriteHeader(http.StatusCreated)
 }
@@ -709,7 +701,7 @@ func (h *Handler) deleteBlob(w http.ResponseWriter, r *http.Request, name, diges
 	}
 
 	// A syntactically invalid digest can never name a blob.
-	if err := digestutil.Validate(digest); err != nil {
+	if err := godigest.Digest(digest).Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
 		return
 	}

@@ -3,7 +3,6 @@ package registry
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,8 +14,9 @@ import (
 	"strings"
 	"time"
 
+	godigest "github.com/opencontainers/go-digest"
+
 	"github.com/ivanzzeth/specula/internal/artifact"
-	"github.com/ivanzzeth/specula/internal/digestutil"
 	"github.com/ivanzzeth/specula/internal/repo"
 )
 
@@ -213,7 +213,7 @@ func (h *Handler) listReferrers(w http.ResponseWriter, r *http.Request, name, su
 	// A malformed digest is the one documented error for this endpoint
 	// (end-12a: 200 on success, 404/400 on failure). Check it before authz so a
 	// nonsense request is not reported as a permission problem.
-	if err := digestutil.Validate(subjectDigest); err != nil {
+	if err := godigest.Digest(subjectDigest).Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
 		return
 	}
@@ -389,12 +389,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // digestOf computes "<algo>:<hex>" over b.
 func digestOf(algo string, b []byte) (string, error) {
-	hw, err := digestutil.NewHasher(algo)
-	if err != nil {
-		return "", err
+	a := godigest.Algorithm(algo)
+	if !a.Available() {
+		return "", fmt.Errorf("unsupported digest algorithm %q", algo)
 	}
-	_, _ = hw.Write(b)
-	return algo + ":" + hex.EncodeToString(hw.Sum(nil)), nil
+	return a.FromBytes(b).String(), nil
 }
 
 // parseContentRange parses an upload chunk's "Content-Range: <start>-<end>"
