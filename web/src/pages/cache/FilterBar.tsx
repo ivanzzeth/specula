@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { X } from 'lucide-react';
 
 import type { CacheQuery, CacheSort, Tier } from '@/api/types';
@@ -28,12 +29,12 @@ import {
 
 import { SORT_OPTIONS } from './types';
 
-const TIER_OPTIONS: { value: Tier; label: string }[] = [
-  { value: 'signed', label: 'signed' },
-  { value: 'consensus', label: 'consensus' },
-  { value: 'tofu', label: 'tofu' },
-  { value: 'checksum', label: 'checksum' },
-];
+/**
+ * Tier filter values. These are API literals, and the zh-CN copy deliberately
+ * keeps them English (see `tier.*` in common.json) — they are what a Chinese
+ * operator reads in the badge, the logs and the API response alike.
+ */
+const TIER_OPTIONS: Tier[] = ['signed', 'consensus', 'tofu', 'checksum'];
 
 interface FilterBarProps {
   value: CacheQuery;
@@ -41,6 +42,7 @@ interface FilterBarProps {
 }
 
 export function FilterBar({ value, onChange }: FilterBarProps) {
+  const { t } = useTranslation();
   // Local text state for the two debounced inputs.
   const [nameInput, setNameInput] = useState(value.name ?? '');
   const [upstreamInput, setUpstreamInput] = useState(value.upstream ?? '');
@@ -124,22 +126,22 @@ export function FilterBar({ value, onChange }: FilterBarProps) {
       {/* Name search */}
       <Input
         className="h-7 w-52"
-        placeholder="name contains…"
+        placeholder={t('cache.filter.namePlaceholder')}
         value={nameInput}
         onChange={(e) => handleName(e.target.value)}
-        aria-label="Filter by name"
+        aria-label={t('cache.filter.nameAria')}
       />
 
       {/* Tier filter */}
       <Select value={value.tier ?? ''} onValueChange={handleTier}>
-        <SelectTrigger className="h-7 w-36" aria-label="Filter by tier">
-          <SelectValue placeholder="any tier" />
+        <SelectTrigger className="h-7 w-36" aria-label={t('cache.filter.tierAria')}>
+          <SelectValue placeholder={t('cache.filter.anyTier')} />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value="">any tier</SelectItem>
-          {TIER_OPTIONS.map(({ value: v, label }) => (
+          <SelectItem value="">{t('cache.filter.anyTier')}</SelectItem>
+          {TIER_OPTIONS.map((v) => (
             <SelectItem key={v} value={v}>
-              {label}
+              {t(`tier.${v}`)}
             </SelectItem>
           ))}
         </SelectContent>
@@ -148,25 +150,25 @@ export function FilterBar({ value, onChange }: FilterBarProps) {
       {/* Upstream filter */}
       <Input
         className="h-7 w-36"
-        placeholder="upstream…"
+        placeholder={t('cache.filter.upstreamPlaceholder')}
         value={upstreamInput}
         onChange={(e) => handleUpstream(e.target.value)}
-        aria-label="Filter by upstream"
+        aria-label={t('cache.filter.upstreamAria')}
       />
 
       <div className="flex-1" />
 
       {/* Sort controls */}
       <div className="flex items-center gap-1.5">
-        <span className="section-label mr-0.5">Sort</span>
+        <span className="section-label mr-0.5">{t('cache.filter.sort')}</span>
         <Select value={value.sort ?? 'created_at'} onValueChange={handleSort}>
-          <SelectTrigger className="h-7 w-32" aria-label="Sort by">
+          <SelectTrigger className="h-7 w-32" aria-label={t('cache.filter.sortAria')}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {SORT_OPTIONS.map(({ value: v, label }) => (
+            {SORT_OPTIONS.map((v) => (
               <SelectItem key={v} value={v}>
-                {label}
+                {t(`cache.sort.${v}`)}
               </SelectItem>
             ))}
           </SelectContent>
@@ -176,9 +178,11 @@ export function FilterBar({ value, onChange }: FilterBarProps) {
           size="icon"
           variant="ghost"
           className="h-7 w-7 text-slate-400 hover:text-slate-100"
-          title={isDesc ? 'Descending — click for ascending' : 'Ascending — click for descending'}
+          title={
+            isDesc ? t('cache.filter.orderDescTitle') : t('cache.filter.orderAscTitle')
+          }
           onClick={toggleOrder}
-          aria-label="Toggle sort order"
+          aria-label={t('cache.filter.orderAria')}
         >
           <span aria-hidden className="text-[11px] font-semibold">
             {isDesc ? '↓' : '↑'}
@@ -192,10 +196,10 @@ export function FilterBar({ value, onChange }: FilterBarProps) {
           variant="ghost"
           className="h-7 gap-1 text-slate-400 hover:text-slate-200"
           onClick={clearFilters}
-          aria-label="Clear all filters"
+          aria-label={t('cache.filter.clearAria')}
         >
           <X className="size-3" />
-          Clear
+          {t('cache.filter.clear')}
         </Button>
       )}
     </div>

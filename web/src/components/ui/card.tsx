@@ -46,7 +46,7 @@ const CardTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttributes<HTML
     <h3
       ref={ref}
       className={cn(
-        'text-label font-semibold uppercase tracking-wider text-slate-400',
+        'label-caps text-label font-semibold text-slate-400',
         className
       )}
       {...props}

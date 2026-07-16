@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { getMe, listOrgs, setActiveOrg as setClientOrg } from '@/api/client';
 import type { OrgDTO } from '@/api/types';
@@ -145,6 +146,7 @@ export function useOrg(): OrgCtx {
  * those are now unreachable fallbacks rather than the primary handling.
  */
 export function RequireOrg({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const { activeOrg, orgs, loading } = useOrg();
 
   // Hold the layout while the org list resolves — flashing "no organisation"
@@ -154,7 +156,7 @@ export function RequireOrg({ children }: { children: ReactNode }) {
       <div className="rounded border border-slate-800 bg-slate-900 p-8 text-center">
         <span
           role="status"
-          aria-label="Loading organisations"
+          aria-label={t('orgDialog.noOrg.loading')}
           className="inline-block size-4 animate-spin rounded-full border-2 border-slate-800 border-t-brand"
         />
       </div>
@@ -180,29 +182,28 @@ export function RequireOrg({ children }: { children: ReactNode }) {
  *  - a member, but none selected → just pick one.
  */
 function NoOrgPanel({ hasOrgs }: { hasOrgs: boolean }) {
+  const { t } = useTranslation();
   const { refresh, switchOrg } = useOrg();
   const [createOpen, setCreateOpen] = useState(false);
 
   return (
     <div className="rounded border border-slate-800 bg-slate-900 p-8 text-center">
       <p className="text-data text-slate-100">
-        {hasOrgs ? 'No organisation selected.' : 'You are not a member of any organisation.'}
+        {hasOrgs ? t('orgDialog.noOrg.noneSelected') : t('orgDialog.noOrg.notAMember')}
       </p>
       <p className="mt-1 text-data text-slate-400">
-        {hasOrgs
-          ? 'Pick one from the switcher in the top bar to continue.'
-          : 'Organisations are invitation-only — ask an administrator to invite this email address.'}
+        {hasOrgs ? t('orgDialog.noOrg.noneSelectedHint') : t('orgDialog.noOrg.notAMemberHint')}
       </p>
 
       {!hasOrgs && (
         <>
           <div className="mx-auto mt-5 flex max-w-xs items-center gap-3">
             <span className="h-px flex-1 bg-slate-800" />
-            <span className="text-micro uppercase tracking-wider text-slate-600">or</span>
+            <span className="label-caps text-micro text-slate-600">{t('common.or')}</span>
             <span className="h-px flex-1 bg-slate-800" />
           </div>
           <Button className="mt-5" onClick={() => setCreateOpen(true)}>
-            Create your own organisation
+            {t('orgDialog.noOrg.createOwn')}
           </Button>
           <CreateOrgDialog
             open={createOpen}

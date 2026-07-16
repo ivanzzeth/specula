@@ -39,8 +39,19 @@
  *    · Single series → no legend box needed (title names it).
  *    · Table view of the same data is in the parent (the per-protocol table).
  *    · dark mode: page is dark-only by design; colors chosen against #0a0908.
+ *
+ * 7. i18n
+ *    · Chart titles and tooltip series names are prose and ARE translated.
+ *    · The category axis is protocol slugs — API identifiers, never translated.
+ *    · Byte values keep going through `formatBytes` unchanged: the magnitude
+ *      and the unit (KiB/MiB/GiB) are the same token in both languages, and
+ *      localising the digits would make them harder to compare, not easier.
+ *    · The time axis IS localised, but off the ACTIVE UI language rather than
+ *      the browser's — an operator who switched the UI to Chinese should not
+ *      keep getting English months because their browser is en-US.
  */
 
+import { useTranslation } from 'react-i18next';
 import {
   BarChart,
   Bar,
@@ -86,6 +97,7 @@ interface ProtocolStat_ {
 }
 
 function ProtocolBytesChart({ stats }: { stats: ProtocolStat_[] }) {
+  const { t } = useTranslation();
   const data = [...stats]
     .sort((a, b) => b.bytes - a.bytes)
     .map((s) => ({ protocol: s.protocol, bytes: s.bytes }));
@@ -121,7 +133,7 @@ function ProtocolBytesChart({ stats }: { stats: ProtocolStat_[] }) {
         />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}
-          formatter={(value: number) => [formatBytes(value), 'cached']}
+          formatter={(value: number) => [formatBytes(value), t('charts.tooltipCached')]}
           labelStyle={TOOLTIP_LABEL_STYLE}
           cursor={TOOLTIP_CURSOR_BAR}
         />
@@ -147,8 +159,10 @@ function ProtocolBytesChart({ stats }: { stats: ProtocolStat_[] }) {
 // ── Bytes over time — area chart ──────────────────────────────────────────────
 
 function BytesTimeSeriesChart({ points }: { points: SeriesPoint[] }) {
+  const { t, i18n } = useTranslation();
+  // Follow the ACTIVE UI language, not the browser's — see header note 7.
   const data = points.map((p) => ({
-    date: new Date(p.unix * 1000).toLocaleDateString(undefined, {
+    date: new Date(p.unix * 1000).toLocaleDateString(i18n.language, {
       month: 'short',
       day: 'numeric',
     }),
@@ -184,7 +198,7 @@ function BytesTimeSeriesChart({ points }: { points: SeriesPoint[] }) {
         />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}
-          formatter={(value: number) => [formatBytes(value), 'bytes']}
+          formatter={(value: number) => [formatBytes(value), t('charts.tooltipBytes')]}
           labelStyle={TOOLTIP_LABEL_STYLE}
           cursor={TOOLTIP_CURSOR_LINE}
         />
@@ -211,6 +225,7 @@ export interface CacheChartsProps {
 }
 
 export default function CacheCharts({ protocolStats, seriesPoints }: CacheChartsProps) {
+  const { t } = useTranslation();
   const hasBytes = protocolStats.some((s) => s.bytes > 0);
   const hasSeries = seriesPoints.length > 0;
 
@@ -218,13 +233,13 @@ export default function CacheCharts({ protocolStats, seriesPoints }: CacheCharts
     <div className="space-y-5">
       {hasBytes && (
         <div>
-          <p className="section-label mb-2">bytes by protocol</p>
+          <p className="section-label mb-2">{t('charts.bytesByProtocol')}</p>
           <ProtocolBytesChart stats={protocolStats} />
         </div>
       )}
       {hasSeries && (
         <div>
-          <p className="section-label mb-2">cache growth — all protocols</p>
+          <p className="section-label mb-2">{t('charts.cacheGrowth')}</p>
           <BytesTimeSeriesChart points={seriesPoints} />
         </div>
       )}

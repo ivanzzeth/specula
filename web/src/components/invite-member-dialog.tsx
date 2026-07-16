@@ -16,9 +16,11 @@
  * well, amber reserved for the copy affordance that matters.
  */
 import { type FormEvent, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Check, Copy, Send } from 'lucide-react';
 
 import { ApiError, createInvitation } from '@/api/client';
+import { translateServerError } from '@/i18n/server-errors';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -48,6 +50,7 @@ interface InviteMemberDialogProps {
 }
 
 export function InviteMemberDialog({ orgId, open, onOpenChange }: InviteMemberDialogProps) {
+  const { t } = useTranslation();
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<string>('viewer');
   const [busy, setBusy] = useState(false);
@@ -72,14 +75,16 @@ export function InviteMemberDialog({ orgId, open, onOpenChange }: InviteMemberDi
     try {
       const inv = await createInvitation(orgId, { email: email.trim(), role });
       if (!inv.token) {
-        setError('The server did not return an invitation token, so this link cannot be built.');
+        setError(t('invitations.dialog.noToken'));
         setBusy(false);
         return;
       }
       setLink(`${window.location.origin}/invitations/${encodeURIComponent(inv.token)}`);
     } catch (err) {
       setError(
-        err instanceof ApiError ? err.detail || err.message : 'Could not create the invitation.'
+        err instanceof ApiError
+          ? translateServerError(err.detail) || err.message
+          : t('invitations.dialog.failed')
       );
     }
     setBusy(false);
@@ -107,11 +112,9 @@ export function InviteMemberDialog({ orgId, open, onOpenChange }: InviteMemberDi
         {link ? (
           <>
             <DialogHeader>
-              <DialogTitle>Invitation created</DialogTitle>
+              <DialogTitle>{t('invitations.dialog.createdTitle')}</DialogTitle>
               <DialogDescription>
-                Send this link to {email}. It is shown once — if you close this without copying
-                it, you will have to create a new invitation. It expires in 7 days, and only{' '}
-                {email} can accept it.
+                {t('invitations.dialog.createdDescription', { email })}
               </DialogDescription>
             </DialogHeader>
 
@@ -121,39 +124,36 @@ export function InviteMemberDialog({ orgId, open, onOpenChange }: InviteMemberDi
 
             <DialogFooter>
               <Button variant="ghost" onClick={() => onOpenChange(false)}>
-                Done
+                {t('invitations.dialog.done')}
               </Button>
               <Button onClick={copy}>
                 {copied ? <Check aria-hidden className="size-3.5" /> : <Copy aria-hidden className="size-3.5" />}
-                {copied ? 'Copied' : 'Copy link'}
+                {copied ? t('common.copied') : t('invitations.dialog.copyLink')}
               </Button>
             </DialogFooter>
           </>
         ) : (
           <form onSubmit={submit}>
             <DialogHeader>
-              <DialogTitle>Invite member</DialogTitle>
-              <DialogDescription>
-                Creates a pending invitation. Nobody joins until they accept it themselves —
-                unlike Add member, which grants access immediately.
-              </DialogDescription>
+              <DialogTitle>{t('invitations.dialog.title')}</DialogTitle>
+              <DialogDescription>{t('invitations.dialog.description')}</DialogDescription>
             </DialogHeader>
 
             <div className="space-y-4 py-4">
               <div className="space-y-2">
-                <Label htmlFor="invite-email">Email</Label>
+                <Label htmlFor="invite-email">{t('invitations.dialog.email')}</Label>
                 <Input
                   id="invite-email"
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="teammate@example.com"
+                  placeholder={t('invitations.dialog.emailPlaceholder')}
                   autoFocus
                   required
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="invite-role">Role</Label>
+                <Label htmlFor="invite-role">{t('invitations.dialog.role')}</Label>
                 <Select value={role} onValueChange={setRole}>
                   <SelectTrigger id="invite-role">
                     <SelectValue />
@@ -166,9 +166,7 @@ export function InviteMemberDialog({ orgId, open, onOpenChange }: InviteMemberDi
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-micro text-slate-500">
-                  Ownership cannot be granted by invitation — an owner must confer it directly.
-                </p>
+                <p className="text-micro text-slate-500">{t('invitations.dialog.roleHint')}</p>
               </div>
             </div>
 
@@ -180,11 +178,11 @@ export function InviteMemberDialog({ orgId, open, onOpenChange }: InviteMemberDi
 
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button type="submit" disabled={busy || !email.trim()}>
                 <Send aria-hidden className="size-3.5" />
-                {busy ? 'Creating…' : 'Create invitation'}
+                {busy ? t('invitations.dialog.busy') : t('invitations.dialog.submit')}
               </Button>
             </DialogFooter>
           </form>

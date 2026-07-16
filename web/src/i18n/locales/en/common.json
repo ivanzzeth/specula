@@ -1,0 +1,159 @@
+{
+  "common": {
+    "cancel": "Cancel",
+    "close": "Close",
+    "save": "Save",
+    "delete": "Delete",
+    "remove": "Remove",
+    "create": "Create",
+    "edit": "Edit",
+    "confirm": "Confirm",
+    "copy": "Copy",
+    "copied": "Copied",
+    "loading": "Loading",
+    "pleaseWait": "Please wait…",
+    "retry": "Retry",
+    "search": "Search",
+    "filter": "Filter",
+    "reset": "Reset",
+    "refresh": "Refresh",
+    "none": "None",
+    "unknown": "unknown",
+    "never": "never",
+    "actions": "Actions",
+    "all": "All",
+    "yes": "Yes",
+    "no": "No",
+    "back": "Back",
+    "of": "of",
+    "or": "or",
+    "showing": "Showing {{from}}–{{to}} of {{total}}",
+    "prev": "Prev",
+    "next": "Next",
+    "noResults": "No results",
+    "loadFailed": "Failed to load"
+  },
+
+  "time": {
+    "justNow": "just now",
+    "secondsAgo": "{{n}}s ago",
+    "minutesAgo": "{{n}}m ago",
+    "hoursAgo": "{{n}}h ago",
+    "daysAgo": "{{n}}d ago"
+  },
+
+  "nav": {
+    "zones": {
+      "registry": "Registry",
+      "cache": "Cache",
+      "ops": "Ops"
+    },
+    "repos": "Repositories",
+    "push": "Push",
+    "overview": "Overview",
+    "browser": "Browser",
+    "events": "Events",
+    "upstreams": "Upstreams",
+    "members": "Members",
+    "tokens": "Tokens",
+    "users": "Users",
+    "config": "Config",
+    "signOut": "Sign out",
+    "admin": "admin",
+    "adminTitle": "System administrator: cross-org access to cache and ops.",
+    "language": "Language",
+    "languageTitle": "Interface language"
+  },
+
+  "auth": {
+    "signInSubtitle": "Sign in to continue",
+    "registerSubtitle": "The first registered user becomes system admin",
+    "email": "Email",
+    "emailPlaceholder": "you@example.com",
+    "password": "Password",
+    "passwordHint": "At least 8 characters",
+    "signIn": "Sign in",
+    "createAccount": "Create account",
+    "toRegister": "No account yet? Register",
+    "toLogin": "Already have an account? Sign in",
+    "failed": "Authentication failed — please retry",
+    "adminRequired": "Admin access required. Ask an existing admin to elevate your account."
+  },
+
+  "org": {
+    "activeOrg": "Active organization",
+    "selectOrg": "Select org",
+    "newOrg": "new organization",
+    "noOrg": "no org — invite required",
+    "noOrgTitle": "You are not a member of any organization. Organizations are invitation-only — ask an administrator to invite this email, or create your own.",
+    "createOne": "create one",
+    "roleTitle": "Your role in {{org}}.",
+    "roleTitleFallback": "this org"
+  },
+
+  "tier": {
+    "signed": "signed",
+    "consensus": "consensus",
+    "tofu": "tofu",
+    "checksum": "checksum",
+    "unknown": "unknown",
+    "hint": {
+      "signed": "Anchored in a cryptographic trust root obtained out-of-band. Highest tier.",
+      "consensus": "Digest agreed by multiple independent mirrors. Quorum, not authenticity.",
+      "tofu": "Digest locked on first fetch; changes since then would alert. No trust root.",
+      "checksum": "Transport integrity only, against a value that may come from the mirror itself. Not a supply-chain control.",
+      "unknown": "Unknown verification tier."
+    }
+  },
+
+  "health": {
+    "up": "up",
+    "blocked": "blocked",
+    "probing": "probing",
+    "unknown": "unknown",
+    "hint": {
+      "up": "Last request succeeded; not blocked.",
+      "blocked": "Auto-block tripped after consecutive failures. This mirror is being skipped.",
+      "probing": "Recent failures, but still below the auto-block threshold; still being tried.",
+      "unknown": "Not contacted since this instance started — no data. Not a claim of health."
+    }
+  },
+
+  "visibility": {
+    "private": "private",
+    "public": "public",
+    "hint": {
+      "public": "Anyone, including anonymous clients, may pull this repo.",
+      "private": "Only org members may pull this repo."
+    }
+  },
+
+  "errors": {
+    "server": {
+      "invalidCredentials": "invalid email or password",
+      "emailTaken": "email already registered",
+      "emailRequired": "email is required",
+      "loginFailed": "login failed",
+      "registrationFailed": "registration failed",
+      "unauthorized": "unauthorized",
+      "forbidden": "forbidden",
+      "notFound": "not found",
+      "userNotFound": "user not found",
+      "orgNotFound": "org not found",
+      "repoNotFound": "repo not found",
+      "memberNotFound": "member not found",
+      "keyNotFound": "key not found",
+      "nameRequired": "name is required",
+      "notAMember": "not a member of this org",
+      "orgAdminRequired": "org admin role required",
+      "orgOwnerRequired": "org owner role required for ownership changes",
+      "lastAdmin": "cannot delete the last admin",
+      "lastAdminDemote": "cannot demote the last admin",
+      "selfDelete": "cannot delete your own account",
+      "inviteNotFound": "invitation not found",
+      "inviteExpired": "invitation has expired",
+      "inviteNotPending": "invitation is no longer pending",
+      "inviteWrongEmail": "invitation is addressed to a different email"
+    }
+  }
+}

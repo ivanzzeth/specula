@@ -1,0 +1,161 @@
+{
+  "common": {
+    "cancel": "取消",
+    "close": "关闭",
+    "save": "保存",
+    "delete": "删除",
+    "remove": "移除",
+    "create": "创建",
+    "edit": "编辑",
+    "confirm": "确认",
+    "copy": "复制",
+    "copied": "已复制",
+    "loading": "加载中",
+    "pleaseWait": "请稍候…",
+    "retry": "重试",
+    "search": "搜索",
+    "filter": "筛选",
+    "reset": "重置",
+    "refresh": "刷新",
+    "none": "无",
+    "unknown": "未知",
+    "never": "从未",
+    "actions": "操作",
+    "all": "全部",
+    "yes": "是",
+    "no": "否",
+    "back": "返回",
+    "of": "/",
+    "or": "或",
+    "showing": "显示 {{from}}–{{to}}，共 {{total}} 条",
+    "prev": "上一页",
+    "next": "下一页",
+    "noResults": "无结果",
+    "loadFailed": "加载失败"
+  },
+
+  "time": {
+    "justNow": "刚刚",
+    "secondsAgo": "{{n}} 秒前",
+    "minutesAgo": "{{n}} 分钟前",
+    "hoursAgo": "{{n}} 小时前",
+    "daysAgo": "{{n}} 天前"
+  },
+
+  "nav": {
+    "zones": {
+      "registry": "Registry",
+      "cache": "缓存",
+      "ops": "运维"
+    },
+    "repos": "仓库",
+    "push": "Push",
+    "overview": "概览",
+    "browser": "浏览",
+    "events": "事件",
+    "upstreams": "上游",
+    "members": "成员",
+    "tokens": "Token",
+    "users": "用户",
+    "config": "配置",
+    "signOut": "退出",
+    "admin": "admin",
+    "adminTitle": "系统管理员：可跨组织访问缓存与运维。",
+    "language": "语言",
+    "languageTitle": "界面语言"
+  },
+
+  "auth": {
+    "signInSubtitle": "登录以继续",
+    "registerSubtitle": "首个注册用户自动成为管理员",
+    "email": "邮箱",
+    "emailPlaceholder": "you@example.com",
+    "password": "密码",
+    "passwordHint": "至少 8 个字符",
+    "signIn": "登录",
+    "createAccount": "注册",
+    "toRegister": "还没有账号？注册",
+    "toLogin": "已有账号？登录",
+    "failed": "认证失败，请重试",
+    "adminRequired": "需要管理员权限。请联系现有管理员提升你的账号。"
+  },
+
+  "org": {
+    "activeOrg": "当前组织",
+    "selectOrg": "选择组织",
+    "newOrg": "新建组织",
+    "noOrg": "无组织 — 需邀请",
+    "noOrgTitle": "你不属于任何组织。组织仅可通过邀请加入 — 请管理员邀请此邮箱，或自行创建一个。",
+    "createOne": "创建",
+    "roleTitle": "你在 {{org}} 中的角色。",
+    "roleTitleFallback": "该组织"
+  },
+
+  "tier": {
+    "_comment": "Tier VALUES stay English: they are API field literals (`tier`) that appear in logs, docs and API responses, and TOFU/consensus/checksum are jargon a Chinese developer says in English. The HINTS below are the legend and are fully translated.",
+    "signed": "signed",
+    "consensus": "consensus",
+    "tofu": "tofu",
+    "checksum": "checksum",
+    "unknown": "unknown",
+    "hint": {
+      "signed": "锚定到带外获取的加密信任根。最高等级。",
+      "consensus": "多个独立镜像源对 digest 达成一致。只代表法定多数，不代表真实性。",
+      "tofu": "首次拉取时锁定 digest，此后若变更会告警。无信任根。",
+      "checksum": "仅校验传输完整性，且校验值可能来自镜像源自身。不构成供应链管控。",
+      "unknown": "未知的校验等级。"
+    }
+  },
+
+  "health": {
+    "_comment": "Health VALUES stay English for the same reason as tier: they are the API's `health` literals.",
+    "up": "up",
+    "blocked": "blocked",
+    "probing": "probing",
+    "unknown": "unknown",
+    "hint": {
+      "up": "最近一次请求成功，未被阻断。",
+      "blocked": "连续失败已触发自动阻断，该镜像源正被跳过。",
+      "probing": "近期有失败，但仍低于自动阻断阈值，仍在尝试。",
+      "unknown": "自本实例启动以来从未连接 — 无数据，并非健康声明。"
+    }
+  },
+
+  "visibility": {
+    "private": "private",
+    "public": "public",
+    "hint": {
+      "public": "任何人（包括匿名客户端）都可以 pull 此仓库。",
+      "private": "仅组织成员可以 pull 此仓库。"
+    }
+  },
+
+  "errors": {
+    "server": {
+      "invalidCredentials": "邮箱或密码错误",
+      "emailTaken": "该邮箱已注册",
+      "emailRequired": "邮箱不能为空",
+      "loginFailed": "登录失败",
+      "registrationFailed": "注册失败",
+      "unauthorized": "未认证",
+      "forbidden": "无权限",
+      "notFound": "未找到",
+      "userNotFound": "用户不存在",
+      "orgNotFound": "组织不存在",
+      "repoNotFound": "仓库不存在",
+      "memberNotFound": "成员不存在",
+      "keyNotFound": "Key 不存在",
+      "nameRequired": "名称不能为空",
+      "notAMember": "你不是该组织的成员",
+      "orgAdminRequired": "需要组织 admin 角色",
+      "orgOwnerRequired": "变更所有权需要组织 owner 角色",
+      "lastAdmin": "不能删除最后一个管理员",
+      "lastAdminDemote": "不能降级最后一个管理员",
+      "selfDelete": "不能删除自己的账号",
+      "inviteNotFound": "邀请不存在",
+      "inviteExpired": "邀请已过期",
+      "inviteNotPending": "邀请已处理",
+      "inviteWrongEmail": "该邀请发往其他邮箱"
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Plus } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { CreateOrgDialog } from '@/components/create-org-dialog';
 import { useOrg } from '@/components/org-context';
@@ -26,6 +27,7 @@ import {
  */
 export function OrgSwitcher() {
   const { orgs, activeOrg, role, loading, switchOrg, refresh } = useOrg();
+  const { t } = useTranslation();
   const [createOpen, setCreateOpen] = useState(false);
 
   if (loading) return null;
@@ -48,17 +50,17 @@ export function OrgSwitcher() {
       <>
         <div className="flex items-center gap-2">
           <span
-            className="text-micro uppercase tracking-wider text-health-blocked"
-            title="You are not a member of any organization. Organizations are invitation-only — ask an administrator to invite this email, or create your own."
+            className="label-caps whitespace-nowrap text-micro text-health-blocked"
+            title={t('org.noOrgTitle')}
           >
-            no org — invite required
+            {t('org.noOrg')}
           </span>
           <button
             type="button"
             onClick={() => setCreateOpen(true)}
-            className="text-micro uppercase tracking-wider text-slate-400 underline-offset-2 transition-colors hover:text-brand focus-visible:text-brand focus-visible:outline-none focus-visible:underline"
+            className="label-caps whitespace-nowrap text-micro text-slate-400 underline-offset-2 transition-colors hover:text-brand focus-visible:text-brand focus-visible:outline-none focus-visible:underline"
           >
-            create one
+            {t('org.createOne')}
           </button>
         </div>
         <CreateOrgDialog
@@ -84,9 +86,9 @@ export function OrgSwitcher() {
       >
         <SelectTrigger
           className="h-6 w-auto min-w-[7rem] gap-2 border-slate-800 bg-transparent px-1.5"
-          aria-label="Active organization"
+          aria-label={t('org.activeOrg')}
         >
-          <SelectValue placeholder="Select org" />
+          <SelectValue placeholder={t('org.selectOrg')} />
         </SelectTrigger>
         <SelectContent>
           {orgs.map((o) => (
@@ -98,7 +100,7 @@ export function OrgSwitcher() {
           <SelectItem value={CREATE_VALUE}>
             <span className="flex items-center gap-1.5 text-slate-400">
               <Plus aria-hidden className="size-3" />
-              new organization
+              {t('org.newOrg')}
             </span>
           </SelectItem>
         </SelectContent>
@@ -106,8 +108,8 @@ export function OrgSwitcher() {
 
       {role && (
         <span
-          className="text-micro uppercase tracking-wider text-slate-500"
-          title={`Your role in ${activeOrg?.slug ?? 'this org'}.`}
+          className="label-caps text-micro text-slate-500"
+          title={t('org.roleTitle', { org: activeOrg?.slug ?? t('org.roleTitleFallback') })}
         >
           {role}
         </span>

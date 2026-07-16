@@ -108,11 +108,35 @@ export default {
         },
       },
 
+      // One typeface for everything. `sans` intentionally resolves to the same
+      // mono stack: the instrument-panel voice depends on it.
+      //
+      // CJK STRATEGY — font fallback is resolved PER GLYPH, which is what makes
+      // this work. IBM Plex Mono has no han glyphs, so a Chinese character
+      // falls through to the next family that does, while every Latin
+      // character in the same sentence still resolves to Plex Mono. Mixed
+      // "push 镜像到 registry" lines therefore keep Latin in the identity face
+      // instead of dragging the whole run into a CJK font.
+      //
+      // Order is the whole argument:
+      //   1. IBM Plex Mono        — the identity. Owns all Latin/digits/symbols.
+      //   2. Noto Sans SC Subset  — OUR chosen CJK face, self-hosted (index.css).
+      //                             Covers GB2312 L1 + all UI copy → ~everything.
+      //   3. PingFang/YaHei/…     — the honest tail. A rare han glyph outside
+      //                             the subset (an unusual name in user data)
+      //                             still renders in a sane CJK face rather
+      //                             than tofu boxes. Only these rare glyphs are
+      //                             ever OS-dependent — never the UI chrome.
+      //   4. ui-monospace/…       — pre-existing Latin mono fallbacks.
       fontFamily: {
-        // One typeface for everything. `sans` intentionally resolves to the same
-        // mono stack: the instrument-panel voice depends on it.
         sans: [
           '"IBM Plex Mono"',
+          '"Noto Sans SC Subset"',
+          '"PingFang SC"',
+          '"Hiragino Sans GB"',
+          '"Microsoft YaHei"',
+          '"Noto Sans CJK SC"',
+          '"Source Han Sans SC"',
           'ui-monospace',
           'SFMono-Regular',
           'Menlo',
@@ -121,6 +145,12 @@ export default {
         ],
         mono: [
           '"IBM Plex Mono"',
+          '"Noto Sans SC Subset"',
+          '"PingFang SC"',
+          '"Hiragino Sans GB"',
+          '"Microsoft YaHei"',
+          '"Noto Sans CJK SC"',
+          '"Source Han Sans SC"',
           'ui-monospace',
           'SFMono-Regular',
           'Menlo',

@@ -81,7 +81,9 @@ const TableHead = React.forwardRef<
     ref={ref}
     className={cn(
       'h-7 px-2.5 text-left align-middle',
-      'text-label font-semibold uppercase tracking-wider text-slate-400',
+      // `label-caps` (not inline uppercase/tracking) so Chinese column headers
+      // drop the English-only caps device — see index.css.
+      'label-caps text-label font-semibold text-slate-400',
       '[&:has([role=checkbox])]:pr-0',
       className
     )}
@@ -139,7 +141,7 @@ export function SortableTableHead({
         onClick={onSort}
         aria-sort={active ? (desc ? 'descending' : 'ascending') : 'none'}
         className={cn(
-          'inline-flex items-center gap-1 uppercase tracking-wider transition-colors duration-fast',
+          'label-caps inline-flex items-center gap-1 transition-colors duration-fast',
           'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
           active ? 'text-brand' : 'text-slate-400 hover:text-slate-200'
         )}

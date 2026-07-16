@@ -8,6 +8,51 @@
 @import '@fontsource/ibm-plex-mono/600.css';
 @import '@fontsource/ibm-plex-mono/700.css';
 
+/*
+  ───────────────────────────────────────────────────────────────────────────
+  CJK companion face — Noto Sans SC, self-hosted and subset.
+
+  IBM Plex Mono has NO CJK glyphs. Our whole identity is "one mono face
+  everywhere", so an un-chosen fallback would mean Chinese renders as PingFang
+  on macOS, Microsoft YaHei on Windows and a DejaVu/Noto lottery on Linux —
+  three identities for one product. We pick the face instead.
+
+  Plex Sans SC would be the ideal sibling but is not published on npm (only
+  Plex JP/KR/Thai are). Noto Sans SC is the closest available: low-contrast
+  neo-grotesque, open apertures, upright rational skeleton — the same drawing
+  logic as Plex Mono's Latin. CJK is inherently fixed-pitch (every han glyph
+  fills the em square), so it holds the mono column.
+
+  Subset to GB2312 level-1 ∪ our zh-CN copy ∪ CJK punctuation: ~516 KB/weight
+  instead of Fontsource's 1.09 MB/weight. That matters because this UI is
+  //go:embed'd into the binary — see scripts/subset-cjk.py for the full
+  rationale and to regenerate.
+
+  WEIGHT RANGES, NOT POINT WEIGHTS: with `uppercase tracking-wider` gone in
+  Chinese (see .label-caps below), weight carries the label hierarchy. Mapping
+  100–500 → the 400 file and 501–900 → the 600 file guarantees the browser
+  always lands on a real cut and never synthesises a faux-bold, which at 11px
+  turns dense han strokes into mud.
+
+  No Latin is in these files by design: Plex Mono owns Latin, and a subset with
+  no Latin outlines physically cannot steal it.
+  ───────────────────────────────────────────────────────────────────────────
+*/
+@font-face {
+  font-family: 'Noto Sans SC Subset';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('./fonts/noto-sans-sc-subset-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Noto Sans SC Subset';
+  font-style: normal;
+  font-weight: 501 900;
+  font-display: swap;
+  src: url('./fonts/noto-sans-sc-subset-600.woff2') format('woff2');
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -162,12 +207,61 @@
   }
 
   /*
+    ── label-caps: the LANGUAGE-AWARE label device ──────────────────────────
+
+    `uppercase tracking-wider` is an ENGLISH-ONLY hierarchy device, and it was
+    scattered inline across ~20 call sites. Both halves of it break on Chinese:
+
+      · text-transform: uppercase is a NO-OP on han glyphs — there is no case.
+        So in Chinese the label loses its only differentiator and flattens into
+        the body text around it.
+      · letter-spacing on CJK is actively wrong. Han glyphs are designed on a
+        fixed em grid that already carries its own optical sidebearing; adding
+        0.04–0.06em prises that grid apart and reads as broken kerning, not as
+        emphasis.
+
+    So the device is now a single named class instead of an inline habit, and it
+    is language-aware. In Chinese we drop caps+tracking and let the hierarchy
+    ride on what still works: SIZE (11px label vs 13.5px body), COLOUR (slate-400
+    against slate-100), and WEIGHT — which is why the CJK @font-face above ships
+    two real cut weights.
+
+    `font-feature-settings` is reset too: Plex Mono's default figures are fine,
+    but han glyphs must never be touched by Latin ligature features.
+
+    Call sites use `label-caps` and MUST NOT re-add `uppercase tracking-wider`
+    inline — a utility class would win the cascade and reintroduce the bug.
+  */
+  .label-caps {
+    @apply uppercase tracking-wider;
+  }
+
+  /*
     ── section label ────────────────────────────────────────────────────────
     Small, wide-tracked, upper-case. Used for panel headers and table headers
     so the scale contrast (label 11px → readout 30px) carries the hierarchy.
   */
   .section-label {
     @apply text-label font-semibold uppercase tracking-wider text-slate-400;
+  }
+
+  /*
+    The Chinese cut of the label device. Scoped to <html lang> — which
+    src/i18n/index.ts keeps in step with the active language, making this rule
+    the reason that sync is load-bearing rather than bookkeeping.
+
+    Specificity (0,2,1) deliberately beats the `.uppercase` / `.tracking-wider`
+    utilities (0,1,0) so this holds even if a call site regresses. `text-wrap`
+    is set here too: CJK has no spaces, so a long Chinese label in a dense table
+    header must be allowed to break between any two glyphs rather than force the
+    column wider — this is what keeps the tables from blowing out.
+  */
+  html[lang^='zh'] :is(.label-caps, .section-label) {
+    text-transform: none;
+    letter-spacing: 0;
+    font-feature-settings: normal;
+    word-break: normal;
+    overflow-wrap: anywhere;
   }
 
   /*

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { Link, useNavigate } from 'react-router-dom';
 
-import { listRepos } from '@/api/client';
+import { ApiError, listRepos } from '@/api/client';
 import type { RepoDTO } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -25,8 +26,21 @@ import {
   EmptyRow,
 } from '@/components/ui/table';
 import { useOrg } from '@/components/org-context';
+import { translateServerError } from '@/i18n/server-errors';
 import { formatBytes, formatRelative } from '@/lib/utils';
 import { useRegistryHost } from '../hooks/useRegistryHost';
+
+/**
+ * errText — the message to show for a failed request.
+ *
+ * ApiError carries the server's raw English `detail`; translateServerError
+ * localises the small allow-list of user-actionable errors and passes anything
+ * else through verbatim (see src/i18n/server-errors.ts for why).
+ */
+function errText(e: unknown): string {
+  if (e instanceof ApiError) return translateServerError(e.detail) || e.message;
+  return e instanceof Error ? e.message : String(e);
+}
 
 /** Convert an RFC3339 date string to Unix seconds. Returns 0 for missing/invalid. */
 function toUnix(s: string | undefined): number {
@@ -54,6 +68,7 @@ function bareRepo(name: string, orgSlug: string): string {
 export function Repos() {
   const { activeOrg } = useOrg();
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   const [repos, setRepos] = useState<RepoDTO[]>([]);
   const [err, setErr] = useState('');
@@ -68,7 +83,7 @@ export function Repos() {
     setErr('');
     listRepos(org.slug)
       .then((r) => setRepos(r.repos ?? []))
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setErr(errText(e)))
       .finally(() => setLoading(false));
   }, [activeOrg]);
 
@@ -90,7 +105,7 @@ export function Repos() {
         <PageHeading orgSlug="" />
         <Card>
           <CardContent className="text-data text-slate-400">
-            No active organisation selected.
+            {t('repos.noActiveOrg')}
           </CardContent>
         </Card>
       </div>
@@ -129,7 +144,7 @@ export function Repos() {
       <div className="flex items-end justify-between gap-3">
         <PageHeading orgSlug={activeOrg.slug} />
         <Button variant="default" size="sm" asChild>
-          <Link to="/push">Push guide</Link>
+          <Link to="/push">{t('repos.pushGuide')}</Link>
         </Button>
       </div>
 
@@ -138,7 +153,8 @@ export function Repos() {
         <div className="flex items-center gap-2">
           <Input
             className="w-56"
-            placeholder="Filter by name…"
+            placeholder={t('repos.filterPlaceholder')}
+            aria-label={t('repos.filterPlaceholder')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -150,9 +166,9 @@ export function Repos() {
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="private">Private</SelectItem>
-              <SelectItem value="public">Public</SelectItem>
+              <SelectItem value="all">{t('common.all')}</SelectItem>
+              <SelectItem value="private">{t('visibility.private')}</SelectItem>
+              <SelectItem value="public">{t('visibility.public')}</SelectItem>
             </SelectContent>
           </Select>
           {hasFilter && (
@@ -163,10 +179,10 @@ export function Repos() {
               }}
               className="rounded text-data text-slate-400 transition-colors duration-fast hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
-              Clear
+              {t('repos.clear')}
             </button>
           )}
-          <span className="ml-auto tnum text-data text-slate-500">
+          <span className="ml-auto tnum text-data text-slate-500" title={t('repos.countTitle')}>
             {filtered.length} / {repos.length}
           </span>
         </div>
@@ -179,17 +195,17 @@ export function Repos() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Repository</TableHead>
-                <TableHead className="w-24">Visibility</TableHead>
+                <TableHead>{t('repos.col.repository')}</TableHead>
+                <TableHead className="w-24">{t('repos.col.visibility')}</TableHead>
                 {/* "Manifest size" — not "image size", per honesty contract */}
-                <TableHead className="w-32 text-right">Manifest size</TableHead>
-                <TableHead className="w-16 text-right">Tags</TableHead>
-                <TableHead className="w-28 text-right">Last push</TableHead>
+                <TableHead className="w-32 text-right">{t('repos.col.manifestSize')}</TableHead>
+                <TableHead className="w-16 text-right">{t('repos.col.tags')}</TableHead>
+                <TableHead className="w-28 text-right">{t('repos.col.lastPush')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.length === 0 ? (
-                <EmptyRow colSpan={5}>No repositories match the current filter.</EmptyRow>
+                <EmptyRow colSpan={5}>{t('repos.noMatch')}</EmptyRow>
               ) : (
                 filtered.map((r) => {
                   const bare = bareRepo(r.name, activeOrg.slug);
@@ -199,7 +215,7 @@ export function Repos() {
                       className="cursor-pointer"
                       tabIndex={0}
                       role="link"
-                      aria-label={`View repository ${r.name}`}
+                      aria-label={t('repos.rowAria', { name: r.name })}
                       onClick={() => navigate(`/repos/${encodeURIComponent(bare)}`)}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
@@ -237,13 +253,21 @@ export function Repos() {
 }
 
 function PageHeading({ orgSlug }: { orgSlug: string }) {
+  const { t } = useTranslation();
   return (
     <div>
-      <h1 className="text-display font-semibold text-slate-100">Repositories</h1>
+      <h1 className="text-display font-semibold text-slate-100">{t('repos.title')}</h1>
       {orgSlug && (
         <p className="mt-0.5 text-data text-slate-400">
-          Hosted in <span className="text-slate-200">{orgSlug}</span> — private by default,
-          public repos allow anonymous pull.
+          {/* Trans keeps the org slug emphasised inside a sentence whose word
+              order differs between English and Chinese. The slug rides in as a
+              component rather than an interpolated value: Trans parses the
+              interpolated string as HTML, so any value containing '<' (e.g. the
+              '<org>' placeholder) would be swallowed as a tag. */}
+          <Trans
+            i18nKey="repos.subtitle"
+            components={{ org: <span className="text-slate-200">{orgSlug}</span> }}
+          />
         </p>
       )}
     </div>
@@ -259,14 +283,12 @@ function PageHeading({ orgSlug }: { orgSlug: string }) {
  */
 function EmptyStateContent({ orgSlug }: { orgSlug: string }) {
   const host = useRegistryHost();
+  const { t } = useTranslation();
   return (
     <div className="flex flex-col items-center gap-4 px-4 py-12 text-center">
       <div>
-        <p className="text-section font-semibold text-slate-100">No repositories yet</p>
-        <p className="mt-1 max-w-sm text-data text-slate-400">
-          Push an OCI image to create a repository. Private by default — only org members can
-          pull until you change the visibility.
-        </p>
+        <p className="text-section font-semibold text-slate-100">{t('repos.empty.title')}</p>
+        <p className="mt-1 max-w-sm text-data text-slate-400">{t('repos.empty.body')}</p>
       </div>
 
       {/* Sample push command — the one thing an operator needs to get started */}
@@ -280,7 +302,7 @@ function EmptyStateContent({ orgSlug }: { orgSlug: string }) {
       </div>
 
       <Button variant="default" size="sm" asChild>
-        <Link to="/push">See the push guide →</Link>
+        <Link to="/push">{t('repos.empty.cta')}</Link>
       </Button>
     </div>
   );

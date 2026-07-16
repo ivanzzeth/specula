@@ -16,17 +16,19 @@
  * Files: web/src/pages/CacheBrowser.tsx, web/src/pages/cache/**
  */
 
+import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import { ProtocolPanel } from './cache/ProtocolPanel';
-import { isValidProtocol, PROTOCOL_META, PROTOCOLS } from './cache/types';
+import { isValidProtocol, PROTOCOL_LABELS, PROTOCOLS } from './cache/types';
 import type { ProtocolSlug } from './cache/types';
 
 export function CacheBrowser() {
   const { protocol: param } = useParams<{ protocol: string }>();
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   // Validate and default the protocol — fall back to 'oci' for unknown values
   // or when at the bare /cache route (no :protocol param in the path).
@@ -44,8 +46,12 @@ export function CacheBrowser() {
       <Tabs value={active} onValueChange={onTabChange}>
         <TabsList>
           {PROTOCOLS.map((p) => (
-            <TabsTrigger key={p} value={p} aria-label={`${PROTOCOL_META[p].label} cache`}>
-              {PROTOCOL_META[p].label}
+            <TabsTrigger
+              key={p}
+              value={p}
+              aria-label={t('cache.tabAria', { protocol: PROTOCOL_LABELS[p] })}
+            >
+              {PROTOCOL_LABELS[p]}
             </TabsTrigger>
           ))}
         </TabsList>
@@ -70,13 +76,11 @@ export function CacheBrowser() {
 }
 
 function PageHeading() {
+  const { t } = useTranslation();
   return (
     <div>
-      <h1 className="text-display font-semibold text-slate-100">Cache Browser</h1>
-      <p className="mt-0.5 text-data text-slate-400">
-        Per-protocol view of what the proxy has cached — name, version, and the achieved
-        trust tier for each artifact.
-      </p>
+      <h1 className="text-display font-semibold text-slate-100">{t('cache.title')}</h1>
+      <p className="mt-0.5 text-data text-slate-400">{t('cache.subtitle')}</p>
     </div>
   );
 }

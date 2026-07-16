@@ -1,0 +1,103 @@
+{
+  "repos": {
+    "title": "Repositories",
+    "subtitle": "Hosted in <org/> — private by default, public repos allow anonymous pull.",
+    "noActiveOrg": "No active organisation selected.",
+    "pushGuide": "Push guide",
+    "filterPlaceholder": "Filter by name…",
+    "clear": "Clear",
+    "countTitle": "Repositories matching the filter / total in this org",
+    "col": {
+      "repository": "Repository",
+      "visibility": "Visibility",
+      "manifestSize": "Manifest size",
+      "tags": "Tags",
+      "lastPush": "Last push"
+    },
+    "rowAria": "View repository {{name}}",
+    "noMatch": "No repositories match the current filter.",
+    "empty": {
+      "title": "No repositories yet",
+      "body": "Push an OCI image to create a repository. Private by default — only org members can pull until you change the visibility.",
+      "cta": "See the push guide →"
+    }
+  },
+
+  "repoDetail": {
+    "breadcrumbAria": "Breadcrumb",
+    "notFound": "Repository not found.",
+    "tagsUnit_one": "tag",
+    "tagsUnit_other": "tags",
+    "manifestUnit": "manifest",
+    "created": "created",
+    "makePrivate": "Make private",
+    "makePublic": "Make public",
+    "pull": {
+      "title": "Pull",
+      "public": "Public — anonymous pull allowed",
+      "private": "Private — docker login required"
+    },
+    "tags": {
+      "title": "Tags",
+      "empty": "No tags yet. Push an image to this repository to create the first tag."
+    },
+    "col": {
+      "tag": "Tag",
+      "digest": "Digest",
+      "manifestSize": "Manifest size",
+      "arch": "Arch",
+      "pushed": "Pushed",
+      "pull": "Pull",
+      "delete": "Delete"
+    },
+    "deleteTag": {
+      "title": "Delete tag",
+      "description": "Remove the tag pointer <tag/>? The manifest and layers remain in the content-addressable store and are cleaned up by the garbage collector on its next eviction cycle.",
+      "confirm": "Delete tag"
+    },
+    "toast": {
+      "tagDeleted": "Tag deleted",
+      "tagDeleteFailed": "Could not delete tag",
+      "nowPublic": "Repository is now public",
+      "nowPrivate": "Repository is now private",
+      "nowPublicDesc": "Anonymous pull is now allowed.",
+      "nowPrivateDesc": "Only org members may pull.",
+      "visibilityFailed": "Could not update visibility"
+    }
+  },
+
+  "push": {
+    "title": "Push guide",
+    "subtitle": "Three commands to push a private image to <host/> under org <org/>.",
+    "subtitleNoOrg": "Three commands to push a private image to <host/>.",
+    "step1": {
+      "title": "Authenticate",
+      "body": "Log in with your Specula email and an API key. Keys are org-scoped — generate one here, or manage existing keys on the <lnk>Tokens</lnk> page.",
+      "selectOrgFirst": "Select an active org first (identity rail above).",
+      "noKeyYet": "Don't have an API key yet?",
+      "generate": "Generate key",
+      "creating": "Creating…",
+      "keyLabel": "api key · shown once",
+      "keyPrefix": "prefix: {{prefix}}…",
+      "keyWarning": "Save this key — it will not be shown again. Revoke it from the <lnk>Tokens</lnk> page if compromised. You can generate additional keys there too."
+    },
+    "step2": {
+      "title": "Tag your image",
+      "body": "Retag your local image with the Specula registry prefix. Replace <image/>, <repo/>, and <tag/> with your values.",
+      "note": "A repository is created on first push and defaults to <b>private</b>. Change visibility on the <lnk>Repositories</lnk> page."
+    },
+    "step3": {
+      "title": "Push",
+      "body": "The image appears in <lnk>Repositories</lnk> after a successful push with its tag, digest, and manifest size."
+    },
+    "pull": {
+      "title": "Pull reference",
+      "body": "Public repos allow anonymous pull. Private repos require <c>docker login</c> first. Per-tag pull commands are available on each repository's detail page."
+    },
+    "toast": {
+      "keyCreated": "API key created",
+      "keyCreatedDesc": "Copy it now — it won't be shown again.",
+      "keyFailed": "Could not create key"
+    }
+  }
+}

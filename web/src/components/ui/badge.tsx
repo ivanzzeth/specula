@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
+import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
 
@@ -21,10 +22,7 @@ import { cn } from '@/lib/utils';
  * supply-chain control, and the UI must say so at a glance.
  */
 const badgeVariants = cva(
-  cn(
-    'inline-flex items-center gap-1 rounded-[2px] border px-1.5 py-0.5',
-    'text-micro font-semibold uppercase tracking-wider whitespace-nowrap'
-  ),
+  cn('inline-flex items-center gap-1 rounded-[2px] border px-1.5 py-0.5', 'text-micro font-semibold whitespace-nowrap'),
   {
     variants: {
       variant: {
@@ -58,10 +56,37 @@ const badgeVariants = cva(
 
 export interface BadgeProps
   extends React.HTMLAttributes<HTMLSpanElement>,
-    VariantProps<typeof badgeVariants> {}
+    VariantProps<typeof badgeVariants> {
+  /**
+   * The badge's text is a guaranteed-Latin API literal (`tofu`, `up`, `public`)
+   * that stays English in EVERY locale — so the caps device is safe and STAYS ON
+   * in Chinese.
+   *
+   * Why this opt-out exists: `.label-caps` turns caps+tracking off under
+   * `html[lang^='zh']`, which is right for a badge carrying translated copy
+   * (`settings.restartPendingBadge` → "待重启" — tracking would prise its em grid
+   * apart). But applying it to a status badge made the SAME literal render
+   * "TOFU" in English and "tofu" in Chinese. REGISTRY-DESIGN §5.0 makes the
+   * trust-tier/health encoding load-bearing, so it must read identically in both
+   * languages. There is no CJK inside these badges to protect.
+   *
+   * Latin badges therefore use the plain utilities: with `.label-caps` absent,
+   * the `html[lang^='zh']` rule cannot match them and cannot switch them off.
+   */
+  latin?: boolean;
+}
 
-function Badge({ className, variant, ...props }: BadgeProps) {
-  return <span className={cn(badgeVariants({ variant }), className)} {...props} />;
+function Badge({ className, variant, latin, ...props }: BadgeProps) {
+  return (
+    <span
+      className={cn(
+        badgeVariants({ variant }),
+        latin ? 'uppercase tracking-wider' : 'label-caps',
+        className
+      )}
+      {...props}
+    />
+  );
 }
 
 /** The four verification tiers, exactly as the API's `tier` field spells them. */
@@ -75,8 +100,17 @@ export type Health = 'up' | 'blocked' | 'probing' | 'unknown';
  *
  * An unrecognised tier renders neutral rather than guessing a colour: claiming
  * a trust level we do not understand would be worse than saying nothing.
+ *
+ * ── WHY THE VALUE STAYS ENGLISH IN CHINESE ───────────────────────────────────
+ * `signed`/`consensus`/`tofu`/`checksum` are the API's `tier` field literals.
+ * They appear verbatim in API responses, logs and docs, and TOFU is an English
+ * acronym of art that Chinese developers say in English. Translating the badge
+ * would break the link between what the UI shows and what an operator greps —
+ * the same reason digest/manifest/tag stay English. The TOOLTIP is the legend,
+ * and that IS fully translated.
  */
 export function TierBadge({ tier, className }: { tier: string; className?: string }) {
+  const { t } = useTranslation();
   const known: Record<Tier, VariantProps<typeof badgeVariants>['variant']> = {
     signed: 'tier-signed',
     consensus: 'tier-consensus',
@@ -84,27 +118,14 @@ export function TierBadge({ tier, className }: { tier: string; className?: strin
     checksum: 'tier-checksum',
   };
   const variant = known[tier as Tier] ?? 'outline';
+  const hint = known[tier as Tier]
+    ? t(`tier.hint.${tier}`)
+    : t('tier.hint.unknown');
   return (
-    <Badge variant={variant} className={className} title={tierHint(tier)}>
-      {tier || 'unknown'}
+    <Badge latin variant={variant} className={className} title={hint}>
+      {tier || t('tier.unknown')}
     </Badge>
   );
-}
-
-/** tierHint is the honest one-line explanation shown on hover. */
-function tierHint(tier: string): string {
-  switch (tier) {
-    case 'signed':
-      return 'Anchored in a cryptographic trust root obtained out-of-band. Highest tier.';
-    case 'consensus':
-      return 'Digest agreed by multiple independent mirrors. Quorum, not authenticity.';
-    case 'tofu':
-      return 'Digest locked on first fetch; changes since then would alert. No trust root.';
-    case 'checksum':
-      return 'Transport integrity only, against a value that may come from the mirror itself. Not a supply-chain control.';
-    default:
-      return 'Unknown verification tier.';
-  }
 }
 
 /**
@@ -114,6 +135,7 @@ function tierHint(tier: string): string {
  * because "an upstream is down" is the single thing an operator must not miss.
  */
 export function HealthBadge({ health, className }: { health: string; className?: string }) {
+  const { t } = useTranslation();
   const known: Record<Health, VariantProps<typeof badgeVariants>['variant']> = {
     up: 'health-up',
     blocked: 'health-blocked',
@@ -127,26 +149,15 @@ export function HealthBadge({ health, className }: { health: string; className?:
     probing: 'bg-health-probing',
     unknown: 'bg-health-unknown',
   };
+  // Same rule as TierBadge: the value is the API's `health` literal and stays
+  // English; the tooltip legend is translated.
+  const hint = known[health as Health] ? t(`health.hint.${health}`) : t('health.hint.unknown');
   return (
-    <Badge variant={variant} className={className} title={healthHint(health)}>
+    <Badge latin variant={variant} className={className} title={hint}>
       <span className={cn('lamp', lamp[health as Health] ?? 'bg-health-unknown')} />
-      {health || 'unknown'}
+      {health || t('health.unknown')}
     </Badge>
   );
-}
-
-/** healthHint is the honest one-line explanation shown on hover. */
-function healthHint(health: string): string {
-  switch (health) {
-    case 'up':
-      return 'Last request succeeded; not blocked.';
-    case 'blocked':
-      return 'Auto-block tripped after consecutive failures. This mirror is being skipped.';
-    case 'probing':
-      return 'Recent failures, but still below the auto-block threshold; still being tried.';
-    default:
-      return 'Not contacted since this instance started — no data. Not a claim of health.';
-  }
 }
 
 /** VisibilityBadge renders a hosted repo's private/public visibility. */
@@ -157,18 +168,16 @@ export function VisibilityBadge({
   visibility: string;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const isPublic = visibility === 'public';
   return (
     <Badge
+      latin
       variant={isPublic ? 'public' : 'private'}
       className={className}
-      title={
-        isPublic
-          ? 'Anyone, including anonymous clients, may pull this repo.'
-          : 'Only org members may pull this repo.'
-      }
+      title={isPublic ? t('visibility.hint.public') : t('visibility.hint.private')}
     >
-      {visibility || 'private'}
+      {visibility || t('visibility.private')}
     </Badge>
   );
 }

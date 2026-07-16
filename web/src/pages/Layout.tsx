@@ -1,13 +1,17 @@
 import { NavLink, Outlet } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 
 import { useAuth } from '@/components/auth';
+import { LanguageSwitcher } from '@/components/language-switcher';
 import { OrgSwitcher } from '@/components/org-switcher';
 import { Toaster } from '@/components/ui/toaster';
 import { cn } from '@/lib/utils';
 
 interface NavItem {
   to: string;
-  label: string;
+  /** i18n key under `nav.*`. Resolved at render, not at module scope, so a
+   *  language switch re-renders the rail instead of stranding it. */
+  labelKey: string;
   /** Requires system_role=="admin" (the cache/ops zone is cross-tenant). */
   adminOnly?: boolean;
   end?: boolean;
@@ -27,30 +31,30 @@ interface NavItem {
  * not a dropdown, not a sidebar tree. An operator sees every destination at
  * once; that is the instrument-panel read.
  */
-const ZONES: { zone: string; items: NavItem[] }[] = [
+const ZONES: { zoneKey: string; items: NavItem[] }[] = [
   {
-    zone: 'Registry',
+    zoneKey: 'nav.zones.registry',
     items: [
-      { to: '/repos', label: 'Repositories' },
-      { to: '/push', label: 'Push' },
+      { to: '/repos', labelKey: 'nav.repos' },
+      { to: '/push', labelKey: 'nav.push' },
     ],
   },
   {
-    zone: 'Cache',
+    zoneKey: 'nav.zones.cache',
     items: [
-      { to: '/', label: 'Overview', end: true },
-      { to: '/cache', label: 'Browser', adminOnly: true },
-      { to: '/events', label: 'Events', adminOnly: true },
+      { to: '/', labelKey: 'nav.overview', end: true },
+      { to: '/cache', labelKey: 'nav.browser', adminOnly: true },
+      { to: '/events', labelKey: 'nav.events', adminOnly: true },
     ],
   },
   {
-    zone: 'Ops',
+    zoneKey: 'nav.zones.ops',
     items: [
-      { to: '/upstreams', label: 'Upstreams', adminOnly: true },
-      { to: '/members', label: 'Members' },
-      { to: '/tokens', label: 'Tokens' },
-      { to: '/users', label: 'Users', adminOnly: true },
-      { to: '/config', label: 'Config', adminOnly: true },
+      { to: '/upstreams', labelKey: 'nav.upstreams', adminOnly: true },
+      { to: '/members', labelKey: 'nav.members' },
+      { to: '/tokens', labelKey: 'nav.tokens' },
+      { to: '/users', labelKey: 'nav.users', adminOnly: true },
+      { to: '/config', labelKey: 'nav.config', adminOnly: true },
     ],
   },
 ];
@@ -65,6 +69,7 @@ const ZONES: { zone: string; items: NavItem[] }[] = [
  */
 export function Layout() {
   const { user, isAdmin, logout } = useAuth();
+  const { t } = useTranslation();
 
   return (
     <div className="flex h-full flex-col bg-slate-950">
@@ -86,17 +91,18 @@ export function Layout() {
           <span className="hidden max-w-[180px] truncate sm:block">{user?.email}</span>
           {isAdmin && (
             <span
-              className="rounded-[2px] border border-brand/40 px-1 py-px text-micro font-semibold uppercase tracking-wider text-brand"
-              title="System administrator: cross-org access to cache and ops."
+              className="label-caps rounded-[2px] border border-brand/40 px-1 py-px text-micro font-semibold text-brand"
+              title={t('nav.adminTitle')}
             >
-              admin
+              {t('nav.admin')}
             </span>
           )}
+          <LanguageSwitcher />
           <button
             onClick={() => void logout()}
-            className="text-slate-500 transition-colors duration-fast hover:text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="whitespace-nowrap text-slate-500 transition-colors duration-fast hover:text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           >
-            Sign out
+            {t('nav.signOut')}
           </button>
         </div>
       </header>
@@ -107,10 +113,10 @@ export function Layout() {
           const items = group.items.filter((i) => !i.adminOnly || isAdmin);
           if (items.length === 0) return null;
           return (
-            <div key={group.zone} className="flex items-center gap-3">
+            <div key={group.zoneKey} className="flex items-center gap-3">
               {gi > 0 && <span aria-hidden className="h-3.5 w-px bg-slate-800" />}
-              <span className="text-micro font-semibold uppercase tracking-wider text-slate-600">
-                {group.zone}
+              <span className="label-caps text-micro font-semibold text-slate-600">
+                {t(group.zoneKey)}
               </span>
               {items.map((item) => (
                 <NavLink
@@ -127,7 +133,7 @@ export function Layout() {
                     )
                   }
                 >
-                  {item.label}
+                  {t(item.labelKey)}
                 </NavLink>
               ))}
             </div>

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { getEvents } from '@/api/client';
+import { ApiError, getEvents } from '@/api/client';
+import { translateServerError } from '@/i18n/server-errors';
 import type { VerificationEvent } from '@/api/types';
 import { Badge, TierBadge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -49,16 +51,23 @@ function resultVariant(result: string): ResultVariant {
   return 'default';
 }
 
-function resultHint(result: string): string {
-  if (result === 'pass') return 'Verification passed.';
-  if (result === 'warn') return 'Verification passed with a warning — may warrant investigation.';
-  if (result === 'fail') return 'Verification FAILED — this artifact may have been tampered with or the upstream metadata changed.';
-  return 'Unknown result.';
+/** The hint key for a result, falling back to `unknown` for anything unrecognised. */
+function resultHintKey(result: string): string {
+  if (result === 'pass' || result === 'warn' || result === 'fail') {
+    return `events.result.hint.${result}`;
+  }
+  return 'events.result.hint.unknown';
 }
 
+/**
+ * The badge VALUE stays English: `result` is an API field literal that also
+ * appears in logs and API responses, the same rule TierBadge/HealthBadge follow.
+ * The tooltip is the legend, and it is translated.
+ */
 function ResultBadge({ result }: { result: string }) {
+  const { t } = useTranslation();
   return (
-    <Badge variant={resultVariant(result)} title={resultHint(result)}>
+    <Badge latin variant={resultVariant(result)} title={t(resultHintKey(result))}>
       {result || 'unknown'}
     </Badge>
   );
@@ -83,12 +92,19 @@ function Digest({ value }: { value: string }) {
 const LIMIT = 200;
 const REFRESH_MS = 30_000;
 
+/** See Upstreams.tsx — an ApiError's `detail` is the server's own words. */
+function errText(e: unknown): string {
+  if (e instanceof ApiError) return translateServerError(e.detail);
+  return e instanceof Error ? e.message : String(e);
+}
+
 export function Events() {
   const [events, setEvents] = useState<VerificationEvent[]>([]);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState(0);
   const { toast } = useToast();
+  const { t } = useTranslation();
 
   const load = useCallback(
     (silent = false) => {
@@ -100,13 +116,13 @@ export function Events() {
           setErr('');
         })
         .catch((e: unknown) => {
-          const msg = e instanceof Error ? e.message : String(e);
+          const msg = errText(e);
           setErr(msg);
           if (silent) {
             // Background refresh failure — toast instead of overwriting the list.
             toast({
               variant: 'destructive',
-              title: 'Events refresh failed',
+              title: t('events.refreshFailed'),
               description: msg,
             });
           }
@@ -115,7 +131,7 @@ export function Events() {
           if (!silent) setLoading(false);
         });
     },
-    [toast]
+    [t, toast]
   );
 
   // Initial load.
@@ -155,29 +171,30 @@ export function Events() {
       ) : (
         <Card>
           <CardHeader>
-            <CardTitle>Verification log</CardTitle>
+            <CardTitle>{t('events.logTitle')}</CardTitle>
             <p className="text-data text-slate-400">
-              Last {LIMIT} events · auto-refreshes every {REFRESH_MS / 1000}s
+              {t('events.logSubtitle', {
+                limit: LIMIT,
+                seconds: REFRESH_MS / 1000,
+              })}
             </p>
           </CardHeader>
 
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-32">Time</TableHead>
-                <TableHead className="w-20">Protocol</TableHead>
-                <TableHead>Artifact</TableHead>
-                <TableHead className="w-36">Digest</TableHead>
-                <TableHead className="w-28">Tier</TableHead>
-                <TableHead className="w-20">Result</TableHead>
-                <TableHead>Detail</TableHead>
+                <TableHead className="w-32">{t('events.col.time')}</TableHead>
+                <TableHead className="w-20">{t('events.col.protocol')}</TableHead>
+                <TableHead>{t('events.col.artifact')}</TableHead>
+                <TableHead className="w-36">{t('events.col.digest')}</TableHead>
+                <TableHead className="w-28">{t('events.col.tier')}</TableHead>
+                <TableHead className="w-20">{t('events.col.result')}</TableHead>
+                <TableHead>{t('events.col.detail')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {events.length === 0 ? (
-                <EmptyRow colSpan={7}>
-                  No verification events yet.
-                </EmptyRow>
+                <EmptyRow colSpan={7}>{t('events.none')}</EmptyRow>
               ) : (
                 events.map((ev) => (
                   <EventRow key={ev.id} ev={ev} />
@@ -204,14 +221,14 @@ function PageHeading({
   warnCount: number;
   lastRefresh: number;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-end justify-between gap-3">
       <div>
-        <h1 className="text-display font-semibold text-slate-100">Events</h1>
-        <p className="mt-0.5 text-data text-slate-400">
-          Artifact verification results — tier failures, digest changes, and
-          force-push alerts.
-        </p>
+        <h1 className="text-display font-semibold text-slate-100">
+          {t('events.title')}
+        </h1>
+        <p className="mt-0.5 text-data text-slate-400">{t('events.subtitle')}</p>
       </div>
 
       {/* Summary lamps: only surface fail/warn so a clean log stays quiet. */}
@@ -220,22 +237,24 @@ function PageHeading({
           {failCount > 0 && (
             <span
               className="tnum text-health-blocked"
-              title={`${failCount} failed verification event${failCount > 1 ? 's' : ''}`}
+              title={t('events.summary.failTitle', { count: failCount })}
             >
-              {failCount} fail
+              {t('events.summary.fail', { n: failCount })}
             </span>
           )}
           {warnCount > 0 && (
             <span
               className="tnum text-tier-tofu"
-              title={`${warnCount} verification warning${warnCount > 1 ? 's' : ''}`}
+              title={t('events.summary.warnTitle', { count: warnCount })}
             >
-              {warnCount} warn
+              {t('events.summary.warn', { n: warnCount })}
             </span>
           )}
           {lastRefresh > 0 && (
             <span className="text-slate-600" title={new Date(lastRefresh).toLocaleString()}>
-              refreshed {formatRelative(Math.floor(lastRefresh / 1000))}
+              {t('events.summary.refreshed', {
+                when: formatRelative(Math.floor(lastRefresh / 1000)),
+              })}
             </span>
           )}
         </div>
@@ -247,13 +266,14 @@ function PageHeading({
 // ── Event row ─────────────────────────────────────────────────────────────────
 
 function EventRow({ ev }: { ev: VerificationEvent }) {
+  const { t } = useTranslation();
   const isFail = ev.result === 'fail';
   return (
     <TableRow className={cn(isFail && 'bg-health-blocked/5')}>
       {/* Time: absolute value + relative on hover */}
       <TableCell
         className="tnum text-slate-500 whitespace-nowrap"
-        title={`relative: ${formatRelative(ev.unix)}`}
+        title={t('events.relativeTitle', { when: formatRelative(ev.unix) })}
       >
         {formatUnix(ev.unix)}
       </TableCell>

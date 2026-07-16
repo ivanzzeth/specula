@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
-import { getConfig } from '@/api/client';
+import { ApiError, getConfig } from '@/api/client';
+import { translateServerError } from '@/i18n/server-errors';
 import type { ConfigResponse } from '@/api/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { SkeletonRows } from '@/components/ui/skeleton';
@@ -49,15 +51,22 @@ import {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
+/** See Upstreams.tsx — an ApiError's `detail` is the server's own words. */
+function errText(e: unknown): string {
+  if (e instanceof ApiError) return translateServerError(e.detail);
+  return e instanceof Error ? e.message : String(e);
+}
+
 export function Config() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
+  const { t } = useTranslation();
 
   useEffect(() => {
     getConfig()
       .then(setConfig)
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setErr(errText(e)))
       .finally(() => setLoading(false));
   }, []);
 
@@ -70,7 +79,7 @@ export function Config() {
       <SettingsPanel />
 
       <div className="pt-1">
-        <p className="section-label">Startup configuration (read-only)</p>
+        <p className="section-label">{t('config.startupSection')}</p>
       </div>
 
       {loading ? (
@@ -91,13 +100,13 @@ export function Config() {
 }
 
 function PageHeading() {
+  const { t } = useTranslation();
   return (
     <div>
-      <h1 className="text-display font-semibold text-slate-100">Config</h1>
-      <p className="mt-0.5 text-data text-slate-400">
-        What this server is running. Settings are changeable at runtime; the startup
-        configuration below is read-only. Secrets are redacted by the server.
-      </p>
+      <h1 className="text-display font-semibold text-slate-100">
+        {t('config.title')}
+      </h1>
+      <p className="mt-0.5 text-data text-slate-400">{t('config.subtitle')}</p>
     </div>
   );
 }
@@ -105,21 +114,25 @@ function PageHeading() {
 // ── Config tab ────────────────────────────────────────────────────────────────
 
 function ConfigTab({ config }: { config: ConfigResponse | null }) {
+  const { t } = useTranslation();
+
   if (!config) {
     return (
       <Card>
         <CardContent className="text-data text-slate-400">
-          Configuration not available.
+          {t('config.notAvailable')}
         </CardContent>
       </Card>
     );
   }
 
+  // The LABELS are UI copy and translate; the VALUES are the server's live
+  // config data and are rendered verbatim, never translated.
   const topFields = [
-    { label: 'Data Plane', value: config.data_plane_addr },
-    { label: 'Control Plane', value: config.control_plane_addr },
-    { label: 'Blob Driver', value: config.blob_driver },
-    { label: 'Meta Driver', value: config.meta_driver },
+    { key: 'dataPlane', value: config.data_plane_addr },
+    { key: 'controlPlane', value: config.control_plane_addr },
+    { key: 'blobDriver', value: config.blob_driver },
+    { key: 'metaDriver', value: config.meta_driver },
   ];
 
   return (
@@ -127,15 +140,17 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
       {/* ── Top-level addresses and drivers ─────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle>Server</CardTitle>
+          <CardTitle>{t('config.server')}</CardTitle>
         </CardHeader>
         <div className="divide-y divide-slate-800">
-          {topFields.map(({ label, value }) => (
+          {topFields.map(({ key, value }) => (
             <div
-              key={label}
+              key={key}
               className="flex items-center gap-4 px-3 py-2 text-data"
             >
-              <span className="section-label w-32 shrink-0">{label}</span>
+              <span className="section-label w-32 shrink-0">
+                {t(`config.field.${key}`)}
+              </span>
               <span className="truncate text-slate-300" title={value || undefined}>
                 {value || '—'}
               </span>
@@ -147,14 +162,16 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
       {/* ── Protocol list ─────────────────────────────────────────────────── */}
       {config.protocols && config.protocols.length > 0 && (
         <div className="space-y-2">
-          <p className="section-label">Protocols ({config.protocols.length})</p>
+          <p className="section-label">
+            {t('config.protocols', { n: config.protocols.length })}
+          </p>
           {config.protocols.map((p) => (
             <Card key={p.protocol}>
               <CardHeader>
                 <CardTitle>{p.protocol}</CardTitle>
                 <div className="flex items-center gap-3 text-data text-slate-400">
                   <span>
-                    mutable TTL{' '}
+                    {t('config.mutableTtl')}{' '}
                     <span className="tnum text-slate-200">
                       {p.mutable_ttl_seconds}s
                     </span>
@@ -163,7 +180,7 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
                     <>
                       <span className="text-slate-700">·</span>
                       <span>
-                        tiers{' '}
+                        {t('config.tiers')}{' '}
                         <span className="text-slate-200">
                           {p.verify_tiers.join(', ')}
                         </span>
@@ -177,10 +194,14 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-8 text-right">#</TableHead>
-                      <TableHead className="w-36">Name</TableHead>
-                      <TableHead>Base URL</TableHead>
-                      <TableHead className="w-20 text-right">Origin</TableHead>
+                      <TableHead className="w-8 text-right">
+                        {t('config.col.num')}
+                      </TableHead>
+                      <TableHead className="w-36">{t('config.col.name')}</TableHead>
+                      <TableHead>{t('config.col.baseUrl')}</TableHead>
+                      <TableHead className="w-20 text-right">
+                        {t('config.col.origin')}
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -200,8 +221,8 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
                         </TableCell>
                         <TableCell className="text-right">
                           {u.official ? (
-                            <span className="text-tier-signed text-micro font-semibold uppercase tracking-wider">
-                              origin
+                            <span className="label-caps text-tier-signed text-micro font-semibold">
+                              {t('config.origin')}
                             </span>
                           ) : (
                             <span className="text-slate-600">—</span>
@@ -213,7 +234,7 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
                 </Table>
               ) : (
                 <CardContent className="text-data text-slate-400">
-                  No upstreams configured for {p.protocol}.
+                  {t('config.noUpstreams', { protocol: p.protocol })}
                 </CardContent>
               )}
             </Card>
@@ -224,7 +245,7 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
       {(!config.protocols || config.protocols.length === 0) && (
         <Card>
           <CardContent className="text-data text-slate-400">
-            No protocols configured.
+            {t('config.noProtocols')}
           </CardContent>
         </Card>
       )}

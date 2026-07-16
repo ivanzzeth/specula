@@ -2,6 +2,7 @@ import * as React from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 
+import i18n from '@/i18n';
 import { cn } from '@/lib/utils';
 
 /**
@@ -58,7 +59,10 @@ const DialogContent = React.forwardRef<
         )}
       >
         <X className="size-3.5" />
-        <span className="sr-only">Close</span>
+        {/* The dialog's only screen-reader-only string. i18n.t rather than a
+            hook: DialogContent is a forwardRef primitive and the surrounding
+            dialog always re-renders on a language change. */}
+        <span className="sr-only">{i18n.t('common.close')}</span>
       </DialogPrimitive.Close>
     </DialogPrimitive.Content>
   </DialogPortal>

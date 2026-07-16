@@ -22,6 +22,7 @@
  */
 
 import { lazy, Suspense, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
 import { getStats, getStatsSeries } from '@/api/client';
@@ -42,6 +43,7 @@ import { formatBytes } from '@/lib/utils';
 const CacheCharts = lazy(() => import('@/components/charts/CacheCharts'));
 
 export function Dashboard() {
+  const { t } = useTranslation();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [series, setSeries] = useState<SeriesResponse | null>(null);
   const [err, setErr] = useState('');
@@ -112,23 +114,23 @@ export function Dashboard() {
           floating cards. */}
       <div className="grid grid-cols-2 gap-px border border-slate-800 bg-slate-800 sm:grid-cols-4">
         <Readout
-          label="Total Objects"
+          label={t('dashboard.totalObjects')}
           value={stats.total_objects.toLocaleString()}
           accent
           className="bg-slate-900"
         />
         <Readout
-          label="Total Cached"
+          label={t('dashboard.totalCached')}
           value={formatBytes(stats.total_bytes)}
           className="bg-slate-900"
         />
         <Readout
-          label="Disk Used"
+          label={t('dashboard.diskUsed')}
           value={formatBytes(stats.backend_disk_used)}
           className="bg-slate-900"
         />
         <Readout
-          label="Disk Free"
+          label={t('dashboard.diskFree')}
           value={formatBytes(stats.backend_disk_free)}
           className="bg-slate-900"
         />
@@ -138,9 +140,9 @@ export function Dashboard() {
       {diskTotal > 0 && (
         <Card>
           <CardHeader>
-            <CardTitle>Disk usage</CardTitle>
+            <CardTitle>{t('dashboard.diskUsage')}</CardTitle>
             <span className="tnum text-data text-slate-400">
-              {diskPct}% of {formatBytes(diskTotal)}
+              {t('dashboard.diskOf', { pct: diskPct, total: formatBytes(diskTotal) })}
             </span>
           </CardHeader>
           <CardContent>
@@ -150,13 +152,17 @@ export function Dashboard() {
               aria-valuenow={diskPct}
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-label={`Disk usage: ${diskPct}%`}
+              aria-label={t('dashboard.diskAria', { pct: diskPct })}
             >
               <div className={`h-full transition-all ${gaugeClass}`} style={{ width: `${diskPct}%` }} />
             </div>
             <div className="mt-1.5 flex justify-between text-data text-slate-500">
-              <span className="tnum">{formatBytes(stats.backend_disk_used)} used</span>
-              <span className="tnum">{formatBytes(diskTotal)} total</span>
+              <span className="tnum">
+                {t('dashboard.usedSuffix', { value: formatBytes(stats.backend_disk_used) })}
+              </span>
+              <span className="tnum">
+                {t('dashboard.totalSuffix', { value: formatBytes(diskTotal) })}
+              </span>
             </div>
           </CardContent>
         </Card>
@@ -166,19 +172,17 @@ export function Dashboard() {
       {hasPerProtocol && (
         <Card>
           <CardHeader>
-            <CardTitle>Per-protocol cache</CardTitle>
-            <p className="text-data text-slate-400">
-              Objects and bytes currently held in the cache store.
-            </p>
+            <CardTitle>{t('dashboard.perProtocol')}</CardTitle>
+            <p className="text-data text-slate-400">{t('dashboard.perProtocolHint')}</p>
           </CardHeader>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Protocol</TableHead>
-                <TableHead className="w-28 text-right">Objects</TableHead>
-                <TableHead className="w-28 text-right">Bytes</TableHead>
-                <TableHead className="w-32 text-right">Oldest entry</TableHead>
-                <TableHead className="w-32 text-right">Newest entry</TableHead>
+                <TableHead>{t('dashboard.colProtocol')}</TableHead>
+                <TableHead className="w-28 text-right">{t('dashboard.colObjects')}</TableHead>
+                <TableHead className="w-28 text-right">{t('dashboard.colBytes')}</TableHead>
+                <TableHead className="w-32 text-right">{t('dashboard.colOldest')}</TableHead>
+                <TableHead className="w-32 text-right">{t('dashboard.colNewest')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -217,10 +221,8 @@ export function Dashboard() {
       {showCharts && (
         <Card>
           <CardHeader>
-            <CardTitle>Cache charts</CardTitle>
-            <p className="text-data text-slate-400">
-              In-memory metrics · per-replica · reset on restart.
-            </p>
+            <CardTitle>{t('dashboard.charts')}</CardTitle>
+            <p className="text-data text-slate-400">{t('dashboard.chartsHint')}</p>
           </CardHeader>
           <CardContent>
             <Suspense
@@ -238,9 +240,7 @@ export function Dashboard() {
 
       {!showCharts && (
         <Card>
-          <CardContent className="text-data text-slate-400">
-            Nothing cached yet — pull an artifact through the proxy, then this page fills in.
-          </CardContent>
+          <CardContent className="text-data text-slate-400">{t('dashboard.empty')}</CardContent>
         </Card>
       )}
     </div>
@@ -248,12 +248,11 @@ export function Dashboard() {
 }
 
 function PageHeading() {
+  const { t } = useTranslation();
   return (
     <div>
-      <h1 className="text-display font-semibold text-slate-100">Overview</h1>
-      <p className="mt-0.5 text-data text-slate-400">
-        What the proxy is holding right now — totals, headroom, and growth.
-      </p>
+      <h1 className="text-display font-semibold text-slate-100">{t('dashboard.title')}</h1>
+      <p className="mt-0.5 text-data text-slate-400">{t('dashboard.subtitle')}</p>
     </div>
   );
 }

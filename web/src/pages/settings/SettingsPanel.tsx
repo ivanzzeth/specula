@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { KeyRound, RotateCcw, TriangleAlert } from 'lucide-react';
 
-import { deleteSetting, getSettings, putSetting } from '@/api/client';
+import { ApiError, deleteSetting, getSettings, putSetting } from '@/api/client';
 import type { SettingSource, SettingView } from '@/api/types';
+import { translateServerError } from '@/i18n/server-errors';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -41,7 +43,14 @@ import { cn } from '@/lib/utils';
  *
  * Owned by: the Ops UI agent.
  */
+/** errMessage routes API errors through the shared server-error allow-list. */
+function errMessage(e: unknown): string {
+  if (e instanceof ApiError) return translateServerError(e.detail) || e.message;
+  return e instanceof Error ? e.message : String(e);
+}
+
 export function SettingsPanel() {
+  const { t } = useTranslation();
   const [settings, setSettings] = useState<SettingView[]>([]);
   const [configEnabled, setConfigEnabled] = useState(true);
   const [err, setErr] = useState('');
@@ -53,7 +62,7 @@ export function SettingsPanel() {
         setSettings(r.settings ?? []);
         setConfigEnabled(r.config_enabled);
       })
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setErr(errMessage(e)))
       .finally(() => setLoading(false));
   }, []);
 
@@ -67,7 +76,7 @@ export function SettingsPanel() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>System Settings</CardTitle>
+          <CardTitle>{t('settings.title')}</CardTitle>
         </CardHeader>
         <CardContent>
           <SkeletonRows rows={4} />
@@ -80,7 +89,7 @@ export function SettingsPanel() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>System Settings</CardTitle>
+          <CardTitle>{t('settings.title')}</CardTitle>
         </CardHeader>
         <CardContent className="text-data text-destructive">{err}</CardContent>
       </Card>
@@ -92,11 +101,8 @@ export function SettingsPanel() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>System Settings</CardTitle>
-        <p className="text-data text-slate-400">
-          Live values, resolved override → config file → built-in default. Changes are
-          persisted encrypted and shared by every replica.
-        </p>
+        <CardTitle>{t('settings.title')}</CardTitle>
+        <p className="text-data text-slate-400">{t('settings.subtitle')}</p>
       </CardHeader>
 
       {/* ── Store-disabled notice ──────────────────────────────────────────
@@ -106,13 +112,17 @@ export function SettingsPanel() {
         <div className="flex items-start gap-2 border-b border-slate-800 bg-status-warn/5 px-3 py-2">
           <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-warn" />
           <p className="text-data text-slate-300">
-            <span className="font-semibold text-status-warn">Read-only.</span> No master
-            key is configured, so nothing can be persisted encrypted. Set{' '}
-            <code className="text-slate-100">auth.config_secret</code> (or{' '}
-            <code className="text-slate-100">SPECULA_AUTH__CONFIG_SECRET</code>) to the
-            output of <code className="text-slate-100">openssl rand -base64 32</code> and
-            restart. Until then, generated secrets are ephemeral: sessions do not survive
-            a restart and are not valid across replicas.
+            <span className="font-semibold text-status-warn">{t('settings.readOnlyLabel')}</span>{' '}
+            {/* The three <code> spans are config keys and a shell command — they
+                are identical in every locale, so only the prose around them moves. */}
+            <Trans
+              i18nKey="settings.readOnlyBody"
+              components={[
+                <code key="k" className="text-slate-100" />,
+                <code key="env" className="text-slate-100" />,
+                <code key="cmd" className="text-slate-100" />,
+              ]}
+            />
           </p>
         </div>
       )}
@@ -121,8 +131,10 @@ export function SettingsPanel() {
         <div className="flex items-start gap-2 border-b border-slate-800 bg-status-info/5 px-3 py-2">
           <RotateCcw className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-info" />
           <p className="text-data text-slate-300">
-            <span className="font-semibold text-status-info">Restart pending.</span> One
-            or more changed settings do not take effect until Specula is restarted.
+            <span className="font-semibold text-status-info">
+              {t('settings.restartPendingLabel')}
+            </span>{' '}
+            {t('settings.restartPendingBody')}
           </p>
         </div>
       )}
@@ -137,9 +149,7 @@ export function SettingsPanel() {
           />
         ))}
         {settings.length === 0 && (
-          <CardContent className="text-data text-slate-400">
-            No runtime settings are registered.
-          </CardContent>
+          <CardContent className="text-data text-slate-400">{t('settings.empty')}</CardContent>
         )}
       </div>
     </Card>
@@ -156,36 +166,34 @@ export function SettingsPanel() {
  * nothing to someone looking for why their YAML is being ignored — "override"
  * does.
  */
-const SOURCE_META: Record<SettingSource, { label: string; cls: string; title: string }> = {
+const SOURCE_META: Record<SettingSource, { key: string; cls: string }> = {
   runtime: {
-    label: 'override',
+    key: 'runtime',
     cls: 'border-status-info/40 bg-status-info/10 text-status-info',
-    title: 'Set at runtime and stored encrypted. This wins over the config file.',
   },
   env: {
-    label: 'config',
+    key: 'env',
     cls: 'border-slate-700 bg-slate-800 text-slate-300',
-    title: 'From specula.yaml or a SPECULA_* environment variable.',
   },
   unset: {
-    label: 'default',
+    key: 'unset',
     cls: 'border-slate-800 bg-transparent text-slate-500',
-    title: 'Not configured anywhere; the built-in default applies.',
   },
 };
 
 function SourceBadge({ source }: { source: SettingSource }) {
+  const { t } = useTranslation();
   const meta = SOURCE_META[source] ?? SOURCE_META.unset;
   return (
     <span
-      title={meta.title}
+      title={t(`settings.source.${meta.key}Hint`)}
       className={cn(
-        'inline-flex items-center rounded-[2px] border px-1.5 py-0.5',
-        'text-micro font-semibold uppercase tracking-wider whitespace-nowrap',
+        'label-caps inline-flex items-center rounded-[2px] border px-1.5 py-0.5',
+        'text-micro font-semibold whitespace-nowrap',
         meta.cls
       )}
     >
-      {meta.label}
+      {t(`settings.source.${meta.key}`)}
     </span>
   );
 }
@@ -206,6 +214,7 @@ function SettingRow({
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
+  const { t } = useTranslation();
 
   const isSecret = setting.secret;
   // A dangerous key demands the operator type its name. Deliberately more
@@ -236,16 +245,16 @@ function SettingRow({
       cancel();
       toast({
         variant: 'success',
-        title: 'Setting saved',
+        title: t('settings.saved'),
         description: updated.hot_reload
-          ? `${setting.key} — in effect now`
-          : `${setting.key} — takes effect after a restart`,
+          ? t('settings.savedHot', { key: setting.key })
+          : t('settings.savedCold', { key: setting.key }),
       });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Could not save setting',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('settings.saveFailed'),
+        description: errMessage(e),
         duration: Infinity,
       });
     } finally {
@@ -261,14 +270,14 @@ function SettingRow({
       cancel();
       toast({
         variant: 'success',
-        title: 'Override cleared',
-        description: `${setting.key} — back to its configured default`,
+        title: t('settings.overrideCleared'),
+        description: t('settings.overrideClearedDesc', { key: setting.key }),
       });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Could not clear override',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('settings.clearFailed'),
+        description: errMessage(e),
         duration: Infinity,
       });
     } finally {
@@ -284,31 +293,28 @@ function SettingRow({
         <SourceBadge source={setting.source} />
 
         {isSecret && (
-          <Badge variant="outline" title="Redacted — the value is never sent to the browser.">
+          <Badge variant="outline" title={t('settings.secretHint')}>
             <KeyRound className="h-3 w-3" />
-            secret
+            {t('settings.secret')}
           </Badge>
         )}
         {setting.dangerous && (
-          <Badge
-            variant="tier-checksum"
-            title="High risk: changing this can break live traffic. Confirmation required."
-          >
+          <Badge variant="tier-checksum" title={t('settings.dangerHint')}>
             <TriangleAlert className="h-3 w-3" />
-            danger
+            {t('settings.danger')}
           </Badge>
         )}
         {!setting.hot_reload && (
           <span
-            className="text-micro uppercase tracking-wider text-slate-500"
-            title="Changing this needs a restart before it takes effect."
+            className="label-caps text-micro text-slate-500"
+            title={t('settings.restartToApplyHint')}
           >
-            restart to apply
+            {t('settings.restartToApply')}
           </span>
         )}
         {setting.restart_required && (
-          <Badge variant="tier-consensus" title="Changed, but not yet applied.">
-            restart pending
+          <Badge variant="tier-consensus" title={t('settings.restartPendingBadgeHint')}>
+            {t('settings.restartPendingBadge')}
           </Badge>
         )}
       </div>
@@ -327,7 +333,7 @@ function SettingRow({
               setting.set ? (
                 <span className="text-slate-400">{setting.display}</span>
               ) : (
-                <span className="text-slate-600">not set — generated at startup</span>
+                <span className="text-slate-600">{t('settings.notSet')}</span>
               )
             ) : setting.value ? (
               <span className="tnum text-slate-200">{setting.value}</span>
@@ -344,13 +350,13 @@ function SettingRow({
                   size="sm"
                   onClick={reset}
                   disabled={busy}
-                  title="Remove the override and fall back to the configured default"
+                  title={t('settings.resetHint')}
                 >
-                  Reset
+                  {t('common.reset')}
                 </Button>
               )}
               <Button variant="outline" size="sm" onClick={startEdit} disabled={busy}>
-                {isSecret ? 'Replace' : 'Edit'}
+                {isSecret ? t('settings.replace') : t('common.edit')}
               </Button>
             </div>
           )}
@@ -365,8 +371,8 @@ function SettingRow({
               onChange={(e) => setDraft(e.target.value)}
               placeholder={
                 isSecret
-                  ? 'new value — leave empty to clear'
-                  : `${setting.kind} value — leave empty to clear`
+                  ? t('settings.secretPlaceholder')
+                  : t('settings.valuePlaceholder', { kind: setting.kind })
               }
               className="flex-1"
               onKeyDown={(e) => {
@@ -375,10 +381,10 @@ function SettingRow({
               }}
             />
             <Button size="sm" onClick={save} disabled={busy || !confirmed}>
-              Save
+              {t('common.save')}
             </Button>
             <Button variant="ghost" size="sm" onClick={cancel} disabled={busy}>
-              Cancel
+              {t('common.cancel')}
             </Button>
           </div>
 
@@ -387,24 +393,24 @@ function SettingRow({
               <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-status-danger" />
               <div className="min-w-0 flex-1 space-y-1.5">
                 <p className="text-data text-slate-300">
-                  This is a high-risk setting. Type{' '}
-                  <code className="text-slate-100">{setting.key}</code> to confirm.
+                  <Trans
+                    i18nKey="settings.confirmBody"
+                    values={{ key: setting.key }}
+                    components={[<code key="k" className="text-slate-100" />]}
+                  />
                 </p>
                 <Input
                   value={confirm}
                   onChange={(e) => setConfirm(e.target.value)}
                   placeholder={setting.key}
-                  aria-label={`Type ${setting.key} to confirm`}
+                  aria-label={t('settings.confirmAria', { key: setting.key })}
                 />
               </div>
             </div>
           )}
 
           {!setting.hot_reload && (
-            <p className="text-data text-slate-500">
-              Takes effect after a restart — the value is used to build a verifier at
-              startup.
-            </p>
+            <p className="text-data text-slate-500">{t('settings.restartNote')}</p>
           )}
         </div>
       )}

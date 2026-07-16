@@ -1,0 +1,102 @@
+{
+  "repos": {
+    "title": "仓库",
+    "subtitle": "托管在 <org/> — 默认 private，public repo 允许匿名 pull。",
+    "noActiveOrg": "未选择当前组织。",
+    "pushGuide": "Push 指南",
+    "filterPlaceholder": "按名称筛选…",
+    "clear": "清除",
+    "countTitle": "匹配筛选的仓库数 / 本组织总数",
+    "col": {
+      "repository": "仓库",
+      "visibility": "可见性",
+      "manifestSize": "Manifest 大小",
+      "tags": "Tags",
+      "lastPush": "最近 push"
+    },
+    "rowAria": "查看仓库 {{name}}",
+    "noMatch": "没有仓库匹配当前筛选。",
+    "empty": {
+      "title": "还没有仓库",
+      "body": "push 一个 OCI 镜像即可创建仓库。默认 private — 改可见性之前只有组织成员能 pull。",
+      "cta": "查看 push 指南 →"
+    }
+  },
+
+  "repoDetail": {
+    "breadcrumbAria": "面包屑导航",
+    "notFound": "仓库不存在。",
+    "tagsUnit_other": "个 tag",
+    "manifestUnit": "manifest",
+    "created": "创建于",
+    "makePrivate": "设为 private",
+    "makePublic": "设为 public",
+    "pull": {
+      "title": "Pull",
+      "public": "Public — 允许匿名 pull",
+      "private": "Private — 需先 docker login"
+    },
+    "tags": {
+      "title": "Tags",
+      "empty": "还没有 tag。push 一个镜像到这个仓库即可创建第一个 tag。"
+    },
+    "col": {
+      "tag": "Tag",
+      "digest": "Digest",
+      "manifestSize": "Manifest 大小",
+      "arch": "架构",
+      "pushed": "Push 时间",
+      "pull": "Pull",
+      "delete": "删除"
+    },
+    "deleteTag": {
+      "title": "删除 tag",
+      "description": "删除 tag 指针 <tag/>？manifest 和 layer 仍留在内容寻址存储里，由 GC 在下一轮回收时清理。",
+      "confirm": "删除 tag"
+    },
+    "toast": {
+      "tagDeleted": "Tag 已删除",
+      "tagDeleteFailed": "删除 tag 失败",
+      "nowPublic": "仓库已设为 public",
+      "nowPrivate": "仓库已设为 private",
+      "nowPublicDesc": "现在允许匿名 pull。",
+      "nowPrivateDesc": "只有组织成员能 pull。",
+      "visibilityFailed": "修改可见性失败"
+    }
+  },
+
+  "push": {
+    "title": "Push 指南",
+    "subtitle": "三条命令，把私有镜像 push 到 <host/> 的 <org/> 组织下。",
+    "subtitleNoOrg": "三条命令，把私有镜像 push 到 <host/>。",
+    "step1": {
+      "title": "认证",
+      "body": "用 Specula 邮箱和 API key 登录。key 按组织隔离 — 可以在这里生成，也可以到 <lnk>Token</lnk> 页管理已有的 key。",
+      "selectOrgFirst": "先在上方身份栏选择当前组织。",
+      "noKeyYet": "还没有 API key？",
+      "generate": "生成 key",
+      "creating": "创建中…",
+      "keyLabel": "api key · 仅显示一次",
+      "keyPrefix": "prefix: {{prefix}}…",
+      "keyWarning": "保存好这个 key — 不会再显示第二次。泄露了就到 <lnk>Token</lnk> 页吊销，也可以在那里再生成新的 key。"
+    },
+    "step2": {
+      "title": "给镜像打 tag",
+      "body": "把本地镜像重新打上 Specula registry 前缀。把 <image/>、<repo/>、<tag/> 换成你自己的值。",
+      "note": "仓库在第一次 push 时自动创建，默认 <b>private</b>。到 <lnk>仓库</lnk> 页改可见性。"
+    },
+    "step3": {
+      "title": "Push",
+      "body": "push 成功后镜像会出现在 <lnk>仓库</lnk> 页，带上 tag、digest 和 manifest 大小。"
+    },
+    "pull": {
+      "title": "Pull 参考",
+      "body": "public repo 允许匿名 pull。private repo 要先 <c>docker login</c>。每个 tag 各自的 pull 命令在对应仓库的详情页。"
+    },
+    "toast": {
+      "keyCreated": "API key 已创建",
+      "keyCreatedDesc": "现在就复制 — 不会再显示。",
+      "keyFailed": "创建 key 失败"
+    }
+  }
+}

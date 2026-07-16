@@ -1,6 +1,8 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
+import i18n from '@/i18n';
+
 /**
  * cn merges Tailwind class names, letting later classes win over earlier ones
  * even when they are the same utility (`twMerge`), while still supporting
@@ -28,27 +30,45 @@ export function formatBytes(bytes: number): string {
  *
  * Returns "—" for 0, which every timestamp in the API contract uses to mean
  * "never happened" — rendering it as 1970 would be a lie.
+ *
+ * The locale follows the UI language, not the browser's: a reader who switched
+ * the interface to Chinese expects 2026/07/16, and leaving this on the browser
+ * default would strand a Chinese UI showing 07/16/2026.
  */
 export function formatUnix(unix: number): string {
   if (!unix) return '—';
-  return new Date(unix * 1000).toLocaleString(undefined, {
+  return new Date(unix * 1000).toLocaleString(i18n.resolvedLanguage ?? undefined, {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
+    // 24h in both locales: this is an ops tool, and an AM/PM flip in a log
+    // column is a reading hazard, not a nicety.
+    hour12: false,
   });
 }
 
-/** formatRelative renders a Unix-seconds timestamp as a compact age ("3m ago"). */
+/**
+ * formatRelative renders a Unix-seconds timestamp as a compact age.
+ *
+ * en "3m ago" · zh "3 分钟前". Deliberately NOT Intl.RelativeTimeFormat: its
+ * narrow style still yields "3 min. ago", which is looser than the dense
+ * instrument-panel column this sits in. The unit strings are locale keys so
+ * both languages stay equally terse.
+ *
+ * Reads the i18n singleton rather than taking `t`, so call sites stay plain.
+ * Callers re-render on `languageChanged` via their own useTranslation()
+ * subscription, which re-invokes this with the new language.
+ */
 export function formatRelative(unix: number): string {
   if (!unix) return '—';
   const seconds = Math.floor(Date.now() / 1000) - unix;
-  if (seconds < 0) return 'just now';
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
+  if (seconds < 0) return i18n.t('time.justNow');
+  if (seconds < 60) return i18n.t('time.secondsAgo', { n: seconds });
+  if (seconds < 3600) return i18n.t('time.minutesAgo', { n: Math.floor(seconds / 60) });
+  if (seconds < 86400) return i18n.t('time.hoursAgo', { n: Math.floor(seconds / 3600) });
+  return i18n.t('time.daysAgo', { n: Math.floor(seconds / 86400) });
 }
 
 /** formatPercent renders a 0..1 share as a percentage ("0.75" → "75%"). */

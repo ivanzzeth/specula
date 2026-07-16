@@ -15,8 +15,11 @@ import {
   type ReactNode,
 } from 'react';
 import { AlertCircle } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 import { ApiError, getMe, login, logout as apiLogout, register } from '../api/client';
 import type { UserDTO } from '../api/types';
+import { translateServerError } from '@/i18n/server-errors';
+import { LanguageSwitcher } from '@/components/language-switcher';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -75,6 +78,7 @@ export function useAuth(): AuthCtx {
 /** LoginScreen is shown when the user is not authenticated. */
 function LoginScreen() {
   const { refresh } = useAuth();
+  const { t } = useTranslation();
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -93,7 +97,15 @@ function LoginScreen() {
       }
       refresh();
     } catch (ex) {
-      setErr(ex instanceof ApiError ? ex.detail || ex.message : 'Authentication failed — please retry');
+      // Server errors arrive in English. translateServerError localises the
+      // explicit auth allow-list (bad password, email taken…) — the errors a
+      // user can actually act on — and passes anything else through verbatim
+      // rather than guessing. See i18n/server-errors.ts.
+      setErr(
+        ex instanceof ApiError
+          ? translateServerError(ex.detail) || translateServerError(ex.message)
+          : t('auth.failed')
+      );
     } finally {
       setBusy(false);
     }
@@ -101,6 +113,12 @@ function LoginScreen() {
 
   return (
     <div className="grid min-h-screen place-items-center bg-slate-950 px-4">
+      {/* The login screen has no identity rail, so the switcher lives in the
+          corner. Someone who cannot read the form must still be able to change
+          the language BEFORE they are asked to authenticate. */}
+      <div className="absolute right-3 top-3">
+        <LanguageSwitcher />
+      </div>
       <div className="w-full max-w-xs">
         {/* Brand mark — the amber square that appears once in the chrome */}
         <div className="mb-6 flex flex-col items-center gap-2">
@@ -113,9 +131,7 @@ function LoginScreen() {
           <div className="text-center">
             <h1 className="text-section font-semibold tracking-tight text-slate-100">Specula</h1>
             <p className="mt-0.5 text-data text-slate-400">
-              {mode === 'login'
-                ? 'Sign in to continue'
-                : 'The first registered user becomes system admin'}
+              {mode === 'login' ? t('auth.signInSubtitle') : t('auth.registerSubtitle')}
             </p>
           </div>
         </div>
@@ -124,13 +140,13 @@ function LoginScreen() {
         <div className="rounded border border-slate-800 bg-slate-900">
           <form className="space-y-3 p-4" onSubmit={(e) => void submit(e)}>
             <div className="space-y-1.5">
-              <Label htmlFor="auth-email">Email</Label>
+              <Label htmlFor="auth-email">{t('auth.email')}</Label>
               <Input
                 id="auth-email"
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                placeholder={t('auth.emailPlaceholder')}
                 autoComplete="email"
                 required
                 autoFocus
@@ -138,7 +154,7 @@ function LoginScreen() {
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="auth-password">Password</Label>
+              <Label htmlFor="auth-password">{t('auth.password')}</Label>
               <Input
                 id="auth-password"
                 type="password"
@@ -150,7 +166,7 @@ function LoginScreen() {
                 required
               />
               {mode === 'register' && (
-                <p className="text-micro text-slate-500">At least 8 characters</p>
+                <p className="text-micro text-slate-500">{t('auth.passwordHint')}</p>
               )}
             </div>
 
@@ -169,10 +185,10 @@ function LoginScreen() {
               disabled={busy}
             >
               {busy
-                ? 'Please wait…'
+                ? t('common.pleaseWait')
                 : mode === 'login'
-                  ? 'Sign in'
-                  : 'Create account'}
+                  ? t('auth.signIn')
+                  : t('auth.createAccount')}
             </Button>
           </form>
 
@@ -186,9 +202,7 @@ function LoginScreen() {
                 setErr('');
               }}
             >
-              {mode === 'login'
-                ? 'No account yet? Register'
-                : 'Already have an account? Sign in'}
+              {mode === 'login' ? t('auth.toRegister') : t('auth.toLogin')}
             </button>
           </div>
         </div>
@@ -201,13 +215,14 @@ function LoginScreen() {
 
 export function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
+  const { t } = useTranslation();
   if (loading) {
     return (
       <div className="grid min-h-screen place-items-center bg-slate-950">
         {/* Inline spinner — no deprecated import needed */}
         <span
           role="status"
-          aria-label="Loading"
+          aria-label={t('common.loading')}
           className="inline-block size-5 animate-spin rounded-full border-2 border-slate-800 border-t-brand"
         />
       </div>
@@ -219,11 +234,12 @@ export function RequireAuth({ children }: { children: ReactNode }) {
 
 export function RequireAdmin({ children }: { children: ReactNode }) {
   const { isAdmin, loading } = useAuth();
+  const { t } = useTranslation();
   if (loading) return null;
   if (!isAdmin) {
     return (
       <div className="rounded border border-slate-800 bg-slate-900 p-8 text-center text-data text-slate-400">
-        Admin access required. Ask an existing admin to elevate your account.
+        {t('auth.adminRequired')}
       </div>
     );
   }

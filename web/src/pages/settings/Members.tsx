@@ -15,8 +15,11 @@
  *   removeMember(orgId, email)   → 204
  */
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { AlertCircle, Send, Trash2, UserPlus } from 'lucide-react';
 
+import { ApiError } from '@/api/client';
+import { translateServerError } from '@/i18n/server-errors';
 import { useAuth } from '@/components/auth';
 import { InviteMemberDialog } from '@/components/invite-member-dialog';
 import { useOrg } from '@/components/org-context';
@@ -56,8 +59,19 @@ import { cn, formatRelative } from '@/lib/utils';
 
 // ── Role helpers ──────────────────────────────────────────────────────────────
 
+/**
+ * Role literals stay English in every locale — they are the API's `role` field
+ * values, exactly like the tier/health badges, and appear verbatim in the API
+ * and in docs. Their meaning is carried by the translated hints around them.
+ */
 const ROLES = ['viewer', 'editor', 'admin', 'owner'] as const;
 type Role = (typeof ROLES)[number];
+
+/** errMessage routes API errors through the shared server-error allow-list. */
+function errMessage(e: unknown): string {
+  if (e instanceof ApiError) return translateServerError(e.detail) || e.message;
+  return e instanceof Error ? e.message : String(e);
+}
 
 /** Convert an RFC3339 string to a human relative age ("3d ago"). */
 function isoRelative(iso: string | undefined): string {
@@ -90,6 +104,7 @@ function RoleLabel({ role }: { role: string }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function Members() {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const { activeOrg, canAdminOrg, loading: orgLoading } = useOrg();
 
@@ -127,7 +142,7 @@ export function Members() {
     setErr('');
     listMembers(activeOrg.id)
       .then((r) => setMembers(r.members ?? []))
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setErr(errMessage(e)))
       .finally(() => setLoading(false));
   }, [activeOrg]);
 
@@ -154,14 +169,14 @@ export function Members() {
       setMembers((prev) => prev.map((x) => (x.email === updated.email ? updated : x)));
       toast({
         variant: 'success',
-        title: 'Role updated',
+        title: t('members.roleUpdated'),
         description: `${m.email} → ${newRole}`,
       });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Role change failed',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('members.roleFailed'),
+        description: errMessage(e),
         duration: Infinity,
       });
     } finally {
@@ -177,10 +192,10 @@ export function Members() {
     try {
       const member = await addMember(activeOrg.id, { email: addEmail, role: addRole });
       setMembers((prev) => [...prev, member]);
-      toast({ variant: 'success', title: 'Member added', description: addEmail });
+      toast({ variant: 'success', title: t('members.added'), description: addEmail });
       closeAddDialog();
     } catch (e: unknown) {
-      setAddErr(e instanceof Error ? e.message : String(e));
+      setAddErr(errMessage(e));
     } finally {
       setAddBusy(false);
     }
@@ -194,15 +209,15 @@ export function Members() {
       setMembers((prev) => prev.filter((m) => m.email !== removeTarget.email));
       toast({
         variant: 'success',
-        title: 'Member removed',
+        title: t('members.removed'),
         description: removeTarget.email,
       });
       setRemoveTarget(null);
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Remove failed',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('members.removeFailed'),
+        description: errMessage(e),
         duration: Infinity,
       });
     } finally {
@@ -224,9 +239,7 @@ export function Members() {
       <div className="space-y-3">
         <PageHeading />
         <Card>
-          <CardContent className="p-3 text-data text-slate-400">
-            No active organization. Select or create one from the switcher above.
-          </CardContent>
+          <CardContent className="p-3 text-data text-slate-400">{t('members.noOrg')}</CardContent>
         </Card>
       </div>
     );
@@ -245,11 +258,11 @@ export function Members() {
                 Add member grants access outright and stays secondary. */}
             <Button variant="ghost" size="sm" onClick={() => setAddOpen(true)}>
               <UserPlus />
-              Add member
+              {t('members.add')}
             </Button>
             <Button variant="default" size="sm" onClick={() => setInviteOpen(true)}>
               <Send />
-              Invite
+              {t('members.invite')}
             </Button>
           </div>
         )}
@@ -258,10 +271,10 @@ export function Members() {
       {/* ── Members table ────────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle>Members</CardTitle>
+          <CardTitle>{t('members.cardTitle')}</CardTitle>
           {!loading && (
             <span className="tnum text-data text-slate-400">
-              {members.length} member{members.length !== 1 ? 's' : ''}
+              {t('members.count', { count: members.length })}
             </span>
           )}
         </CardHeader>
@@ -279,15 +292,15 @@ export function Members() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Email</TableHead>
-                  <TableHead className="w-36">Role</TableHead>
-                  <TableHead className="w-28">Joined</TableHead>
+                  <TableHead>{t('members.colEmail')}</TableHead>
+                  <TableHead className="w-36">{t('members.colRole')}</TableHead>
+                  <TableHead className="w-28">{t('members.colJoined')}</TableHead>
                   {canAdminOrg && <TableHead className="w-24" />}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {members.length === 0 ? (
-                  <EmptyRow colSpan={canAdminOrg ? 4 : 3}>No members yet.</EmptyRow>
+                  <EmptyRow colSpan={canAdminOrg ? 4 : 3}>{t('members.empty')}</EmptyRow>
                 ) : (
                   members.map((m) => {
                     const lastOwner = isLastOwner(m);
@@ -299,7 +312,9 @@ export function Members() {
                         <TableCell>
                           <span className="text-slate-100">{m.email}</span>
                           {self && (
-                            <span className="ml-2 text-micro text-slate-500">(you)</span>
+                            <span className="ml-2 text-micro text-slate-500">
+                              {t('members.you')}
+                            </span>
                           )}
                         </TableCell>
 
@@ -315,7 +330,7 @@ export function Members() {
                             >
                               <SelectTrigger
                                 className="h-6 w-auto min-w-[6.5rem] border-slate-700 bg-transparent"
-                                aria-label={`Role for ${m.email}`}
+                                aria-label={t('members.roleAria', { email: m.email })}
                               >
                                 <SelectValue />
                               </SelectTrigger>
@@ -349,13 +364,16 @@ export function Members() {
                               /* Last-owner guard: disabled + inline explanation */
                               <span
                                 className="text-micro text-slate-500"
-                                title="Last owner — cannot be removed or demoted. Transfer ownership to another member first."
+                                title={t('members.lastOwnerHint')}
                               >
-                                last owner
+                                {t('members.lastOwner')}
                               </span>
                             ) : self ? (
                               /* No self-remove */
-                              <span className="text-micro text-slate-500" title="Cannot remove yourself.">
+                              <span
+                                className="text-micro text-slate-500"
+                                title={t('members.noSelfRemove')}
+                              >
                                 —
                               </span>
                             ) : (
@@ -364,8 +382,8 @@ export function Members() {
                                 size="icon"
                                 className="size-6 text-slate-500 hover:text-destructive focus-visible:text-destructive"
                                 onClick={() => setRemoveTarget(m)}
-                                aria-label={`Remove ${m.email}`}
-                                title={`Remove ${m.email}`}
+                                aria-label={t('members.removeAria', { email: m.email })}
+                                title={t('members.removeAria', { email: m.email })}
                               >
                                 <Trash2 className="size-3" />
                               </Button>
@@ -386,21 +404,21 @@ export function Members() {
       {activeOrg && (
         <Card>
           <CardHeader>
-            <CardTitle>Organization</CardTitle>
+            <CardTitle>{t('members.org.title')}</CardTitle>
           </CardHeader>
           {/* Four equal-width readout tiles */}
           <CardContent className="grid grid-cols-2 divide-x divide-slate-800 p-0 sm:grid-cols-4">
-            <Readout label="Name" value={activeOrg.name || '—'} />
+            <Readout label={t('members.org.name')} value={activeOrg.name || '—'} />
             <Readout
-              label="Slug"
+              label={t('members.org.slug')}
               value={activeOrg.slug}
-              hint="Registry namespace for push/pull"
+              hint={t('members.org.slugHint')}
             />
-            <Readout label="Status" value={activeOrg.status || '—'} />
+            <Readout label={t('members.org.status')} value={activeOrg.status || '—'} />
             <Readout
-              label="Default visibility"
-              value="private"
-              hint="New repos default to private — change per-repo in Repositories"
+              label={t('members.org.defaultVisibility')}
+              value={t('visibility.private')}
+              hint={t('members.org.defaultVisibilityHint')}
             />
           </CardContent>
         </Card>
@@ -425,20 +443,18 @@ export function Members() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add member</DialogTitle>
-            <DialogDescription>
-              The account must already exist. They will gain access immediately.
-            </DialogDescription>
+            <DialogTitle>{t('members.addDialog.title')}</DialogTitle>
+            <DialogDescription>{t('members.addDialog.description')}</DialogDescription>
           </DialogHeader>
 
           <form id="add-member-form" onSubmit={(e) => void handleAdd(e)}>
             <div className="space-y-3 px-3 py-3">
               <div className="space-y-1.5">
-                <Label htmlFor="add-email">Email</Label>
+                <Label htmlFor="add-email">{t('members.addDialog.email')}</Label>
                 <Input
                   id="add-email"
                   type="email"
-                  placeholder="colleague@example.com"
+                  placeholder={t('members.addDialog.emailPlaceholder')}
                   value={addEmail}
                   onChange={(e) => setAddEmail(e.target.value)}
                   required
@@ -448,7 +464,7 @@ export function Members() {
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="add-role">Role</Label>
+                <Label htmlFor="add-role">{t('members.addDialog.role')}</Label>
                 <Select value={addRole} onValueChange={(v) => setAddRole(v as Role)}>
                   <SelectTrigger id="add-role">
                     <SelectValue />
@@ -461,6 +477,8 @@ export function Members() {
                     ))}
                   </SelectContent>
                 </Select>
+                {/* Four API role literals and an ordering operator — no prose,
+                    so there is nothing here to translate in any locale. */}
                 <p className="text-micro text-slate-500">
                   viewer &lt; editor &lt; admin &lt; owner
                 </p>
@@ -482,7 +500,7 @@ export function Members() {
               onClick={closeAddDialog}
               disabled={addBusy}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               variant="default"
@@ -491,7 +509,7 @@ export function Members() {
               type="submit"
               disabled={addBusy}
             >
-              {addBusy ? 'Adding…' : 'Add member'}
+              {addBusy ? t('members.addDialog.busy') : t('members.addDialog.submit')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -501,12 +519,18 @@ export function Members() {
       <Dialog open={!!removeTarget} onOpenChange={(open) => !open && setRemoveTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Remove member</DialogTitle>
+            <DialogTitle>{t('members.removeDialog.title')}</DialogTitle>
             <DialogDescription>
-              Remove{' '}
-              <span className="font-medium text-slate-100">{removeTarget?.email}</span> from{' '}
-              <span className="font-medium text-slate-100">{activeOrg?.slug}</span>? They will
-              lose all access to this organization immediately.
+              {/* Trans, not interpolation: zh puts the org before the verb, so
+                  the emphasised email/slug cannot be positional in the JSX. */}
+              <Trans
+                i18nKey="members.removeDialog.description"
+                values={{ email: removeTarget?.email ?? '', org: activeOrg?.slug ?? '' }}
+                components={[
+                  <span key="email" className="font-medium text-slate-100" />,
+                  <span key="org" className="font-medium text-slate-100" />,
+                ]}
+              />
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -516,7 +540,7 @@ export function Members() {
               onClick={() => setRemoveTarget(null)}
               disabled={removeBusy}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               variant="destructive"
@@ -524,7 +548,7 @@ export function Members() {
               onClick={() => void handleRemove()}
               disabled={removeBusy}
             >
-              {removeBusy ? 'Removing…' : 'Remove member'}
+              {removeBusy ? t('members.removeDialog.busy') : t('members.removeDialog.submit')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -536,15 +560,14 @@ export function Members() {
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function PageHeading({ orgSlug }: { orgSlug?: string }) {
+  const { t } = useTranslation();
   return (
     <div>
       <h1 className="text-display font-semibold text-slate-100">
-        Members
+        {t('members.title')}
         {orgSlug && <span className="ml-2 font-normal text-slate-500">· {orgSlug}</span>}
       </h1>
-      <p className="mt-0.5 text-data text-slate-400">
-        Manage who has access to this organization and their role.
-      </p>
+      <p className="mt-0.5 text-data text-slate-400">{t('members.subtitle')}</p>
     </div>
   );
 }

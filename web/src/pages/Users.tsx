@@ -15,8 +15,10 @@
  */
 
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { ApiError, createUser, deleteUser, listUsers, patchUser } from '@/api/client';
+import { translateServerError } from '@/i18n/server-errors';
 import type { CreateUserRequest, UserDTO } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -54,7 +56,12 @@ type Modal =
   | { kind: 'delete'; user: UserDTO }
   | null;
 
-/** The system roles the API accepts. '' is a plain user. */
+/**
+ * The system roles the API accepts. '' is a plain user.
+ *
+ * The labels are the API's own literals and stay English in every locale, the
+ * same way the tier/health badges do — they appear in logs and API responses.
+ */
 const SYSTEM_ROLES = [
   { value: 'user', label: 'user' },
   { value: 'admin', label: 'admin' },
@@ -65,11 +72,12 @@ const toRoleValue = (role: string): string => role || 'user';
 const fromRoleValue = (value: string): string => (value === 'user' ? '' : value);
 
 function errMessage(ex: unknown): string {
-  if (ex instanceof ApiError) return ex.detail || ex.message;
+  if (ex instanceof ApiError) return translateServerError(ex.detail) || ex.message;
   return ex instanceof Error ? ex.message : String(ex);
 }
 
 export function Users() {
+  const { t } = useTranslation();
   const [users, setUsers] = useState<UserDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -97,13 +105,11 @@ export function Users() {
     <div className="space-y-3">
       <div className="flex items-end justify-between gap-3">
         <div>
-          <h1 className="text-display font-semibold text-slate-100">Users</h1>
-          <p className="mt-0.5 text-data text-slate-400">
-            Every account on this install. Org-level roles live under Members.
-          </p>
+          <h1 className="text-display font-semibold text-slate-100">{t('users.title')}</h1>
+          <p className="mt-0.5 text-data text-slate-400">{t('users.subtitle')}</p>
         </div>
         <Button variant="default" size="sm" onClick={() => setModal({ kind: 'create' })}>
-          New user
+          {t('users.new')}
         </Button>
       </div>
 
@@ -122,17 +128,17 @@ export function Users() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-16 text-right">ID</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead className="w-40">Name</TableHead>
-                <TableHead className="w-24">Role</TableHead>
-                <TableHead className="w-28 text-right">Created</TableHead>
-                <TableHead className="w-28 text-right">Actions</TableHead>
+                <TableHead className="w-16 text-right">{t('users.colId')}</TableHead>
+                <TableHead>{t('users.colEmail')}</TableHead>
+                <TableHead className="w-40">{t('users.colName')}</TableHead>
+                <TableHead className="w-24">{t('users.colRole')}</TableHead>
+                <TableHead className="w-28 text-right">{t('users.colCreated')}</TableHead>
+                <TableHead className="w-28 text-right">{t('common.actions')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {users.length === 0 ? (
-                <EmptyRow colSpan={6}>No users found.</EmptyRow>
+                <EmptyRow colSpan={6}>{t('users.empty')}</EmptyRow>
               ) : (
                 users.map((u) => (
                   <TableRow key={u.id}>
@@ -144,7 +150,7 @@ export function Users() {
                           amber-free lamp terms — a solid amber badge here would
                           read as a control, not a fact. */}
                       {u.system_role === 'admin' ? (
-                        <span className="inline-flex items-center gap-1.5 text-micro font-semibold uppercase tracking-wider text-tier-consensus">
+                        <span className="label-caps inline-flex items-center gap-1.5 text-micro font-semibold text-tier-consensus">
                           <span className="lamp bg-tier-consensus" aria-hidden />
                           admin
                         </span>
@@ -161,13 +167,13 @@ export function Users() {
                           className="text-data text-slate-400 transition-colors duration-fast hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           onClick={() => setModal({ kind: 'edit', user: u })}
                         >
-                          Edit
+                          {t('common.edit')}
                         </button>
                         <button
                           className="text-data text-slate-500 transition-colors duration-fast hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                           onClick={() => setModal({ kind: 'delete', user: u })}
                         >
-                          Delete
+                          {t('common.delete')}
                         </button>
                       </div>
                     </TableCell>
@@ -219,6 +225,7 @@ function FormError({ message }: { message: string }) {
 }
 
 function CreateModal({ onClose }: { onClose: (reload: boolean) => void }) {
+  const { t } = useTranslation();
   const [form, setForm] = useState<CreateUserRequest>({
     email: '',
     name: '',
@@ -243,11 +250,11 @@ function CreateModal({ onClose }: { onClose: (reload: boolean) => void }) {
   }
 
   return (
-    <ModalShell title="Create user" onClose={onClose}>
+    <ModalShell title={t('users.create.title')} onClose={onClose}>
       <form onSubmit={(e) => void submit(e)}>
         <div className="space-y-3 p-3">
           <div className="space-y-1.5">
-            <Label htmlFor="cu-email">Email</Label>
+            <Label htmlFor="cu-email">{t('users.create.email')}</Label>
             <Input
               id="cu-email"
               type="email"
@@ -258,7 +265,7 @@ function CreateModal({ onClose }: { onClose: (reload: boolean) => void }) {
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="cu-name">Name</Label>
+            <Label htmlFor="cu-name">{t('users.create.name')}</Label>
             <Input
               id="cu-name"
               value={form.name}
@@ -266,7 +273,7 @@ function CreateModal({ onClose }: { onClose: (reload: boolean) => void }) {
             />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="cu-password">Password</Label>
+            <Label htmlFor="cu-password">{t('users.create.password')}</Label>
             <Input
               id="cu-password"
               type="password"
@@ -275,10 +282,10 @@ function CreateModal({ onClose }: { onClose: (reload: boolean) => void }) {
               value={form.password}
               onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))}
             />
-            <p className="text-micro text-slate-500">At least 8 characters</p>
+            <p className="text-micro text-slate-500">{t('users.create.passwordHint')}</p>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="cu-role">System role</Label>
+            <Label htmlFor="cu-role">{t('users.create.systemRole')}</Label>
             <Select
               value={toRoleValue(form.system_role ?? '')}
               onValueChange={(v) => setForm((f) => ({ ...f, system_role: fromRoleValue(v) }))}
@@ -299,10 +306,10 @@ function CreateModal({ onClose }: { onClose: (reload: boolean) => void }) {
         </div>
         <DialogFooter>
           <Button variant="secondary" size="sm" type="button" onClick={() => onClose(false)}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button variant="default" size="sm" type="submit" disabled={busy}>
-            {busy ? 'Creating…' : 'Create'}
+            {busy ? t('users.create.busy') : t('users.create.submit')}
           </Button>
         </DialogFooter>
       </form>
@@ -311,6 +318,7 @@ function CreateModal({ onClose }: { onClose: (reload: boolean) => void }) {
 }
 
 function EditModal({ user, onClose }: { user: UserDTO; onClose: (reload: boolean) => void }) {
+  const { t } = useTranslation();
   const [name, setName] = useState(user.name);
   const [role, setRole] = useState(user.system_role);
   const [password, setPassword] = useState('');
@@ -338,15 +346,15 @@ function EditModal({ user, onClose }: { user: UserDTO; onClose: (reload: boolean
   }
 
   return (
-    <ModalShell title="Edit user" description={user.email} onClose={onClose}>
+    <ModalShell title={t('users.edit.title')} description={user.email} onClose={onClose}>
       <form onSubmit={(e) => void submit(e)}>
         <div className="space-y-3 p-3">
           <div className="space-y-1.5">
-            <Label htmlFor="eu-name">Name</Label>
+            <Label htmlFor="eu-name">{t('users.edit.name')}</Label>
             <Input id="eu-name" autoFocus value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="eu-role">System role</Label>
+            <Label htmlFor="eu-role">{t('users.edit.systemRole')}</Label>
             <Select value={toRoleValue(role)} onValueChange={(v) => setRole(fromRoleValue(v))}>
               <SelectTrigger id="eu-role">
                 <SelectValue />
@@ -361,7 +369,7 @@ function EditModal({ user, onClose }: { user: UserDTO; onClose: (reload: boolean
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="eu-password">New password</Label>
+            <Label htmlFor="eu-password">{t('users.edit.newPassword')}</Label>
             <Input
               id="eu-password"
               type="password"
@@ -370,16 +378,16 @@ function EditModal({ user, onClose }: { user: UserDTO; onClose: (reload: boolean
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
             />
-            <p className="text-micro text-slate-500">Leave blank to keep the current password</p>
+            <p className="text-micro text-slate-500">{t('users.edit.passwordHint')}</p>
           </div>
           <FormError message={err} />
         </div>
         <DialogFooter>
           <Button variant="secondary" size="sm" type="button" onClick={() => onClose(false)}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button variant="default" size="sm" type="submit" disabled={busy}>
-            {busy ? 'Saving…' : 'Save'}
+            {busy ? t('users.edit.busy') : t('common.save')}
           </Button>
         </DialogFooter>
       </form>
@@ -388,6 +396,7 @@ function EditModal({ user, onClose }: { user: UserDTO; onClose: (reload: boolean
 }
 
 function DeleteModal({ user, onClose }: { user: UserDTO; onClose: (reload: boolean) => void }) {
+  const { t } = useTranslation();
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -405,11 +414,10 @@ function DeleteModal({ user, onClose }: { user: UserDTO; onClose: (reload: boole
 
   return (
     <ModalShell
-      title="Delete user"
+      title={t('users.remove.title')}
       description={
         <>
-          <span className="text-slate-100">{user.email}</span> will be removed. This cannot be
-          undone.
+          <span className="text-slate-100">{user.email}</span> {t('users.remove.confirmSuffix')}
         </>
       }
       onClose={onClose}
@@ -421,10 +429,10 @@ function DeleteModal({ user, onClose }: { user: UserDTO; onClose: (reload: boole
       )}
       <DialogFooter>
         <Button variant="secondary" size="sm" onClick={() => onClose(false)}>
-          Cancel
+          {t('common.cancel')}
         </Button>
         <Button variant="destructive" size="sm" onClick={() => void confirm()} disabled={busy}>
-          {busy ? 'Deleting…' : 'Delete user'}
+          {busy ? t('users.remove.busy') : t('users.remove.submit')}
         </Button>
       </DialogFooter>
     </ModalShell>

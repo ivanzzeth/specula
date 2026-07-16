@@ -1,0 +1,141 @@
+{
+  "cache": {
+    "_comment": "协议名（oci/pypi/npm/go/apt/helm/git/tarball）与 tier 取值（signed/consensus/tofu/checksum）是 API 字面量，保持英文。digest / manifest / tag / registry / push / pull / blob / token / pin 等中文开发者本就用英文说的术语一律不译。",
+
+    "title": "缓存浏览",
+    "subtitle": "按协议查看代理已缓存的内容 —— 每个制品的名称、版本与已达成的信任等级。",
+    "tabAria": "{{protocol}} 缓存",
+    "panelTitle": "{{protocol}} 缓存",
+
+    "range": "{{from}}–{{to}}，共 {{total}}",
+    "noEntries": "无条目",
+    "prevAria": "上一页",
+    "nextAria": "下一页",
+
+    "col": {
+      "tier": "等级",
+      "size": "大小",
+      "upstream": "上游",
+      "firstCached": "首次缓存"
+    },
+
+    "row": {
+      "pinnedTitle": "已 pin —— 受 GC 保护，不会被回收",
+      "pinnedAria": "受 GC 保护"
+    },
+
+    "filter": {
+      "namePlaceholder": "名称包含…",
+      "nameAria": "按名称筛选",
+      "anyTier": "任意 tier",
+      "tierAria": "按 tier 筛选",
+      "upstreamPlaceholder": "上游…",
+      "upstreamAria": "按上游筛选",
+      "sort": "排序",
+      "sortAria": "排序依据",
+      "orderAria": "切换排序方向",
+      "orderDescTitle": "降序 —— 点击切换升序",
+      "orderAscTitle": "升序 —— 点击切换降序",
+      "clear": "清除",
+      "clearAria": "清除所有筛选"
+    },
+
+    "sort": {
+      "created_at": "首次缓存",
+      "size": "大小",
+      "name": "名称",
+      "verified_at": "校验时间"
+    },
+
+    "protocol": {
+      "oci": {
+        "nameCol": "镜像",
+        "versionCol": "Tag",
+        "tierContext": "cosign 密钥校验 → signed · 首次拉取锁定 digest → tofu · 未配置 cosign → checksum",
+        "emptyMsg": "尚未缓存 OCI 镜像。通过代理 pull 一个镜像即可填充此视图。"
+      },
+      "pypi": {
+        "nameCol": "包",
+        "versionCol": "版本",
+        "tierContext": "跨镜像源 sha256 法定多数（PEP 503 simple-index）→ consensus · 首次拉取锁定 digest → tofu",
+        "emptyMsg": "尚未缓存 PyPI 包。将代理设为 pip index，再执行 pip install。"
+      },
+      "npm": {
+        "nameCol": "包",
+        "versionCol": "版本",
+        "tierContext": "registry tarball sha integrity 法定多数 → consensus · 首次拉取锁定 digest → tofu",
+        "emptyMsg": "尚未缓存 npm 包。将 npm/yarn/pnpm 指向代理 registry，再安装任意包。"
+      },
+      "go": {
+        "nameCol": "模块",
+        "versionCol": "文件",
+        "tierContext": "sumdb Ed25519 Merkle 证明（tree head + inclusion proof）→ signed · 无 sumdb → tofu",
+        "emptyMsg": "尚未缓存 Go 模块。将 GOPROXY 指向代理地址，再执行 go get。"
+      },
+      "apt": {
+        "nameCol": "套件 / 组件",
+        "versionCol": "文件",
+        "tierContext": "发行版 keyring 对 InRelease 做 GPG 校验 → signed · pool 中的 .deb → checksum（无逐文件 GPG）",
+        "emptyMsg": "尚未缓存 apt 包。配置 /etc/apt/sources.list 使用代理。"
+      },
+      "helm": {
+        "nameCol": "Chart",
+        "versionCol": "版本",
+        "tierContext": ".prov GPG provenance 文件经 keyring 校验 → signed · 无 .prov → tofu",
+        "emptyMsg": "尚未缓存 Helm chart。将代理添加为 Helm repo，再执行 helm pull。"
+      },
+      "git": {
+        "nameCol": "仓库",
+        "versionCol": "Ref / 对象",
+        "tierContext": "带签名的 tag/commit（allowed-signers）→ signed · 首次 clone 锁定对象 hash → tofu · git SHA 可发现 force-push 改写历史",
+        "emptyMsg": "尚未镜像 git 仓库。通过代理 clone 即可建立本地 mirror。"
+      },
+      "tarball": {
+        "nameCol": "URL",
+        "versionCol": "Digest",
+        "tierContext": "跨镜像源 digest 法定多数 → consensus · 首次拉取锁定 digest → tofu",
+        "emptyMsg": "尚未缓存 tarball。"
+      }
+    }
+  },
+
+  "entryDetail": {
+    "versionLine": "{{label}}: {{version}}",
+    "unknownUpstream": "未知上游",
+    "protectedFromGC": "受 GC 保护",
+    "gcMayEvict": "GC 可回收",
+
+    "digest": "Digest",
+    "copyDigest": "复制 digest",
+    "copyDigestAria": "复制 digest 到剪贴板",
+    "copiedAria": "已复制到剪贴板",
+
+    "firstCached": "首次缓存",
+    "verifiedAt": "校验时间",
+    "fetchViaProxy": "通过代理获取",
+
+    "pin": "Pin",
+    "unpin": "取消 Pin",
+    "evict": "驱逐",
+    "evictConfirmPrompt": "驱逐该条目？",
+    "evicting": "驱逐中…",
+    "evictConfirm": "确认驱逐",
+
+    "toast": {
+      "pinned": "已 pin 条目",
+      "unpinned": "已取消 pin",
+      "pinDesc": "{{name}} · {{version}} —— {{state}}",
+      "pinFailed": "无法更新 pin",
+      "evicted": "已驱逐条目",
+      "evictedDesc": "{{name}} · {{version}} 已从 cache 移除",
+      "evictFailed": "无法驱逐条目"
+    }
+  },
+
+  "charts": {
+    "bytesByProtocol": "各协议字节数",
+    "cacheGrowth": "缓存增长 —— 全部协议",
+    "tooltipCached": "已缓存",
+    "tooltipBytes": "字节"
+  }
+}

@@ -5,7 +5,9 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 const labelVariants = cva(
-  'text-label font-semibold uppercase tracking-wider text-slate-400 peer-disabled:opacity-40'
+  // `label-caps` carries the caps/tracking and is language-aware (index.css):
+  // in Chinese the device turns itself off rather than no-op'ing on han glyphs.
+  'label-caps text-label font-semibold text-slate-400 peer-disabled:opacity-40'
 );
 
 /** Label — the small wide-tracked field label, wired to Radix for a11y. */

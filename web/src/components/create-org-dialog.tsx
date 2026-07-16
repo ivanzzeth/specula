@@ -16,10 +16,12 @@
  * fragment it will become.
  */
 import { type FormEvent, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Building2 } from 'lucide-react';
 
 import { createOrg } from '@/api/client';
 import { ApiError } from '@/api/client';
+import { translateServerError } from '@/i18n/server-errors';
 import type { OrgDTO } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import {
@@ -53,6 +55,7 @@ interface CreateOrgDialogProps {
 }
 
 export function CreateOrgDialog({ open, onOpenChange, onCreated }: CreateOrgDialogProps) {
+  const { t } = useTranslation();
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -79,8 +82,8 @@ export function CreateOrgDialog({ open, onOpenChange, onCreated }: CreateOrgDial
     } catch (err) {
       setError(
         err instanceof ApiError
-          ? err.detail || err.message
-          : 'Could not create the organization. Please retry.'
+          ? translateServerError(err.detail) || err.message
+          : t('orgDialog.failed')
       );
       setBusy(false);
     }
@@ -99,21 +102,18 @@ export function CreateOrgDialog({ open, onOpenChange, onCreated }: CreateOrgDial
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Building2 aria-hidden className="size-4 text-brand" />
-              Create organization
+              {t('orgDialog.title')}
             </DialogTitle>
-            <DialogDescription>
-              You become its owner. Repositories you push live under its namespace, and you
-              can invite others once it exists.
-            </DialogDescription>
+            <DialogDescription>{t('orgDialog.description')}</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-2 py-4">
-            <Label htmlFor="new-org-name">Organization name</Label>
+            <Label htmlFor="new-org-name">{t('orgDialog.name')}</Label>
             <Input
               id="new-org-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Acme Platform"
+              placeholder={t('orgDialog.namePlaceholder')}
               autoFocus
               autoComplete="off"
               required
@@ -122,13 +122,13 @@ export function CreateOrgDialog({ open, onOpenChange, onCreated }: CreateOrgDial
             <p id="new-org-slug-hint" className="text-micro text-slate-500">
               {slug ? (
                 <>
-                  Namespace:{' '}
+                  {t('orgDialog.namespace')}{' '}
                   <span className="text-slate-300">
                     {slug}/<span className="text-slate-600">&lt;repo&gt;</span>
                   </span>
                 </>
               ) : (
-                'The namespace is derived from the name.'
+                t('orgDialog.namespaceHint')
               )}
             </p>
           </div>
@@ -146,10 +146,10 @@ export function CreateOrgDialog({ open, onOpenChange, onCreated }: CreateOrgDial
               onClick={() => onOpenChange(false)}
               disabled={busy}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button type="submit" disabled={busy || !slug}>
-              {busy ? 'Creating…' : 'Create organization'}
+              {busy ? t('orgDialog.busy') : t('orgDialog.submit')}
             </Button>
           </DialogFooter>
         </form>

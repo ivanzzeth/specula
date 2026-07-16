@@ -1,0 +1,139 @@
+{
+  "cache": {
+    "title": "Cache Browser",
+    "subtitle": "Per-protocol view of what the proxy has cached — name, version, and the achieved trust tier for each artifact.",
+    "tabAria": "{{protocol}} cache",
+    "panelTitle": "{{protocol}} cache",
+
+    "range": "{{from}}–{{to}} of {{total}}",
+    "noEntries": "no entries",
+    "prevAria": "Previous page",
+    "nextAria": "Next page",
+
+    "col": {
+      "tier": "Tier",
+      "size": "Size",
+      "upstream": "Upstream",
+      "firstCached": "First cached"
+    },
+
+    "row": {
+      "pinnedTitle": "Pinned — protected from garbage collection",
+      "pinnedAria": "Protected from GC"
+    },
+
+    "filter": {
+      "namePlaceholder": "name contains…",
+      "nameAria": "Filter by name",
+      "anyTier": "any tier",
+      "tierAria": "Filter by tier",
+      "upstreamPlaceholder": "upstream…",
+      "upstreamAria": "Filter by upstream",
+      "sort": "Sort",
+      "sortAria": "Sort by",
+      "orderAria": "Toggle sort order",
+      "orderDescTitle": "Descending — click for ascending",
+      "orderAscTitle": "Ascending — click for descending",
+      "clear": "Clear",
+      "clearAria": "Clear all filters"
+    },
+
+    "sort": {
+      "created_at": "First cached",
+      "size": "Size",
+      "name": "Name",
+      "verified_at": "Verified"
+    },
+
+    "protocol": {
+      "oci": {
+        "nameCol": "Image",
+        "versionCol": "Tag",
+        "tierContext": "cosign keyed verification → signed · first-use digest lock → tofu · no cosign config → checksum",
+        "emptyMsg": "No OCI images cached yet. Pull an image through the proxy to populate this view."
+      },
+      "pypi": {
+        "nameCol": "Package",
+        "versionCol": "Version",
+        "tierContext": "cross-mirror sha256 quorum (PEP 503 simple-index) → consensus · first-use digest lock → tofu",
+        "emptyMsg": "No PyPI packages cached yet. Set the proxy as your pip index and run pip install."
+      },
+      "npm": {
+        "nameCol": "Package",
+        "versionCol": "Version",
+        "tierContext": "registry tarball sha integrity quorum → consensus · first-use digest lock → tofu",
+        "emptyMsg": "No npm packages cached yet. Point npm/yarn/pnpm at the proxy registry and install a package."
+      },
+      "go": {
+        "nameCol": "Module",
+        "versionCol": "File",
+        "tierContext": "sumdb Ed25519 Merkle proof (tree head + inclusion proof) → signed · absent sumdb → tofu",
+        "emptyMsg": "No Go modules cached yet. Set GOPROXY to the proxy address and run go get."
+      },
+      "apt": {
+        "nameCol": "Suite / Component",
+        "versionCol": "File",
+        "tierContext": "distro keyring GPG over InRelease → signed · pool .deb files → checksum (no per-file GPG)",
+        "emptyMsg": "No apt packages cached yet. Configure /etc/apt/sources.list to use the proxy."
+      },
+      "helm": {
+        "nameCol": "Chart",
+        "versionCol": "Version",
+        "tierContext": ".prov GPG provenance file verified against keyring → signed · no .prov → tofu",
+        "emptyMsg": "No Helm charts cached yet. Add the proxy as a Helm repo and run helm pull."
+      },
+      "git": {
+        "nameCol": "Repository",
+        "versionCol": "Ref / Object",
+        "tierContext": "signed tag/commit (allowed-signers) → signed · first-clone object hash lock → tofu · git SHA detects force-push history rewrites",
+        "emptyMsg": "No git repositories mirrored yet. Clone through the proxy to build the local mirror."
+      },
+      "tarball": {
+        "nameCol": "URL",
+        "versionCol": "Digest",
+        "tierContext": "cross-mirror digest quorum → consensus · first-use digest lock → tofu",
+        "emptyMsg": "No tarballs cached yet."
+      }
+    }
+  },
+
+  "entryDetail": {
+    "versionLine": "{{label}}: {{version}}",
+    "unknownUpstream": "unknown upstream",
+    "protectedFromGC": "protected from GC",
+    "gcMayEvict": "GC may now evict",
+
+    "digest": "Digest",
+    "copyDigest": "Copy digest",
+    "copyDigestAria": "Copy digest to clipboard",
+    "copiedAria": "Copied to clipboard",
+
+    "firstCached": "First cached",
+    "verifiedAt": "Verified at",
+    "fetchViaProxy": "Fetch via proxy",
+
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "evict": "Evict",
+    "evictConfirmPrompt": "Evict this entry?",
+    "evicting": "Evicting…",
+    "evictConfirm": "Confirm evict",
+
+    "toast": {
+      "pinned": "Entry pinned",
+      "unpinned": "Entry unpinned",
+      "pinDesc": "{{name}} · {{version}} — {{state}}",
+      "pinFailed": "Could not update pin",
+      "evicted": "Entry evicted",
+      "evictedDesc": "{{name}} · {{version}} removed from cache",
+      "evictFailed": "Could not evict entry"
+    }
+  },
+
+  "charts": {
+    "bytesByProtocol": "bytes by protocol",
+    "cacheGrowth": "cache growth — all protocols",
+    "tooltipCached": "cached",
+    "tooltipBytes": "bytes"
+  }
+}

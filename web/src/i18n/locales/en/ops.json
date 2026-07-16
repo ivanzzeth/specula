@@ -1,0 +1,104 @@
+{
+  "upstreams": {
+    "title": "Upstreams",
+    "subtitle": "Per-protocol fallback chain — order, health, and who is actually serving misses. Drag the <grip>handle</grip> to reorder.",
+    "noProtocols": "No protocols configured.",
+    "chainTitle": "{{protocol}} fallback chain",
+    "configOnly": "config only · not instrumented",
+    "served": "served",
+    "lastBy": "last by",
+    "savingOrder": "saving order…",
+    "blockedCount_one": "{{count}} blocked mirror",
+    "blockedCount_other": "{{count}} blocked mirrors",
+    "col": {
+      "handle": "Drag handle / order",
+      "mirror": "Mirror",
+      "url": "URL",
+      "health": "Health",
+      "latency": "Latency",
+      "hitShare": "Hit share",
+      "lastServed": "Last served"
+    },
+    "noMirrors": "No mirrors configured for {{protocol}}.",
+    "dragAria": "Drag to reorder",
+    "dragTitle": "Drag to reorder this mirror in the fallback chain",
+    "origin": "origin",
+    "originTitle": "Configured as the authoritative origin.",
+    "override": "override",
+    "overrideTitle": "Reordered at runtime. YAML baseline priority: {{priority}}.",
+    "unblock": "Unblock",
+    "disable": "Disable",
+    "enable": "Enable",
+    "toast": {
+      "mirrorEnabled": "Mirror enabled",
+      "mirrorDisabled": "Mirror disabled",
+      "updateFailed": "Could not update mirror",
+      "unblocked": "Mirror unblocked",
+      "unblockFailed": "Could not unblock mirror",
+      "orderSaved": "Mirror order saved",
+      "reorderFailed": "Reorder failed"
+    }
+  },
+
+  "events": {
+    "title": "Events",
+    "subtitle": "Artifact verification results — tier failures, digest changes, and force-push alerts.",
+    "logTitle": "Verification log",
+    "logSubtitle": "Last {{limit}} events · auto-refreshes every {{seconds}}s",
+    "none": "No verification events yet.",
+    "refreshFailed": "Events refresh failed",
+    "col": {
+      "time": "Time",
+      "protocol": "Protocol",
+      "artifact": "Artifact",
+      "digest": "Digest",
+      "tier": "Tier",
+      "result": "Result",
+      "detail": "Detail"
+    },
+    "relativeTitle": "relative: {{when}}",
+    "result": {
+      "hint": {
+        "pass": "Verification passed.",
+        "warn": "Verification passed with a warning — may warrant investigation.",
+        "fail": "Verification FAILED — this artifact may have been tampered with or the upstream metadata changed.",
+        "unknown": "Unknown result."
+      }
+    },
+    "summary": {
+      "fail": "{{n}} fail",
+      "warn": "{{n}} warn",
+      "failTitle_one": "{{count}} failed verification event",
+      "failTitle_other": "{{count}} failed verification events",
+      "warnTitle_one": "{{count}} verification warning",
+      "warnTitle_other": "{{count}} verification warnings",
+      "refreshed": "refreshed {{when}}"
+    }
+  },
+
+  "config": {
+    "title": "Config",
+    "subtitle": "What this server is running. Settings are changeable at runtime; the startup configuration below is read-only. Secrets are redacted by the server.",
+    "startupSection": "Startup configuration (read-only)",
+    "notAvailable": "Configuration not available.",
+    "server": "Server",
+    "field": {
+      "dataPlane": "Data Plane",
+      "controlPlane": "Control Plane",
+      "blobDriver": "Blob Driver",
+      "metaDriver": "Meta Driver"
+    },
+    "protocols": "Protocols ({{n}})",
+    "mutableTtl": "mutable TTL",
+    "tiers": "tiers",
+    "col": {
+      "num": "#",
+      "name": "Name",
+      "baseUrl": "Base URL",
+      "origin": "Origin"
+    },
+    "origin": "origin",
+    "noUpstreams": "No upstreams configured for {{protocol}}.",
+    "noProtocols": "No protocols configured."
+  }
+}

@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { GripVertical } from 'lucide-react';
 
 import {
+  ApiError,
   getUpstreams,
   patchUpstream,
   reorderUpstreams,
   unblockUpstream,
 } from '@/api/client';
+import { translateServerError } from '@/i18n/server-errors';
 import type { ProtocolUpstreams, UpstreamHealth } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -39,17 +42,29 @@ import { cn, formatPercent, formatRelative } from '@/lib/utils';
  *
  * Owned by: the Ops UI agent.
  */
+
+/**
+ * errText renders a thrown value as display copy. An ApiError's `detail` is the
+ * server's own words, so it goes through the server-error allow-list (which is a
+ * pass-through for anything unmapped); anything else is already client-side copy.
+ */
+function errText(e: unknown): string {
+  if (e instanceof ApiError) return translateServerError(e.detail);
+  return e instanceof Error ? e.message : String(e);
+}
+
 export function Upstreams() {
   const [protocols, setProtocols] = useState<ProtocolUpstreams[]>([]);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const { toast } = useToast();
+  const { t } = useTranslation();
 
   const load = useCallback(() => {
     getUpstreams()
       .then((r) => setProtocols(r.protocols ?? []))
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setErr(errText(e)))
       .finally(() => setLoading(false));
   }, []);
 
@@ -68,14 +83,16 @@ export function Upstreams() {
       replace(await patchUpstream(protocol, m.name, { enabled: !m.enabled }));
       toast({
         variant: 'success',
-        title: m.enabled ? 'Mirror disabled' : 'Mirror enabled',
+        title: m.enabled
+          ? t('upstreams.toast.mirrorDisabled')
+          : t('upstreams.toast.mirrorEnabled'),
         description: `${protocol} · ${m.name}`,
       });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Could not update mirror',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('upstreams.toast.updateFailed'),
+        description: errText(e),
         duration: Infinity,
       });
     } finally {
@@ -90,14 +107,14 @@ export function Upstreams() {
       replace(await unblockUpstream(protocol, m.name));
       toast({
         variant: 'success',
-        title: 'Mirror unblocked',
+        title: t('upstreams.toast.unblocked'),
         description: `${protocol} · ${m.name}`,
       });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Could not unblock mirror',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('upstreams.toast.unblockFailed'),
+        description: errText(e),
         duration: Infinity,
       });
     } finally {
@@ -116,14 +133,14 @@ export function Upstreams() {
       replace(await reorderUpstreams(protocol, { order: newOrder }));
       toast({
         variant: 'success',
-        title: 'Mirror order saved',
+        title: t('upstreams.toast.orderSaved'),
         description: `${protocol} · ${newOrder.join(' → ')}`,
       });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Reorder failed',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('upstreams.toast.reorderFailed'),
+        description: errText(e),
         duration: Infinity,
       });
       throw e; // ChainPanel catches this to revert preview
@@ -162,7 +179,7 @@ export function Upstreams() {
         <PageHeading />
         <Card>
           <CardContent className="text-data text-slate-400">
-            No protocols configured.
+            {t('upstreams.noProtocols')}
           </CardContent>
         </Card>
       </div>
@@ -182,7 +199,10 @@ export function Upstreams() {
                 {/* A blocked-mirror count is the one thing worth surfacing on the
                     tab itself — an operator must see trouble without opening it. */}
                 {down > 0 && (
-                  <span className="tnum rounded-[2px] bg-health-blocked/15 px-1 text-micro font-semibold text-health-blocked">
+                  <span
+                    className="tnum rounded-[2px] bg-health-blocked/15 px-1 text-micro font-semibold text-health-blocked"
+                    title={t('upstreams.blockedCount', { count: down })}
+                  >
                     {down}
                   </span>
                 )}
@@ -207,18 +227,30 @@ export function Upstreams() {
   );
 }
 
+/**
+ * GripWord is the <grip> slot of `upstreams.subtitle`. It renders the icon and
+ * then whatever word the active locale puts inside the tag ("handle" / "手柄"),
+ * so the icon survives Trans's cloneElement — which replaces an element's own
+ * children with the translated ones.
+ */
+function GripWord({ children }: { children?: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-0.5 text-slate-300">
+      <GripVertical className="size-3 inline-block" aria-hidden />
+      {children}
+    </span>
+  );
+}
+
 function PageHeading() {
+  const { t } = useTranslation();
   return (
     <div>
-      <h1 className="text-display font-semibold text-slate-100">Upstreams</h1>
+      <h1 className="text-display font-semibold text-slate-100">
+        {t('upstreams.title')}
+      </h1>
       <p className="mt-0.5 text-data text-slate-400">
-        Per-protocol fallback chain — order, health, and who is actually serving
-        misses. Drag the{' '}
-        <span className="inline-flex items-center gap-0.5 text-slate-300">
-          <GripVertical className="size-3 inline-block" aria-hidden />
-          handle
-        </span>{' '}
-        to reorder.
+        <Trans i18nKey="upstreams.subtitle" components={{ grip: <GripWord /> }} />
       </p>
     </div>
   );
@@ -248,6 +280,7 @@ function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelP
   const [previewMirrors, setPreviewMirrors] = useState<UpstreamHealth[] | null>(null);
   const [reordering, setReordering] = useState(false);
   const dragCounter = useRef(0); // tracks nested dragenter/dragleave on the tbody
+  const { t } = useTranslation();
 
   // When chain.mirrors changes (server confirm or parent update), drop any preview.
   useEffect(() => {
@@ -314,23 +347,23 @@ function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelP
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{chain.protocol} fallback chain</CardTitle>
+        <CardTitle>
+          {t('upstreams.chainTitle', { protocol: chain.protocol })}
+        </CardTitle>
         <div className="flex items-center gap-3 text-data text-slate-400">
           {/* When the chain is not instrumented, say so plainly rather than
               rendering zeros that would look like measurements. */}
           {!chain.live ? (
-            <span className="text-health-unknown">
-              config only · not instrumented
-            </span>
+            <span className="text-health-unknown">{t('upstreams.configOnly')}</span>
           ) : (
             <>
               <span>
-                served{' '}
+                {t('upstreams.served')}{' '}
                 <span className="tnum text-slate-200">{chain.total_served}</span>
               </span>
               <span className="text-slate-700">·</span>
               <span>
-                last by{' '}
+                {t('upstreams.lastBy')}{' '}
                 <span className="text-slate-200">
                   {chain.last_served_by || '—'}
                 </span>
@@ -338,7 +371,9 @@ function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelP
             </>
           )}
           {reordering && (
-            <span className="text-brand animate-pulse">saving order…</span>
+            <span className="text-brand animate-pulse">
+              {t('upstreams.savingOrder')}
+            </span>
           )}
         </div>
       </CardHeader>
@@ -347,20 +382,20 @@ function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelP
         <TableHeader>
           <TableRow>
             {/* Grip + order number share the first column. */}
-            <TableHead className="w-10 text-right" aria-label="Drag handle / order" />
-            <TableHead className="w-40">Mirror</TableHead>
-            <TableHead>URL</TableHead>
-            <TableHead className="w-28">Health</TableHead>
-            <TableHead className="w-20 text-right">Latency</TableHead>
-            <TableHead className="w-24 text-right">Hit share</TableHead>
-            <TableHead className="w-24 text-right">Last served</TableHead>
-            <TableHead className="w-36 text-right">Actions</TableHead>
+            <TableHead className="w-10 text-right" aria-label={t('upstreams.col.handle')} />
+            <TableHead className="w-40">{t('upstreams.col.mirror')}</TableHead>
+            <TableHead>{t('upstreams.col.url')}</TableHead>
+            <TableHead className="w-28">{t('upstreams.col.health')}</TableHead>
+            <TableHead className="w-20 text-right">{t('upstreams.col.latency')}</TableHead>
+            <TableHead className="w-24 text-right">{t('upstreams.col.hitShare')}</TableHead>
+            <TableHead className="w-24 text-right">{t('upstreams.col.lastServed')}</TableHead>
+            <TableHead className="w-36 text-right">{t('common.actions')}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {displayMirrors.length === 0 ? (
             <EmptyRow colSpan={8}>
-              No mirrors configured for {chain.protocol}.
+              {t('upstreams.noMirrors', { protocol: chain.protocol })}
             </EmptyRow>
           ) : (
             displayMirrors.map((m, idx) => {
@@ -395,8 +430,8 @@ function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelP
                       </span>
                       <span
                         className="cursor-grab text-slate-600 transition-colors duration-fast hover:text-slate-300 active:cursor-grabbing"
-                        aria-label="Drag to reorder"
-                        title="Drag to reorder this mirror in the fallback chain"
+                        aria-label={t('upstreams.dragAria')}
+                        title={t('upstreams.dragTitle')}
                       >
                         <GripVertical className="size-3.5" aria-hidden />
                       </span>
@@ -408,18 +443,20 @@ function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelP
                       <span className="font-medium text-slate-100">{m.name}</span>
                       {m.official && (
                         <span
-                          className="text-micro uppercase tracking-wider text-slate-500"
-                          title="Configured as the authoritative origin."
+                          className="label-caps text-micro text-slate-500"
+                          title={t('upstreams.originTitle')}
                         >
-                          origin
+                          {t('upstreams.origin')}
                         </span>
                       )}
                       {m.overridden && (
                         <span
-                          className="text-micro uppercase tracking-wider text-brand"
-                          title={`Reordered at runtime. YAML baseline priority: ${m.config_priority}.`}
+                          className="label-caps text-micro text-brand"
+                          title={t('upstreams.overrideTitle', {
+                            priority: m.config_priority,
+                          })}
                         >
-                          override
+                          {t('upstreams.override')}
                         </span>
                       )}
                     </div>
@@ -466,7 +503,7 @@ function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelP
                           disabled={isBusy}
                           onClick={() => onUnblock(m)}
                         >
-                          Unblock
+                          {t('upstreams.unblock')}
                         </Button>
                       )}
                       <Button
@@ -475,7 +512,7 @@ function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelP
                         disabled={isBusy}
                         onClick={() => onToggle(m)}
                       >
-                        {m.enabled ? 'Disable' : 'Enable'}
+                        {m.enabled ? t('upstreams.disable') : t('upstreams.enable')}
                       </Button>
                     </div>
                   </TableCell>

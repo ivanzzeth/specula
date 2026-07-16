@@ -11,6 +11,9 @@
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
+    // i18n locale resources are JSON (src/i18n/locales/**) — the standard
+    // i18next layout, and JSON keeps the copy editable without touching TS.
+    "resolveJsonModule": true,
     "allowImportingTsExtensions": true,
     "isolatedModules": true,
     "moduleDetection": "force",

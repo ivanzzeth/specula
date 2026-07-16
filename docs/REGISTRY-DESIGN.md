@@ -167,6 +167,31 @@ docker push specula.local/myorg/app:v1
 **实施前必读技能**：`frontend-design`（视觉方向与执行规则）；**写任何图表代码前必读 `dataviz`**
 （缓存仪表盘、容量趋势、信任档分布、命中率都算）。
 
+#### 5.0.1 双语（en / zh-CN）——两个硬性约束的解法
+
+WebUI 为 en + zh-CN 双语（`react-i18next` + `i18next` + `i18next-browser-languagedetector`，
+语料在 `web/src/i18n/locales/{en,zh-CN}/`，按 App.tsx 的 zone 归属切分为 common / registry /
+cache / ops / tenancy）。语言开关在身份栏（org 切换器与退出之间），选择持久化到
+localStorage（`specula:lang`），首访按浏览器语言探测，兜底 en；`<html lang>` 跟随当前语言。
+
+**§5.0 的视觉方向本身与中文有两处正面冲突，必须解决而非绕过：**
+
+| 冲突 | 解法 |
+|---|---|
+| **IBM Plex Mono 无 CJK 字形。** "全站单一等宽字体"是identity的核心，中文若静默回退到系统字体，macOS 落 PingFang、Windows 落 YaHei、Linux 落 DejaVu/Noto 抽奖 —— 同一产品三种字体身份，且都不是我们选的。 | **自托管 Noto Sans SC 子集**作为 CJK 伴随字体。字体回退**按字形**生效：Latin/数字/符号仍走 Plex Mono，仅 CJK 落到 Noto —— 混排行（"push 镜像到 registry"）里英文不会被整段拖走。<br>**为何不用 IBM Plex Sans SC**（同族、理应最佳配对）：npm/Fontsource **未发布**（仅有 Plex JP/KR/Thai），手工 vendor IBM 发布物会在仓库里留下不可复现的二进制。Noto Sans SC 是次优且可得：低对比度 neo-grotesque、开放字腔、直立理性骨架，与 Plex Mono 拉丁同源绘制逻辑；且 CJK 天然等宽（每字满 em 方框），不破仪表盘栅格。<br>**为何子集化**：WebUI 经 `//go:embed all:dist` 编进二进制，字体字节是**永久二进制重量**而非 CDN 懒加载。Fontsource 每字重 1.09 MB × 4 字重 = +4.4 MB（35 MB 二进制的 +12%）。子集到 GB2312 一级字库（3755 字，覆盖现代中文行文约 99.7%）∪ zh-CN 语料实际用字 ∪ CJK 标点 ⇒ **~516 KB/字重 × 2 字重 ≈ 1 MB**。纯英文用户**下载 0 字节**（@font-face 按字形按需拉取）。<br>重新生成：`cd web && python3 scripts/subset-cjk.py`（产物提交入库，构建不依赖 Python）。 |
+| **`uppercase tracking-wider` 是纯英文的层级手段。** 全站 ~20 处标签/表头依赖它。`text-transform: uppercase` 对汉字是 **no-op**（无大小写），标签因此在中文下丢失唯一区分度、塌进正文；`letter-spacing` 对 CJK **有害** —— 汉字本就在固定 em 栅格上设计、自带光学边距，再加 0.04–0.06em 会把栅格撬开，读起来是坏字距而非强调。 | 把这个手段从"内联习惯"收敛为**单一具名类 `.label-caps`**（`web/src/index.css`），并**按语言感知**：`html[lang^='zh']` 下关闭 caps + tracking，层级改由仍然有效的三者承担 —— **尺寸**（11px label vs 13.5px body）、**颜色**（slate-400 vs slate-100）、**字重**（正是 CJK 字体必须出两个真实字重 400/600 的原因；`@font-face` 用**字重区间**映射，杜绝 11px 下把汉字笔画糊成一团的合成伪粗）。<br>该规则特异性 (0,2,1) 刻意压过 `.uppercase`/`.tracking-wider` 工具类 (0,1,0)：调用点**不得**再内联这两个工具类，否则工具类会赢下层叠、把 bug 带回来。<br>同时设 `overflow-wrap: anywhere`：中文无空格，密集表头里的长中文标签必须能逐字换行，否则会把列撑爆。 |
+
+**服务端消息保持英文**（诚实边界）：Go 控制面无 i18n 层，`{"error":"..."}` 为英文。
+`web/src/i18n/server-errors.ts` 仅显式映射一小组**用户可自行触发且可自行处置**的稳定错误
+（登录/注册、成员与角色、邀请，共 ~24 条），其余**原样透传英文** —— 精确的英文错误优于含糊的
+中文错误；`internal/admin` 一处就有 ~105 条错误串，多为 5xx 内部故障与带插值的 `%w` 链，
+全量映射只会变成持续漂移的谎言。
+
+**API 字面量保持英文**：信任档（`signed`/`consensus`/`tofu`/`checksum`）、上游健康
+（`up`/`blocked`/`probing`/`unknown`）、可见性、角色（`viewer`/`editor`/`admin`/`owner`）
+是 API 字段值，出现在日志、文档与响应里，中文开发者本就说英文；**徽章值不翻，tooltip 图例全翻**。
+digest / manifest / tag / registry / push / pull / blob / token 同理。
+
 ### 5.1 主线 A —— Registry（OCI，可写托管）
 - **组织切换器**（顶栏，X-Org-Id）+ 组织列表/创建
 - **Repositories**（当前 org 仓库）：名称、可见性徽章(private/public)、大小、tag 数、最近推送

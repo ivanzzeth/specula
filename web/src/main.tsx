@@ -3,6 +3,10 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider } from 'react-router-dom';
 import { router } from './App';
 import { AuthProvider } from './components/auth';
+// Must precede any component import that calls useTranslation at module scope:
+// this initialises i18next and sets <html lang> before the first render, so the
+// UI never paints one frame in the wrong language or the wrong label treatment.
+import './i18n';
 import './index.css';
 
 // After a new deploy, any still-open tab's old index.html references stale hashed chunk names.

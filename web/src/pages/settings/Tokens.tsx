@@ -17,11 +17,13 @@
  *   revokeKey(id)          → 204
  */
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { AlertCircle, Check, Copy, Plus } from 'lucide-react';
 
 import { useAuth } from '@/components/auth';
 import { useOrg } from '@/components/org-context';
-import { createKey, listKeys, revokeKey } from '@/api/client';
+import { ApiError, createKey, listKeys, revokeKey } from '@/api/client';
+import { translateServerError } from '@/i18n/server-errors';
 import type { KeyDTO } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -70,9 +72,16 @@ function isoDate(iso: string | undefined): string {
   });
 }
 
+/** errMessage routes API errors through the shared server-error allow-list. */
+function errMessage(e: unknown): string {
+  if (e instanceof ApiError) return translateServerError(e.detail) || e.message;
+  return e instanceof Error ? e.message : String(e);
+}
+
 // ── CodeBlock: copyable monospace block ───────────────────────────────────────
 
 function CodeBlock({ children }: { children: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   const copy = () => {
@@ -91,8 +100,8 @@ function CodeBlock({ children }: { children: string }) {
         type="button"
         onClick={copy}
         className="absolute right-1.5 top-1.5 rounded p-1 text-slate-500 opacity-0 transition-all duration-fast hover:bg-slate-800 hover:text-slate-200 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        title="Copy to clipboard"
-        aria-label="Copy snippet to clipboard"
+        title={t('tokens.usage.copySnippet')}
+        aria-label={t('tokens.usage.copySnippet')}
       >
         {copied ? (
           <Check className="size-3 text-health-up" />
@@ -106,7 +115,15 @@ function CodeBlock({ children }: { children: string }) {
 
 // ── Usage snippets card ───────────────────────────────────────────────────────
 
+/**
+ * The snippet bodies stay English in every locale on purpose: they are literal
+ * shell/config text a user copies and pastes, and their comments are part of
+ * what lands in the user's `.npmrc` / `pip.conf` / shell profile. Translating a
+ * comment inside a pasted config is noise at best; translating anything else in
+ * them would produce a command that does not run.
+ */
 function UsageSnippets({ host, email, orgSlug }: { host: string; email: string; orgSlug: string }) {
+  const { t } = useTranslation();
   const T = '<your-token>'; // placeholder — the actual token is in the reveal dialog
 
   const docker = `# Authenticate
@@ -146,18 +163,27 @@ GOPROXY=https://${email}:${T}@${host}/go,direct \\
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Using a token</CardTitle>
+        <CardTitle>{t('tokens.usage.title')}</CardTitle>
         <span className="text-data text-slate-400">
-          Replace <code className="text-brand/80">&lt;your-token&gt;</code> with your token value
+          {/* The literal "<your-token>" rides in as the <token/> slot's CHILDREN.
+              It must NOT be spelled as &lt;…&gt; entities in the locale JSON:
+              Trans parses the translated string as HTML but does not decode
+              entities, so React then renders them verbatim and the user reads
+              "&lt;your-token&gt;" on the page. Verified in the browser. Passing
+              it as children lets React escape it exactly once. */}
+          <Trans
+            i18nKey="tokens.usage.hint"
+            components={{ token: <code className="text-brand/80">{'<your-token>'}</code> }}
+          />
         </span>
       </CardHeader>
       <CardContent className="pb-3 pt-0">
         <Tabs defaultValue="docker">
           <TabsList className="mb-3">
-            <TabsTrigger value="docker">Docker / OCI</TabsTrigger>
-            <TabsTrigger value="pip">pip / PyPI</TabsTrigger>
-            <TabsTrigger value="npm">npm</TabsTrigger>
-            <TabsTrigger value="go">Go modules</TabsTrigger>
+            <TabsTrigger value="docker">{t('tokens.usage.docker')}</TabsTrigger>
+            <TabsTrigger value="pip">{t('tokens.usage.pip')}</TabsTrigger>
+            <TabsTrigger value="npm">{t('tokens.usage.npm')}</TabsTrigger>
+            <TabsTrigger value="go">{t('tokens.usage.go')}</TabsTrigger>
           </TabsList>
           <TabsContent value="docker">
             <CodeBlock>{docker}</CodeBlock>
@@ -180,6 +206,7 @@ GOPROXY=https://${email}:${T}@${host}/go,direct \\
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function Tokens() {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const { activeOrg } = useOrg();
 
@@ -214,7 +241,7 @@ export function Tokens() {
     setErr('');
     listKeys()
       .then((r) => setKeys(r.keys ?? []))
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setErr(errMessage(e)))
       .finally(() => setLoading(false));
   }, []);
 
@@ -239,11 +266,11 @@ export function Tokens() {
         setStep('reveal');
       } else {
         // Server didn't return raw_key — unusual, but don't crash.
-        toast({ variant: 'success', title: 'Token created' });
+        toast({ variant: 'success', title: t('tokens.created') });
         closeCreate();
       }
     } catch (e: unknown) {
-      setCreateErr(e instanceof Error ? e.message : String(e));
+      setCreateErr(errMessage(e));
     } finally {
       setCreateBusy(false);
     }
@@ -278,15 +305,15 @@ export function Tokens() {
       setKeys((prev) => prev.filter((k) => k.id !== revokeTarget.id));
       toast({
         variant: 'success',
-        title: 'Token revoked',
+        title: t('tokens.revoked'),
         description: revokeTarget.label || revokeTarget.prefix,
       });
       setRevokeTarget(null);
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Revoke failed',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('tokens.revokeFailed'),
+        description: errMessage(e),
         duration: Infinity,
       });
     } finally {
@@ -303,14 +330,12 @@ export function Tokens() {
       {/* Page heading + primary action */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-display font-semibold text-slate-100">Access tokens</h1>
-          <p className="mt-0.5 text-data text-slate-400">
-            API keys for the registry and package manager proxies.
-          </p>
+          <h1 className="text-display font-semibold text-slate-100">{t('tokens.title')}</h1>
+          <p className="mt-0.5 text-data text-slate-400">{t('tokens.subtitle')}</p>
         </div>
         <Button variant="default" size="sm" onClick={() => setCreateOpen(true)}>
           <Plus />
-          New token
+          {t('tokens.new')}
         </Button>
       </div>
 
@@ -320,7 +345,7 @@ export function Tokens() {
       {/* ── Tokens table ─────────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle>Active tokens</CardTitle>
+          <CardTitle>{t('tokens.active')}</CardTitle>
           {!loading && (
             <span className="tnum text-data text-slate-400">{activeKeys.length}</span>
           )}
@@ -339,19 +364,17 @@ export function Tokens() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-32">Prefix</TableHead>
-                  <TableHead>Label</TableHead>
-                  <TableHead className="w-28">Created</TableHead>
-                  <TableHead className="w-28">Last used</TableHead>
-                  <TableHead className="w-28">Expires</TableHead>
+                  <TableHead className="w-32">{t('tokens.colPrefix')}</TableHead>
+                  <TableHead>{t('tokens.colLabel')}</TableHead>
+                  <TableHead className="w-28">{t('tokens.colCreated')}</TableHead>
+                  <TableHead className="w-28">{t('tokens.colLastUsed')}</TableHead>
+                  <TableHead className="w-28">{t('tokens.colExpires')}</TableHead>
                   <TableHead className="w-20" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {activeKeys.length === 0 ? (
-                  <EmptyRow colSpan={6}>
-                    No active tokens — create one above.
-                  </EmptyRow>
+                  <EmptyRow colSpan={6}>{t('tokens.empty')}</EmptyRow>
                 ) : (
                   activeKeys.map((k) => (
                     <TableRow key={k.id}>
@@ -371,7 +394,7 @@ export function Tokens() {
                         {k.expires_at ? (
                           isoDate(k.expires_at)
                         ) : (
-                          <span className="text-slate-500">never</span>
+                          <span className="text-slate-500">{t('common.never')}</span>
                         )}
                       </TableCell>
                       <TableCell>
@@ -381,7 +404,7 @@ export function Tokens() {
                           className="text-slate-500 hover:text-destructive"
                           onClick={() => setRevokeTarget(k)}
                         >
-                          Revoke
+                          {t('tokens.revoke')}
                         </Button>
                       </TableCell>
                     </TableRow>
@@ -400,22 +423,22 @@ export function Tokens() {
             /* Step 1: label input */
             <>
               <DialogHeader>
-                <DialogTitle>New access token</DialogTitle>
-                <DialogDescription>
-                  Tokens authenticate against the registry and all protocol proxies.
-                </DialogDescription>
+                <DialogTitle>{t('tokens.createDialog.title')}</DialogTitle>
+                <DialogDescription>{t('tokens.createDialog.description')}</DialogDescription>
               </DialogHeader>
 
               <form id="create-key-form" onSubmit={(e) => void handleCreate(e)}>
                 <div className="space-y-3 px-3 py-3">
                   <div className="space-y-1.5">
                     <Label htmlFor="key-label">
-                      Label{' '}
-                      <span className="font-normal text-slate-500">(optional)</span>
+                      {t('tokens.createDialog.label')}{' '}
+                      <span className="font-normal text-slate-500">
+                        {t('tokens.createDialog.labelOptional')}
+                      </span>
                     </Label>
                     <Input
                       id="key-label"
-                      placeholder="e.g. CI deploy key, laptop"
+                      placeholder={t('tokens.createDialog.labelPlaceholder')}
                       value={keyLabel}
                       onChange={(e) => setKeyLabel(e.target.value)}
                       autoFocus
@@ -438,7 +461,7 @@ export function Tokens() {
                   onClick={closeCreate}
                   disabled={createBusy}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
                 <Button
                   variant="default"
@@ -447,7 +470,7 @@ export function Tokens() {
                   type="submit"
                   disabled={createBusy}
                 >
-                  {createBusy ? 'Creating…' : 'Create token'}
+                  {createBusy ? t('tokens.createDialog.busy') : t('tokens.createDialog.submit')}
                 </Button>
               </DialogFooter>
             </>
@@ -455,24 +478,21 @@ export function Tokens() {
             /* Step 2: one-time key reveal — the critical UX moment */
             <>
               <DialogHeader>
-                <DialogTitle>Token created</DialogTitle>
+                <DialogTitle>{t('tokens.reveal.title')}</DialogTitle>
               </DialogHeader>
 
               <div className="space-y-3 px-3 py-3">
                 {/* Amber-bordered warning panel: unmissable, deliberate */}
                 <div className="rounded border border-brand/40 bg-brand/5 px-3 py-2.5">
-                  <p className="text-label font-semibold uppercase tracking-wider text-brand">
-                    Save this token — it will not be shown again
+                  <p className="label-caps text-label font-semibold text-brand">
+                    {t('tokens.reveal.warnTitle')}
                   </p>
-                  <p className="mt-1 text-data text-slate-400">
-                    Once you close this dialog, the plaintext is permanently gone. Copy it
-                    to your password manager or CI secrets store before continuing.
-                  </p>
+                  <p className="mt-1 text-data text-slate-400">{t('tokens.reveal.warnBody')}</p>
                 </div>
 
                 {/* Token value in a selectable, copyable code block */}
                 <div className="space-y-1.5">
-                  <Label>Token</Label>
+                  <Label>{t('tokens.reveal.token')}</Label>
                   <div className="relative">
                     <pre className="select-all overflow-x-auto rounded border border-slate-800 bg-slate-950 p-2.5 text-data text-slate-100 break-all whitespace-pre-wrap">
                       {rawKey}
@@ -481,8 +501,8 @@ export function Tokens() {
                       type="button"
                       onClick={copyKey}
                       className="absolute right-1.5 top-1.5 rounded p-1 text-slate-500 transition-all duration-fast hover:bg-slate-800 hover:text-slate-200 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                      aria-label="Copy token"
-                      title="Copy token"
+                      aria-label={t('tokens.reveal.copyToken')}
+                      title={t('tokens.reveal.copyToken')}
                     >
                       {keyCopied ? (
                         <Check className="size-3.5 text-health-up" />
@@ -492,7 +512,9 @@ export function Tokens() {
                     </button>
                   </div>
                   {keyCopied && (
-                    <p className="text-data text-health-up">Copied to clipboard.</p>
+                    <p className="text-data text-health-up">
+                      {t('tokens.reveal.copiedToClipboard')}
+                    </p>
                   )}
                 </div>
               </div>
@@ -500,7 +522,7 @@ export function Tokens() {
               {/* Deliberate dismiss: the button wording is a confirmation statement */}
               <DialogFooter>
                 <Button variant="default" size="sm" onClick={closeCreate}>
-                  I have saved my token
+                  {t('tokens.savedDismiss')}
                 </Button>
               </DialogFooter>
             </>
@@ -512,17 +534,32 @@ export function Tokens() {
       <Dialog open={!!revokeTarget} onOpenChange={(open) => !open && setRevokeTarget(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Revoke token</DialogTitle>
+            <DialogTitle>{t('tokens.revokeDialog.title')}</DialogTitle>
             <DialogDescription>
-              Revoke{' '}
-              <span className="font-medium text-slate-100">
-                {revokeTarget?.prefix}…
-              </span>
-              {revokeTarget?.label && (
-                <> ({revokeTarget.label})</>
-              )}
-              ? Any client using this token will lose access immediately and cannot
-              be recovered — create a new token to replace it.
+              {/* Prefix and optional label are one emphasised span: zh puts the
+                  object before the verb, so it cannot be positional in JSX.
+
+                  The target rides in as the <target/> slot's CHILDREN, never as
+                  a `values` entry. Trans interpolates `values` BEFORE parsing
+                  the result as HTML, and i18n/index.ts sets escapeValue:false
+                  (React escapes for us) — so a user-supplied token label like
+                  "<laptop>" would be parsed as an unknown tag. Verified: it did
+                  not merely drop the label, its phantom closing tag swallowed
+                  the rest of the sentence, leaving a destructive confirmation
+                  that named no target. As children the text is escaped, so
+                  "<laptop>" and even "<script>" render literally. */}
+              <Trans
+                i18nKey="tokens.revokeDialog.description"
+                components={{
+                  target: (
+                    <span className="font-medium text-slate-100">
+                      {`${revokeTarget?.prefix ?? ''}…${
+                        revokeTarget?.label ? ` (${revokeTarget.label})` : ''
+                      }`}
+                    </span>
+                  ),
+                }}
+              />
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -532,7 +569,7 @@ export function Tokens() {
               onClick={() => setRevokeTarget(null)}
               disabled={revokeBusy}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button
               variant="destructive"
@@ -540,7 +577,7 @@ export function Tokens() {
               onClick={() => void handleRevoke()}
               disabled={revokeBusy}
             >
-              {revokeBusy ? 'Revoking…' : 'Revoke token'}
+              {revokeBusy ? t('tokens.revokeDialog.busy') : t('tokens.revokeDialog.submit')}
             </Button>
           </DialogFooter>
         </DialogContent>

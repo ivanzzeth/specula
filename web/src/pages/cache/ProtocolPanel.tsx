@@ -19,6 +19,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Pin } from 'lucide-react';
 
 import { listCacheEntries } from '@/api/client';
@@ -41,7 +42,7 @@ import { cn, formatBytes, formatRelative, formatUnix } from '@/lib/utils';
 
 import { EntryDetail } from './EntryDetail';
 import { FilterBar } from './FilterBar';
-import { PROTOCOL_META } from './types';
+import { errorText, useProtocolMeta } from './types';
 import type { ProtocolSlug } from './types';
 
 const PAGE_SIZE = 50;
@@ -58,7 +59,8 @@ interface ProtocolPanelProps {
 }
 
 export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
-  const meta = PROTOCOL_META[protocol];
+  const { t } = useTranslation();
+  const meta = useProtocolMeta(protocol);
 
   const [query, setQuery] = useState<CacheQuery>(DEFAULT_QUERY);
   const [entries, setEntries] = useState<CacheEntryDTO[]>([]);
@@ -75,7 +77,7 @@ export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
         setEntries(r.entries ?? []);
         setTotal(r.total ?? 0);
       })
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setErr(errorText(e)))
       .finally(() => setLoading(false));
   }, [protocol, query]);
 
@@ -121,8 +123,12 @@ export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
   // Pagination summary string
   const pageRange =
     total === 0
-      ? 'no entries'
-      : `${offset + 1}–${Math.min(offset + limit, total)} of ${total}`;
+      ? t('cache.noEntries')
+      : t('cache.range', {
+          from: offset + 1,
+          to: Math.min(offset + limit, total),
+          total,
+        });
 
   return (
     <div className="space-y-3 data-[state=active]:animate-panel-in">
@@ -133,10 +139,10 @@ export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
 
       <Card>
         <CardHeader>
-          <CardTitle>{meta.label} cache</CardTitle>
+          <CardTitle>{t('cache.panelTitle', { protocol: meta.label })}</CardTitle>
           <div className="tnum text-data text-slate-400">
             {loading ? (
-              <span className="text-slate-500">Loading…</span>
+              <span className="text-slate-500">{t('common.loading')}…</span>
             ) : err ? null : (
               <span>{pageRange}</span>
             )}
@@ -155,7 +161,7 @@ export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
           <CardContent>
             <p className="text-data text-destructive">{err}</p>
             <Button variant="ghost" size="sm" className="mt-2" onClick={load}>
-              Retry
+              {t('common.retry')}
             </Button>
           </CardContent>
         )}
@@ -178,7 +184,7 @@ export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
 
                 {/* Tier is the widest intentionally — it is the reason this
                     table exists. Give it room and use the dedicated badge. */}
-                <TableHead className="w-28">Tier</TableHead>
+                <TableHead className="w-28">{t('cache.col.tier')}</TableHead>
 
                 <SortableTableHead
                   active={activeSort === 'size'}
@@ -187,10 +193,10 @@ export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
                   align="right"
                   className="w-24"
                 >
-                  Size
+                  {t('cache.col.size')}
                 </SortableTableHead>
 
-                <TableHead className="w-36">Upstream</TableHead>
+                <TableHead className="w-36">{t('cache.col.upstream')}</TableHead>
 
                 <SortableTableHead
                   active={activeSort === 'created_at'}
@@ -199,7 +205,7 @@ export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
                   align="right"
                   className="w-28"
                 >
-                  First cached
+                  {t('cache.col.firstCached')}
                 </SortableTableHead>
               </TableRow>
             </TableHeader>
@@ -229,9 +235,9 @@ export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
               size="sm"
               disabled={!canPrev}
               onClick={() => goPage(offset - limit)}
-              aria-label="Previous page"
+              aria-label={t('cache.prevAria')}
             >
-              ← Prev
+              ← {t('common.prev')}
             </Button>
             <span className="tnum text-data text-slate-400">{pageRange}</span>
             <Button
@@ -239,9 +245,9 @@ export function ProtocolPanel({ protocol }: ProtocolPanelProps) {
               size="sm"
               disabled={!canNext}
               onClick={() => goPage(offset + limit)}
-              aria-label="Next page"
+              aria-label={t('cache.nextAria')}
             >
-              Next →
+              {t('common.next')} →
             </Button>
           </CardFooter>
         )}
@@ -276,6 +282,7 @@ function EntryRow({
   isSelected: boolean;
   onClick: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <TableRow
       className={cn(
@@ -302,7 +309,7 @@ function EntryRow({
             {entry.name}
           </span>
           {entry.pinned && (
-            <span title="Pinned — protected from garbage collection" aria-label="Protected from GC">
+            <span title={t('cache.row.pinnedTitle')} aria-label={t('cache.row.pinnedAria')}>
               <Pin className="size-2.5 shrink-0 text-brand" />
             </span>
           )}

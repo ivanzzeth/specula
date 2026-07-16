@@ -4,9 +4,21 @@
  * The API returns uniform CacheEntryDTO fields across all protocols; what
  * differs per protocol is the semantic label for those fields and the
  * human-readable context for trust tiers, empty states, and usage hints.
+ *
+ * i18n: the human-readable half of that per-protocol copy (column labels,
+ * empty state, tier context) lives in `locales/*\/cache.json` under
+ * `cache.protocol.<slug>.*` and is read through `useProtocolMeta`. What stays
+ * HERE is only what must not be translated: the protocol list itself and the
+ * display labels for it, which are API/ecosystem identifiers (`oci`, `pypi`,
+ * `npm`, …) in every language.
  */
 
+import { useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
+
+import { ApiError } from '@/api/client';
 import type { CacheSort } from '@/api/types';
+import { translateServerError } from '@/i18n/server-errors';
 
 export interface ProtocolMeta {
   /** Tab / heading label. */
@@ -41,84 +53,50 @@ export function isValidProtocol(s: string): s is ProtocolSlug {
   return (PROTOCOLS as readonly string[]).includes(s);
 }
 
-export const PROTOCOL_META: Record<ProtocolSlug, ProtocolMeta> = {
-  oci: {
-    label: 'OCI',
-    nameCol: 'Image',
-    versionCol: 'Tag',
-    tierContext:
-      'cosign keyed verification → signed · first-use digest lock → tofu · no cosign config → checksum',
-    emptyMsg:
-      'No OCI images cached yet. Pull an image through the proxy to populate this view.',
-  },
-  pypi: {
-    label: 'PyPI',
-    nameCol: 'Package',
-    versionCol: 'Version',
-    tierContext:
-      'cross-mirror sha256 quorum (PEP 503 simple-index) → consensus · first-use digest lock → tofu',
-    emptyMsg:
-      'No PyPI packages cached yet. Set the proxy as your pip index and run pip install.',
-  },
-  npm: {
-    label: 'npm',
-    nameCol: 'Package',
-    versionCol: 'Version',
-    tierContext:
-      'registry tarball sha integrity quorum → consensus · first-use digest lock → tofu',
-    emptyMsg:
-      'No npm packages cached yet. Point npm/yarn/pnpm at the proxy registry and install a package.',
-  },
-  go: {
-    label: 'Go',
-    nameCol: 'Module',
-    versionCol: 'File',
-    tierContext:
-      'sumdb Ed25519 Merkle proof (tree head + inclusion proof) → signed · absent sumdb → tofu',
-    emptyMsg:
-      'No Go modules cached yet. Set GOPROXY to the proxy address and run go get.',
-  },
-  apt: {
-    label: 'apt',
-    nameCol: 'Suite / Component',
-    versionCol: 'File',
-    tierContext:
-      'distro keyring GPG over InRelease → signed · pool .deb files → checksum (no per-file GPG)',
-    emptyMsg:
-      'No apt packages cached yet. Configure /etc/apt/sources.list to use the proxy.',
-  },
-  helm: {
-    label: 'Helm',
-    nameCol: 'Chart',
-    versionCol: 'Version',
-    tierContext:
-      '.prov GPG provenance file verified against keyring → signed · no .prov → tofu',
-    emptyMsg:
-      'No Helm charts cached yet. Add the proxy as a Helm repo and run helm pull.',
-  },
-  git: {
-    label: 'git',
-    nameCol: 'Repository',
-    versionCol: 'Ref / Object',
-    tierContext:
-      'signed tag/commit (allowed-signers) → signed · first-clone object hash lock → tofu · git SHA detects force-push history rewrites',
-    emptyMsg:
-      'No git repositories mirrored yet. Clone through the proxy to build the local mirror.',
-  },
-  tarball: {
-    label: 'tarball',
-    nameCol: 'URL',
-    versionCol: 'Digest',
-    tierContext:
-      'cross-mirror digest quorum → consensus · first-use digest lock → tofu',
-    emptyMsg: 'No tarballs cached yet.',
-  },
+/**
+ * Display labels for the protocol tabs. NOT translated: these are the names of
+ * the ecosystems themselves — a Chinese developer says "npm", not a rendering
+ * of it — and they double as the route segment (/cache/pypi).
+ */
+export const PROTOCOL_LABELS: Record<ProtocolSlug, string> = {
+  oci: 'OCI',
+  pypi: 'PyPI',
+  npm: 'npm',
+  go: 'Go',
+  apt: 'apt',
+  helm: 'Helm',
+  git: 'git',
+  tarball: 'tarball',
 };
 
-/** Sort columns with display labels. */
-export const SORT_OPTIONS: { value: CacheSort; label: string }[] = [
-  { value: 'created_at', label: 'First cached' },
-  { value: 'size', label: 'Size' },
-  { value: 'name', label: 'Name' },
-  { value: 'verified_at', label: 'Verified' },
-];
+/** Sort columns; the display label comes from `cache.sort.<value>`. */
+export const SORT_OPTIONS: CacheSort[] = ['created_at', 'size', 'name', 'verified_at'];
+
+/** Resolve the translated, protocol-specific labels for a protocol. */
+export function useProtocolMeta(protocol: ProtocolSlug): ProtocolMeta {
+  const { t } = useTranslation();
+  return useMemo(
+    () => ({
+      label: PROTOCOL_LABELS[protocol],
+      nameCol: t(`cache.protocol.${protocol}.nameCol`),
+      versionCol: t(`cache.protocol.${protocol}.versionCol`),
+      emptyMsg: t(`cache.protocol.${protocol}.emptyMsg`),
+      tierContext: t(`cache.protocol.${protocol}.tierContext`),
+    }),
+    [protocol, t]
+  );
+}
+
+/**
+ * Render an unknown thrown value as display text.
+ *
+ * API failures carry an English `detail` from the Go server; hand those to the
+ * server-error allow-list, which localises the ones we know and passes the rest
+ * through as English by design. Anything else is a client-side fault and its
+ * message is already whatever the browser/runtime produced.
+ */
+export function errorText(e: unknown): string {
+  if (e instanceof ApiError) return translateServerError(e.detail);
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
