@@ -263,38 +263,8 @@ func (s *Server) handleStatsSeries(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleUpstreams → GET /api/v1/admin/upstreams. Returns UpstreamsResponse.
-//
-// NOTE: the Deps struct does not include an upstream block tracker, so live
-// circuit-breaker state (Blocked, LastErr) is not available here. Upstreams
-// are derived from config with Blocked=false and LastErr="" as a best-effort
-// snapshot. Wiring a UpstreamTracker dep is tracked as TODO.
-func (s *Server) handleUpstreams(w http.ResponseWriter, r *http.Request) {
-	var upstreams []UpstreamHealth
-	if s.cfg != nil {
-		for proto, pc := range s.cfg.Protocols {
-			for _, u := range pc.Upstreams {
-				upstreams = append(upstreams, UpstreamHealth{
-					Protocol: proto,
-					URL:      u.BaseURL,
-					Blocked:  false,
-					LastErr:  "",
-				})
-			}
-		}
-		// Sort for deterministic output.
-		sort.Slice(upstreams, func(i, j int) bool {
-			if upstreams[i].Protocol != upstreams[j].Protocol {
-				return upstreams[i].Protocol < upstreams[j].Protocol
-			}
-			return upstreams[i].URL < upstreams[j].URL
-		})
-	}
-	if upstreams == nil {
-		upstreams = []UpstreamHealth{}
-	}
-	writeJSON(w, http.StatusOK, UpstreamsResponse{Upstreams: upstreams})
-}
+// handleUpstreams now lives in upstreams.go, backed by the live per-protocol
+// upstream Runtime registry (Deps.Upstreams) rather than a config echo.
 
 // ---- users (admin) -----------------------------------------------------------
 

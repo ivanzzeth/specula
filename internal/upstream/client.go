@@ -47,8 +47,15 @@ type tokenEntry struct {
 
 // fallbackClient is the production implementation of Client.
 type fallbackClient struct {
-	http        *http.Client
-	blocker     *blockTracker
+	http    *http.Client
+	blocker *blockTracker
+	// rt, when non-nil, is the per-protocol Runtime that records mirror
+	// measurements and supplies the operator's runtime overrides. It is
+	// optional: a client built with NewClient has no Runtime and behaves
+	// exactly as before (config order, no instrumentation). When set, rt.blocker
+	// is the same *blockTracker as the blocker field above, so the admin view
+	// and the fetch path can never disagree about what is blocked.
+	rt          *Runtime
 	maxAttempts int
 	backoffBase time.Duration
 
@@ -66,6 +73,47 @@ func newFallbackClient() *fallbackClient {
 		maxAttempts: defaultMaxAttempts,
 		backoffBase: defaultBackoffBase,
 		tokens:      make(map[string]tokenEntry),
+	}
+}
+
+// newFallbackClientWithRuntime returns a Client bound to rt: it shares rt's
+// block tracker, reports every success/failure into rt, and honours rt's
+// enable/disable and reorder overrides when choosing the fallback order.
+func newFallbackClientWithRuntime(rt *Runtime) *fallbackClient {
+	c := newFallbackClient()
+	c.blocker = rt.blocker
+	c.rt = rt
+	return c
+}
+
+// chain returns the fallback order to try: rt's effective order (overrides
+// applied) when a Runtime is bound, otherwise plain config priority order.
+func (c *fallbackClient) chain(ups []Upstream) []Upstream {
+	if c.rt != nil {
+		return c.rt.effective(ups)
+	}
+	return sortedUpstreams(ups)
+}
+
+// noteSuccess clears the failure streak and records the mirror's latency and
+// serve count. latency measures time-to-response-headers, not body transfer.
+func (c *fallbackClient) noteSuccess(name string, latency time.Duration) {
+	if c.rt != nil {
+		c.rt.RecordServe(name, latency) // also clears the failure streak
+		return
+	}
+	c.blocker.recordSuccess(name)
+}
+
+// noteFailure records the error reason for the operator view, and counts the
+// failure toward auto-blocking only when it was transient.
+func (c *fallbackClient) noteFailure(name string, err error, transient bool) {
+	if c.rt != nil {
+		c.rt.RecordFailure(name, err, transient) // also ticks the block streak
+		return
+	}
+	if transient {
+		c.blocker.recordFailure(name)
 	}
 }
 
@@ -89,7 +137,7 @@ func (c *fallbackClient) Fetch(
 	opts ...RequestOption,
 ) (io.ReadCloser, artifact.UpstreamMeta, error) {
 	ropts := buildRequestOpts(opts)
-	sorted := sortedUpstreams(upstreams)
+	sorted := c.chain(upstreams)
 	var (
 		lastErr error
 		tried   int
@@ -99,17 +147,15 @@ func (c *fallbackClient) Fetch(
 			continue
 		}
 		tried++
-		body, meta, transient, err := c.tryFetch(ctx, ref, up, nil, ropts)
+		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, nil, ropts)
 		if err == nil {
-			c.blocker.recordSuccess(up.Name)
+			c.noteSuccess(up.Name, latency)
 			return body, meta, nil
 		}
 		if isContextError(err) {
 			return nil, artifact.UpstreamMeta{}, err
 		}
-		if transient {
-			c.blocker.recordFailure(up.Name)
-		}
+		c.noteFailure(up.Name, err, transient)
 		lastErr = err
 	}
 	if tried == 0 {
@@ -133,7 +179,7 @@ func (c *fallbackClient) Revalidate(
 	opts ...RequestOption,
 ) (io.ReadCloser, artifact.UpstreamMeta, bool, error) {
 	ropts := buildRequestOpts(opts)
-	sorted := sortedUpstreams(upstreams)
+	sorted := c.chain(upstreams)
 	var (
 		lastErr error
 		tried   int
@@ -143,9 +189,9 @@ func (c *fallbackClient) Revalidate(
 			continue
 		}
 		tried++
-		body, meta, transient, err := c.tryFetch(ctx, ref, up, &prev, ropts)
+		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, &prev, ropts)
 		if err == nil {
-			c.blocker.recordSuccess(up.Name)
+			c.noteSuccess(up.Name, latency)
 			if meta.StatusCode == http.StatusNotModified {
 				return nil, meta, true, nil
 			}
@@ -154,9 +200,7 @@ func (c *fallbackClient) Revalidate(
 		if isContextError(err) {
 			return nil, artifact.UpstreamMeta{}, false, err
 		}
-		if transient {
-			c.blocker.recordFailure(up.Name)
-		}
+		c.noteFailure(up.Name, err, transient)
 		lastErr = err
 	}
 	if tried == 0 {
@@ -177,9 +221,14 @@ func (c *fallbackClient) Revalidate(
 // On 401 with a Bearer WWW-Authenticate challenge, fetches a token and retries
 // once without consuming an attempt slot.
 //
-// Returns (body, meta, transient, error).
+// Returns (body, meta, latency, transient, error).
 //   - body is non-nil and meta.StatusCode in [200,299] on success.
 //   - meta.StatusCode == 304 on "not modified"; body is nil.
+//   - latency is the wall time of the successful HTTP round-trip up to response
+//     headers. It excludes retry back-off and the bearer-token dance (which
+//     would measure our own waiting, not the mirror's responsiveness), and
+//     excludes body transfer (bodies are streamed to the caller, so their
+//     duration reflects the downstream client's speed). Meaningless on error.
 //   - transient=true means the error should be counted toward auto-blocking.
 func (c *fallbackClient) tryFetch(
 	ctx context.Context,
@@ -187,7 +236,7 @@ func (c *fallbackClient) tryFetch(
 	up Upstream,
 	prev *artifact.UpstreamMeta,
 	opts requestOpts,
-) (io.ReadCloser, artifact.UpstreamMeta, bool, error) {
+) (io.ReadCloser, artifact.UpstreamMeta, time.Duration, bool, error) {
 	rawURL := buildURL(up.BaseURL, ref)
 	var (
 		lastErr      error
@@ -214,14 +263,14 @@ func (c *fallbackClient) tryFetch(
 			select {
 			case <-time.After(wait):
 			case <-ctx.Done():
-				return nil, artifact.UpstreamMeta{}, false, ctx.Err()
+				return nil, artifact.UpstreamMeta{}, 0, false, ctx.Err()
 			}
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			// Permanent — bad URL, no point retrying.
-			return nil, artifact.UpstreamMeta{}, false,
+			return nil, artifact.UpstreamMeta{}, 0, false,
 				fmt.Errorf("upstream %s: build request: %w", up.Name, err)
 		}
 
@@ -245,10 +294,14 @@ func (c *fallbackClient) tryFetch(
 			req.Header.Set("Authorization", "Bearer "+authToken)
 		}
 
+		// Measure only the round-trip itself: started here, stopped the moment
+		// response headers are available.
+		started := time.Now()
 		resp, doErr := c.http.Do(req)
+		latency := time.Since(started)
 		if doErr != nil {
 			if isContextError(doErr) {
-				return nil, artifact.UpstreamMeta{}, false, doErr
+				return nil, artifact.UpstreamMeta{}, 0, false, doErr
 			}
 			lastErr = fmt.Errorf("upstream %s: %w", up.Name, doErr)
 			transient = true
@@ -260,10 +313,10 @@ func (c *fallbackClient) tryFetch(
 		switch {
 		case resp.StatusCode == http.StatusNotModified:
 			_ = resp.Body.Close()
-			return nil, meta, false, nil // caller checks meta.StatusCode
+			return nil, meta, latency, false, nil // caller checks meta.StatusCode
 
 		case resp.StatusCode >= 200 && resp.StatusCode < 300:
-			return resp.Body, meta, false, nil
+			return resp.Body, meta, latency, false, nil
 
 		case resp.StatusCode == http.StatusUnauthorized && !didAuthRetry:
 			// Bearer token dance: attempt once without consuming a retry slot.
@@ -273,7 +326,7 @@ func (c *fallbackClient) tryFetch(
 			tok, authErr := c.getOrFetchToken(ctx, wwwAuth, up)
 			if authErr != nil {
 				// No valid challenge or token fetch failed: non-retryable.
-				return nil, meta, false,
+				return nil, meta, 0, false,
 					fmt.Errorf("upstream %s: HTTP 401 unauthorized: %w", up.Name, authErr)
 			}
 			authToken = tok
@@ -297,11 +350,11 @@ func (c *fallbackClient) tryFetch(
 		default:
 			// 4xx (other than 304 / 401 with challenge / 429): non-retryable.
 			_ = resp.Body.Close()
-			return nil, meta, false,
+			return nil, meta, 0, false,
 				fmt.Errorf("upstream %s: HTTP %d", up.Name, resp.StatusCode)
 		}
 	}
-	return nil, artifact.UpstreamMeta{}, transient, lastErr
+	return nil, artifact.UpstreamMeta{}, 0, transient, lastErr
 }
 
 // ── Bearer token helpers ──────────────────────────────────────────────────────

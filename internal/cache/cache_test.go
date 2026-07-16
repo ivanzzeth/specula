@@ -210,6 +210,16 @@ func (f *fakeMetaStore) DeleteMutable(_ context.Context, key string) error {
 	return nil
 }
 
+// ListEntries / SetPinned are part of meta.MetadataStore but unused by the
+// cache read/write path; stubbed to satisfy the interface.
+func (f *fakeMetaStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
+	return meta.EntryPage{}, nil
+}
+
+func (f *fakeMetaStore) SetPinned(_ context.Context, _ artifact.ArtifactRef, _ bool) error {
+	return nil
+}
+
 func (f *fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

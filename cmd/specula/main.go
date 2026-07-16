@@ -198,14 +198,25 @@ func run() error {
 	go collector.Run(ctx)
 
 	// ── Data plane: all eight protocol handlers ──────────────────────────────
+	//
+	// upstreams is the shared per-protocol upstream Runtime registry. Each
+	// protocol handler's upstream client is bound to its own Runtime, which both
+	// records what actually happened on the wire (latency, serve counts,
+	// auto-block state, last error) and applies the operator's runtime overrides
+	// (enable/disable, fallback reorder). The same registry is handed to the
+	// Admin API below, so /api/v1/admin/upstreams reports live state rather than
+	// a config echo — and an operator's change there takes effect on the very
+	// next fetch.
+	upstreams := upstream.NewRegistry()
+
 	dataMux := http.NewServeMux()
-	mountOCI(dataMux, cfg, cm, metaStore, log, regTokenSvc, regAuthz, repoStore, blobs, registryEnabled)
-	mountGoModule(dataMux, cfg, cm, metaStore, log)
-	mountPyPI(dataMux, cfg, cm, metaStore, log)
-	mountNPM(dataMux, cfg, cm, metaStore, log)
-	mountAPT(dataMux, cfg, cm, metaStore, log, gpgV)
-	mountHelm(dataMux, cfg, cm, metaStore, log, helmProvV)
-	mountTarball(dataMux, cfg, cm, metaStore, log)
+	mountOCI(dataMux, cfg, cm, metaStore, log, upstreams, regTokenSvc, regAuthz, repoStore, blobs, registryEnabled)
+	mountGoModule(dataMux, cfg, cm, metaStore, log, upstreams)
+	mountPyPI(dataMux, cfg, cm, metaStore, log, upstreams)
+	mountNPM(dataMux, cfg, cm, metaStore, log, upstreams)
+	mountAPT(dataMux, cfg, cm, metaStore, log, upstreams, gpgV)
+	mountHelm(dataMux, cfg, cm, metaStore, log, upstreams, helmProvV)
+	mountTarball(dataMux, cfg, cm, metaStore, log, upstreams)
 	mountGit(dataMux, cfg, metaStore, log, gitSignedV)
 	// Liveness on the data plane too, so a bare data-plane LB can probe it.
 	dataMux.HandleFunc("/healthz", healthz)
@@ -240,6 +251,9 @@ func run() error {
 		OrgStore:   orgStore,
 		KeyStore:   keyStore,
 		GrantStore: grantStore,
+		RepoStore:  repoStore,
+		TagStore:   repoStore,
+		Upstreams:  upstreams,
 	})
 	adminSrv.RegisterRoutes(ctrlMux)
 	log.Info("specula: mounted Admin API", "base", "/api/v1")
@@ -372,7 +386,7 @@ func buildMultiTenantStores(cfg *config.Config, metaStore metastore.MetadataStor
 //     wrapped by the registry-token Bearer challenge middleware.
 //
 // The final chain at /v2/ is: Challenge → registry(write) → oci(read).
-func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, tokenSvc *registrytoken.Service, authz *registryauthz.Authz, repoStore *repo.SQLStore, blobs blobstore.BlobStore, registryEnabled bool) {
+func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, tokenSvc *registrytoken.Service, authz *registryauthz.Authz, repoStore *repo.SQLStore, blobs blobstore.BlobStore, registryEnabled bool) {
 	pc, ok := cfg.Protocols["oci"]
 	opts := []oci.Option{
 		oci.WithMeta(metaStore),
@@ -380,7 +394,7 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	}
 	if ok {
 		opts = append(opts,
-			oci.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)),
+			oci.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("oci")), toUpstreams(pc.Upstreams)),
 			oci.WithMutableTTL(mutableTTL(pc, cfg)),
 		)
 	}
@@ -480,7 +494,7 @@ const goMountPrefix = "/go"
 // handler self-strips the /go prefix (WithPathPrefix) so it can be mounted with
 // a bare ServeMux pattern. When the "go" protocol is absent the handler still
 // mounts (serving already-cached content) but has no upstream fallback.
-func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger) {
+func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry) {
 	pc, ok := cfg.Protocols[goProtocolKey]
 	opts := []gomod.Option{
 		gomod.WithMeta(metaStore),
@@ -491,7 +505,7 @@ func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager
 	sumdbEnabled := false
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, gomod.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+			opts = append(opts, gomod.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime(goProtocolKey)), toUpstreams(pc.Upstreams)))
 		}
 		opts = append(opts, gomod.WithMutableTTL(mutableTTL(pc, cfg)))
 
@@ -557,7 +571,7 @@ const (
 // mountPyPI wires the PyPI handler at /pypi/ using the "pypi" protocol config for
 // upstreams, mutable TTL and the optional dependency-confusion private guard.
 // pypi tops out at TOFU in this batch (no protocol-native signed anchor).
-func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger) {
+func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry) {
 	pc, ok := cfg.Protocols["pypi"]
 	l := log.With("protocol", pypi.Protocol)
 	opts := []pypi.Option{
@@ -567,7 +581,7 @@ func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, pypi.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+			opts = append(opts, pypi.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("pypi")), toUpstreams(pc.Upstreams)))
 		}
 		opts = append(opts, pypi.WithMutableTTL(mutableTTL(pc, cfg)))
 		if dc := pc.Verification.DependencyConfusion; dc != nil && dc.PrivateUpstream != "" {
@@ -587,7 +601,7 @@ func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 // mountNPM wires the npm handler at /npm/ using the "npm" protocol config for
 // upstreams, mutable TTL and the optional dependency-confusion private guard.
 // npm tops out at TOFU in this batch (scoped names are confusion-resistant).
-func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger) {
+func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry) {
 	pc, ok := cfg.Protocols["npm"]
 	l := log.With("protocol", npm.Protocol)
 	opts := []npm.Option{
@@ -597,7 +611,7 @@ func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, npm.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+			opts = append(opts, npm.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("npm")), toUpstreams(pc.Upstreams)))
 		}
 		opts = append(opts, npm.WithMutableTTL(mutableTTL(pc, cfg)))
 		if dc := pc.Verification.DependencyConfusion; dc != nil && dc.PrivateUpstream != "" {
@@ -620,7 +634,7 @@ func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 // GPG chain verifier (apt's signed anchor) is passed in when configured; the same
 // instance is already registered in the shared verify chain so verify-on-write and
 // the handler share one stateful anchor. Without it, apt tops out at tofu.
-func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, gpgV *verify.GPGVerifier) {
+func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, gpgV *verify.GPGVerifier) {
 	pc, ok := cfg.Protocols["apt"]
 	opts := []apthandler.Option{
 		apthandler.WithMeta(metaStore),
@@ -629,7 +643,7 @@ func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, apthandler.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+			opts = append(opts, apthandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("apt")), toUpstreams(pc.Upstreams)))
 		}
 		opts = append(opts, apthandler.WithMutableTTL(mutableTTL(pc, cfg)))
 	}
@@ -645,7 +659,7 @@ func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 // protocol config. The .prov GPG verifier (helm's signed anchor) is passed in
 // when configured; the same instance is registered in the shared chain. Without
 // it, helm tops out at tofu.
-func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, provV *verify.HelmProvVerifier) {
+func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, provV *verify.HelmProvVerifier) {
 	pc, ok := cfg.Protocols["helm"]
 	opts := []helmhandler.Option{
 		helmhandler.WithMeta(metaStore),
@@ -654,7 +668,7 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, helmhandler.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+			opts = append(opts, helmhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("helm")), toUpstreams(pc.Upstreams)))
 		}
 		opts = append(opts, helmhandler.WithMutableTTL(mutableTTL(pc, cfg)))
 	}
@@ -670,7 +684,7 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 // "tarball" protocol config. The allowed-host allowlist is derived from the
 // configured upstream base URLs (a request host outside the list is rejected).
 // tarball tops out at TOFU (immutable digest pin) in this batch.
-func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger) {
+func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry) {
 	pc, ok := cfg.Protocols["tarball"]
 	opts := []tarballhandler.Option{
 		tarballhandler.WithMeta(metaStore),
@@ -680,7 +694,7 @@ func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager,
 	hosts := []string{}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, tarballhandler.WithUpstream(upstream.NewClient(), toUpstreams(pc.Upstreams)))
+			opts = append(opts, tarballhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("tarball")), toUpstreams(pc.Upstreams)))
 		}
 		hosts = upstreamHosts(pc.Upstreams)
 		opts = append(opts, tarballhandler.WithAllowedHosts(hosts))

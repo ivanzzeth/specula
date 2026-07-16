@@ -9,8 +9,10 @@ import (
 	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/grant"
 	"github.com/ivanzzeth/specula/internal/org"
+	"github.com/ivanzzeth/specula/internal/repo"
 	"github.com/ivanzzeth/specula/internal/stats"
 	"github.com/ivanzzeth/specula/internal/store/meta"
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
 // BlobUsageReporter is the narrow slice of blob.BlobStore the admin API needs:
@@ -59,6 +61,21 @@ type Deps struct {
 	// GrantStore is the cross-org resource-sharing grants layer.
 	// Optional: when nil, grant-aware acl falls back to CanAccess.
 	GrantStore grant.Store
+
+	// ── registry + cache browser deps (R3) ───────────────────────────────────
+
+	// RepoStore is the hosted-repo metadata layer backing the repo admin API
+	// (list / visibility / delete). Optional: when nil, repo endpoints
+	// return 501.
+	RepoStore repo.RepoStore
+	// TagStore is the hosted repo tag→digest pointer layer backing the tag
+	// list/delete endpoints. Optional: when nil, tag endpoints return 501.
+	TagStore repo.TagStore
+	// Upstreams is the per-protocol upstream Runtime registry: live mirror
+	// health/latency/serve counts plus the operator's runtime overrides.
+	// Optional: when nil, GET /admin/upstreams degrades to a config-only
+	// snapshot and the mutating upstream endpoints return 501.
+	Upstreams *upstream.Registry
 }
 
 // Server holds the admin API dependencies and serves the /api/v1 routes.
@@ -82,6 +99,11 @@ type Server struct {
 	orgs   org.Store
 	keys   apikey.Store
 	grants grant.Store
+
+	// registry + cache browser deps (R3)
+	repos     repo.RepoStore
+	tags      repo.TagStore
+	upstreams *upstream.Registry
 }
 
 // New constructs an admin Server from deps. The logger falls back to
@@ -106,6 +128,10 @@ func New(deps Deps) *Server {
 		orgs:   deps.OrgStore,
 		keys:   deps.KeyStore,
 		grants: deps.GrantStore,
+
+		repos:     deps.RepoStore,
+		tags:      deps.TagStore,
+		upstreams: deps.Upstreams,
 	}
 }
 

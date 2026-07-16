@@ -34,7 +34,22 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// ── admin-only: system_role=="admin" ─────────────────────────────────────
 	mux.Handle("GET /api/v1/admin/stats", adminOnly(s.handleStats))
 	mux.Handle("GET /api/v1/admin/stats/series", adminOnly(s.handleStatsSeries))
+
+	// Upstream mirror chains (R3 §5.3): live per-protocol health/latency/serve
+	// share, plus runtime steering (reorder / enable-disable / unblock). The
+	// mutations are admin-only because they change what every tenant's cache
+	// misses hit.
 	mux.Handle("GET /api/v1/admin/upstreams", adminOnly(s.handleUpstreams))
+	mux.Handle("POST /api/v1/admin/upstreams/{protocol}/reorder", adminOnly(s.handleReorderUpstreams))
+	mux.Handle("PATCH /api/v1/admin/upstreams/{protocol}/{id}", adminOnly(s.handlePatchUpstream))
+	mux.Handle("POST /api/v1/admin/upstreams/{protocol}/{id}/unblock", adminOnly(s.handleUnblockUpstream))
+
+	// Cache browser (R3 §5.2): per-protocol paginated listing of what is
+	// actually cached, plus per-entry eviction and pin/protect. Admin-only: the
+	// cache is a shared, cross-tenant resource.
+	mux.Handle("GET /api/v1/admin/cache/{protocol}", adminOnly(s.handleListCache))
+	mux.Handle("DELETE /api/v1/admin/cache/{protocol}/{id}", adminOnly(s.handleDeleteCacheEntry))
+	mux.Handle("POST /api/v1/admin/cache/{protocol}/{id}/pin", adminOnly(s.handlePinCacheEntry))
 
 	mux.Handle("GET /api/v1/admin/users", adminOnly(s.handleListUsers))
 	mux.Handle("POST /api/v1/admin/users", adminOnly(s.handleCreateUser))
@@ -81,4 +96,20 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Invitations.
 	mux.Handle("POST /api/v1/orgs/{id}/invitations", requireSubject(s.handleCreateInvitation))
 	mux.Handle("POST /api/v1/invitations/accept", requireSubject(s.handleAcceptInvitation))
+
+	// Hosted repos (R3 §5.1). Org-scoped rather than admin-only: these are a
+	// tenant's own repositories, so any authenticated principal may ask, and
+	// per-repo authorization is decided inside the handlers by acl.CanAccess
+	// plus the org role ladder (see authorizeRepo). The {org} segment accepts an
+	// org slug or id — the slug is what appears in a pull reference.
+	//
+	// Note the path parameter is {org} here, whereas the org/member routes above
+	// use {id}: Go 1.22 routing requires a consistent name per path position
+	// only within a single pattern, and these are distinct patterns.
+	mux.Handle("GET /api/v1/orgs/{org}/repos", requireSubject(s.handleListRepos))
+	mux.Handle("GET /api/v1/orgs/{org}/repos/{repo}", requireSubject(s.handleGetRepo))
+	mux.Handle("PATCH /api/v1/orgs/{org}/repos/{repo}", requireSubject(s.handlePatchRepo))
+	mux.Handle("DELETE /api/v1/orgs/{org}/repos/{repo}", requireSubject(s.handleDeleteRepo))
+	mux.Handle("GET /api/v1/orgs/{org}/repos/{repo}/tags", requireSubject(s.handleListRepoTags))
+	mux.Handle("DELETE /api/v1/orgs/{org}/repos/{repo}/tags/{tag}", requireSubject(s.handleDeleteRepoTag))
 }

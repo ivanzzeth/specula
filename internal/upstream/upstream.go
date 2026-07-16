@@ -75,5 +75,21 @@ type Client interface {
 	Revalidate(ctx context.Context, ref artifact.ArtifactRef, prev artifact.UpstreamMeta, upstreams []Upstream, opts ...RequestOption) (body io.ReadCloser, meta artifact.UpstreamMeta, notModified bool, err error)
 }
 
-// NewClient constructs the default fallback-chain upstream Client.
+// NewClient constructs the default fallback-chain upstream Client. It keeps its
+// own auto-block state and records no measurements; use NewClientWithRuntime
+// when the mirror chain must be observable or operator-controllable.
 func NewClient() Client { return newFallbackClient() }
+
+// NewClientWithRuntime constructs a fallback-chain Client bound to rt, the
+// per-protocol Runtime that both observes and steers the chain:
+//
+//   - every successful fetch records the mirror's latency, serve count and
+//     last-served time into rt;
+//   - every failure records its reason into rt;
+//   - rt's auto-block state is shared with (not merely mirrored from) the fetch
+//     path, so the admin view can never disagree with what is actually blocked;
+//   - rt's operator overrides (disable / reorder) are applied before each fetch.
+//
+// rt must be non-nil; pass upstream.NewRuntime(protocol) or a Registry's
+// Runtime(protocol).
+func NewClientWithRuntime(rt *Runtime) Client { return newFallbackClientWithRuntime(rt) }

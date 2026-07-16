@@ -23,6 +23,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/org"
+	"github.com/ivanzzeth/specula/internal/store/meta"
 )
 
 // ---- fake dependencies -------------------------------------------------------
@@ -205,15 +206,49 @@ type fakeBlobReporter struct{ usedBytes int64 }
 
 func (r *fakeBlobReporter) UsageBytes(_ context.Context) (int64, error) { return r.usedBytes, nil }
 
-// fakeMetaStore satisfies meta.MetadataStore (used in Deps.Meta; not exercised
-// by admin handlers yet but required for construction).
-type fakeMetaStore struct{}
+// fakeMetaStore is an in-memory meta.MetadataStore for the admin handler tests.
+// ListEntries / SetPinned / Delete are backed by a real slice so the cache
+// browser endpoints can be exercised end-to-end (filtering, sorting, paging);
+// the remaining methods are inert stubs the admin API never calls.
+type fakeMetaStore struct {
+	mu      sync.Mutex
+	entries []meta.Entry
+	listErr error
+}
+
+// seed replaces the store's contents. Each entry's ID is derived exactly as a
+// real driver would, so tests address rows through the same opaque IDs the API
+// hands to clients.
+func (m *fakeMetaStore) seed(entries ...meta.Entry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.entries = nil
+	for _, e := range entries {
+		e.Protocol = e.Ref.Protocol
+		e.ID = meta.EncodeEntryID(e.Ref)
+		m.entries = append(m.entries, e)
+	}
+}
 
 func (m *fakeMetaStore) Get(_ context.Context, _ artifact.ArtifactRef) (*artifact.CacheEntry, error) {
 	return nil, nil
 }
-func (m *fakeMetaStore) Put(_ context.Context, _ artifact.CacheEntry) error     { return nil }
-func (m *fakeMetaStore) Delete(_ context.Context, _ artifact.ArtifactRef) error { return nil }
+func (m *fakeMetaStore) Put(_ context.Context, _ artifact.CacheEntry) error { return nil }
+
+func (m *fakeMetaStore) Delete(_ context.Context, ref artifact.ArtifactRef) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	kept := m.entries[:0]
+	for _, e := range m.entries {
+		if e.Ref.Protocol == ref.Protocol && e.Ref.Name == ref.Name && e.Ref.Version == ref.Version {
+			continue
+		}
+		kept = append(kept, e)
+	}
+	m.entries = kept
+	return nil
+}
+
 func (m *fakeMetaStore) GetMutable(_ context.Context, _ string) (*artifact.MutableEntry, error) {
 	return nil, nil
 }
@@ -221,6 +256,84 @@ func (m *fakeMetaStore) PutMutable(_ context.Context, _ artifact.MutableEntry) e
 func (m *fakeMetaStore) DeleteMutable(_ context.Context, _ string) error             { return nil }
 func (m *fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	return map[string]artifact.SizeStat{}, nil
+}
+
+// ListEntries mirrors the drivers' contract: filter, then order, then window,
+// reporting Total against the filter (not the window).
+func (m *fakeMetaStore) ListEntries(_ context.Context, protocol string, f meta.EntryFilter, p meta.Page) (meta.EntryPage, error) {
+	if m.listErr != nil {
+		return meta.EntryPage{}, m.listErr
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p = p.Normalize()
+
+	var matched []meta.Entry
+	for _, e := range m.entries {
+		if protocol != "" && e.Ref.Protocol != protocol {
+			continue
+		}
+		if f.NameContains != "" && !strings.Contains(e.Ref.Name, f.NameContains) {
+			continue
+		}
+		if f.Tier != nil && e.Tier != *f.Tier {
+			continue
+		}
+		if f.Upstream != "" && e.Upstream != f.Upstream {
+			continue
+		}
+		if f.Pinned != nil && e.Pinned != *f.Pinned {
+			continue
+		}
+		matched = append(matched, e)
+	}
+
+	sort.SliceStable(matched, func(i, j int) bool {
+		a, b := matched[i], matched[j]
+		var less bool
+		switch p.Sort {
+		case meta.SortSize:
+			less = a.Size < b.Size
+		case meta.SortName:
+			less = a.Ref.Name < b.Ref.Name
+		case meta.SortVerifiedAt:
+			less = a.VerifiedAt.Before(b.VerifiedAt)
+		default:
+			less = a.CreatedAt.Before(b.CreatedAt)
+		}
+		if p.Desc {
+			return !less
+		}
+		return less
+	})
+
+	total := int64(len(matched))
+	start := p.Offset
+	if start > len(matched) {
+		start = len(matched)
+	}
+	end := start + p.Limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	return meta.EntryPage{
+		Entries: matched[start:end],
+		Total:   total,
+		Limit:   p.Limit,
+		Offset:  p.Offset,
+	}, nil
+}
+
+func (m *fakeMetaStore) SetPinned(_ context.Context, ref artifact.ArtifactRef, pinned bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.entries {
+		e := &m.entries[i]
+		if e.Ref.Protocol == ref.Protocol && e.Ref.Name == ref.Name && e.Ref.Version == ref.Version {
+			e.Pinned = pinned
+		}
+	}
+	return nil
 }
 
 // ---- fake org store ----------------------------------------------------------
@@ -1023,7 +1136,10 @@ func TestHandleStatsSeries(t *testing.T) {
 
 // ---- upstreams ---------------------------------------------------------------
 
-func TestHandleUpstreams(t *testing.T) {
+// Without an upstream Registry wired in, the endpoint must still enumerate the
+// configured chain — but flag it as not live, so the UI renders "—" for every
+// measurement rather than presenting config as observed fact.
+func TestHandleUpstreams_ConfigOnlyWhenNoRuntime(t *testing.T) {
 	h := newHarness(t)
 	_, tok := h.mustCreateAdmin(t)
 
@@ -1032,10 +1148,17 @@ func TestHandleUpstreams(t *testing.T) {
 
 	var resp UpstreamsResponse
 	decodeJSON(t, rr, &resp)
-	require.Len(t, resp.Upstreams, 1)
-	assert.Equal(t, "oci", resp.Upstreams[0].Protocol)
-	assert.Equal(t, "https://registry-1.docker.io", resp.Upstreams[0].URL)
-	assert.False(t, resp.Upstreams[0].Blocked)
+	require.Len(t, resp.Protocols, 1)
+
+	p := resp.Protocols[0]
+	assert.Equal(t, "oci", p.Protocol)
+	assert.False(t, p.Live, "no Registry wired in ⇒ not live")
+	require.Len(t, p.Mirrors, 1)
+	assert.Equal(t, "dockerhub", p.Mirrors[0].Name)
+	assert.Equal(t, "https://registry-1.docker.io", p.Mirrors[0].URL)
+	assert.Equal(t, "unknown", p.Mirrors[0].Health, "unmeasured must not read as up")
+	assert.False(t, p.Mirrors[0].Blocked)
+	assert.False(t, p.Mirrors[0].HasLatency)
 }
 
 // ---- list users --------------------------------------------------------------

@@ -37,6 +37,13 @@ func (f *fakeStore) GetMutable(_ context.Context, _ string) (*artifact.MutableEn
 }
 func (f *fakeStore) PutMutable(_ context.Context, _ artifact.MutableEntry) error { return nil }
 func (f *fakeStore) DeleteMutable(_ context.Context, _ string) error             { return nil }
+
+// ListEntries / SetPinned are part of meta.MetadataStore but unused by the
+// stats collector (which only aggregates); stubbed to satisfy the interface.
+func (f *fakeStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
+	return meta.EntryPage{}, nil
+}
+func (f *fakeStore) SetPinned(_ context.Context, _ artifact.ArtifactRef, _ bool) error { return nil }
 func (f *fakeStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	if f.statsErr != nil {
 		return nil, f.statsErr

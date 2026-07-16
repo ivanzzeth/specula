@@ -18,6 +18,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/handler/registry"
 	"github.com/ivanzzeth/specula/internal/repo"
+	"github.com/ivanzzeth/specula/internal/store/meta"
 )
 
 // ── meta store double ─────────────────────────────────────────────────────────
@@ -91,6 +92,16 @@ func (m *memMetaStore) DeleteMutable(_ context.Context, key string) error {
 
 func (m *memMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	return map[string]artifact.SizeStat{}, nil
+}
+
+// ListEntries / SetPinned are part of meta.MetadataStore but unused by the
+// registry discovery path; stubbed to satisfy the interface.
+func (m *memMetaStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
+	return meta.EntryPage{}, nil
+}
+
+func (m *memMetaStore) SetPinned(_ context.Context, _ artifact.ArtifactRef, _ bool) error {
+	return nil
 }
 
 // hasMutable reports whether a mutable key is present.

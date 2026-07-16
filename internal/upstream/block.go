@@ -88,3 +88,14 @@ func (b *blockTracker) failureCount(name string) int {
 	defer b.mu.Unlock()
 	return b.failures[name]
 }
+
+// blockedUntilTime returns when name's block window expires, or the zero time
+// when it is not currently blocked. Unlike isBlocked it is a pure read: it does
+// not clear an expired entry, so it is safe to call while rendering a snapshot.
+// An already-elapsed instant therefore means "expired but not yet reaped" and
+// must be treated as unblocked — callers pair this with isBlocked.
+func (b *blockTracker) blockedUntilTime(name string) time.Time {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.blockedUntil[name]
+}
