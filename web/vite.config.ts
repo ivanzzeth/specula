@@ -22,6 +22,10 @@ function keepGitkeep(): Plugin {
 export default defineConfig({
   base: '/',
   plugins: [react(), keepGitkeep()],
+  resolve: {
+    // '@' → src, the import root shadcn/ui components expect.
+    alias: { '@': resolve(__dirname, 'src') },
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,

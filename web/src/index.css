@@ -1,39 +1,115 @@
+/*
+  Self-hosted IBM Plex Mono (via @fontsource → bundled by Vite, no external
+  request at runtime). Four weights only — the instrument-panel voice needs
+  regular/medium for data, semibold/bold for hierarchy, and nothing else.
+*/
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+@import '@fontsource/ibm-plex-mono/700.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /*
-  Global font: IBM Plex Mono. No vendored woff2 in this repo — rely on the system
-  monospace fallback stack configured in tailwind.config.js. The font declaration
-  is here so adding woff2 files later (under public/fonts/) just works without
-  changing component code.
+  ───────────────────────────────────────────────────────────────────────────
+  Design tokens — "industrial instrument panel" (REGISTRY-DESIGN §5.0)
+
+  This file is the single source of truth for colour. shadcn/ui components are
+  copied in verbatim for their BEHAVIOUR (Radix a11y, keyboard, focus) and read
+  their colours from the variables below — which are wired to our warm
+  near-black ramp and instrument amber, NOT to shadcn's defaults. That is what
+  keeps a copied-in component from looking like a stock template.
+
+  All values are HSL triplets (no hsl() wrapper) because that is the format
+  Tailwind's `hsl(var(--x))` bindings expect.
+  ───────────────────────────────────────────────────────────────────────────
 */
-
-html,
-body,
-#root {
-  height: 100%;
-}
-
-/* Engineering console base typography: dark, monospace, hairline dividers over shadows. */
 @layer base {
+  :root {
+    /* Near-square corners. The single knob every radius derives from. */
+    --radius: 3px;
+
+    /* ── surfaces: warm near-black, depth by layering not shadow ─────────── */
+    --background: 30 11% 4%; /* #0a0908 — app bg (slate-950) */
+    --foreground: 40 28% 90%; /* #ece7dd — primary text (slate-100) */
+    --card: 40 9% 7%; /* #131210 — panel (slate-900) */
+    --card-foreground: 40 28% 90%;
+    --popover: 40 9% 7%;
+    --popover-foreground: 40 28% 90%;
+
+    /* ── hairlines: 1px dividers do the work shadows would ───────────────── */
+    --border: 40 12% 10%; /* #1c1a16 — slate-800 */
+    --input: 40 12% 10%;
+
+    /* ── instrument amber: the only accent ───────────────────────────────── */
+    --primary: 37 100% 59%; /* #ffb02e */
+    --primary-foreground: 42 100% 5%; /* #1a1200 */
+    --ring: 37 100% 59%; /* focus ring is always amber */
+
+    /* ── secondary/muted/accent: neutrals, never a second accent hue ─────── */
+    --secondary: 35 13% 18%; /* #332e27 — slate-700 */
+    --secondary-foreground: 40 28% 90%;
+    --muted: 40 12% 10%;
+    --muted-foreground: 37 8% 51%; /* #8c8477 — slate-400, secondary text */
+    --accent: 35 13% 18%; /* hover surface — NOT an accent colour */
+    --accent-foreground: 40 28% 90%;
+    --destructive: 2 62% 55%;
+    --destructive-foreground: 40 28% 90%;
+
+    /*
+      ── status lamps: a SEPARATE axis from the accent ───────────────────────
+      Amber is reserved for interaction. Trust tiers and upstream health are
+      information and must read semantically (REGISTRY-DESIGN §5.0), so they
+      get their own instrument-lamp ramp.
+
+      --status-warn is lemon (hue 52) not amber (hue 37): a tofu badge must
+      never be mistaken for an interactive control. Badges are tinted+outlined,
+      never solid-filled, which keeps that separation legible.
+
+      --status-unknown is the neutral secondary-text colour on purpose: "not
+      measured" is an absence of data, not a good state.
+    */
+    --status-ok: 150 52% 45%; /* signed · up */
+    --status-info: 195 62% 48%; /* consensus · probing */
+    --status-warn: 52 85% 58%; /* tofu */
+    --status-danger: 2 62% 55%; /* checksum · blocked */
+    --status-unknown: 37 8% 51%; /* unknown / no data */
+  }
+
+  /*
+    The theme is dark, single-mode, and committed. `.dark` mirrors :root so a
+    shadcn component carrying dark: variants cannot fall back to a light
+    surface it was never designed against here.
+  */
+  .dark {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
   html {
     color-scheme: dark;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
   }
+
   body {
-    @apply bg-slate-950 text-slate-100 font-mono;
-    font-size: 13.5px;
+    @apply bg-background text-foreground font-mono text-body;
     letter-spacing: 0;
   }
-  h1,
-  h2,
-  h3 {
-    letter-spacing: -0.01em;
+
+  * {
+    @apply border-border;
   }
-  /* Thin scrollbar matching the warm near-black palette */
+
+  /* Thin scrollbar matching the warm near-black palette. */
   * {
     scrollbar-width: thin;
     scrollbar-color: #332e27 transparent;
@@ -49,10 +125,67 @@ body,
   *::-webkit-scrollbar-thumb:hover {
     background: #4a443b;
   }
+
   ::selection {
     background: rgba(255, 176, 46, 0.28);
   }
+
+  /*
+    Focus is amber and unmistakable — this is an operator tool driven by
+    keyboard as much as mouse. Never remove the ring; only shape it.
+  */
   :focus-visible {
     outline: none;
+  }
+
+  /* Respect reduced-motion: our motion only reveals hierarchy, so dropping it
+     costs nothing functional. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /*
+    ── panel ────────────────────────────────────────────────────────────────
+    The base surface of the whole UI: a hairline box on the app background.
+    No shadow — depth comes from the 950/900 surface step plus the 1px border.
+  */
+  .panel {
+    @apply border border-slate-800 bg-slate-900;
+  }
+
+  /*
+    ── section label ────────────────────────────────────────────────────────
+    Small, wide-tracked, upper-case. Used for panel headers and table headers
+    so the scale contrast (label 11px → readout 30px) carries the hierarchy.
+  */
+  .section-label {
+    @apply text-label font-semibold uppercase tracking-wider text-slate-400;
+  }
+
+  /*
+    ── status lamp ──────────────────────────────────────────────────────────
+    A 6px square (not a circle — this is an instrument panel) whose colour is
+    set by the caller via `bg-health-*` / `bg-tier-*`.
+  */
+  .lamp {
+    @apply inline-block h-1.5 w-1.5 shrink-0 rounded-[1px];
+  }
+
+  /*
+    ── tabular numerals ─────────────────────────────────────────────────────
+    Any column of numbers (sizes, latencies, counts) must not jitter as values
+    change. IBM Plex Mono is already monospaced, but this also aligns the
+    variant figures.
+  */
+  .tnum {
+    font-variant-numeric: tabular-nums;
   }
 }
