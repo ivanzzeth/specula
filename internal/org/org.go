@@ -25,6 +25,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -79,10 +80,44 @@ func roleRank(role string) int {
 
 // NormalizeRole maps an unknown/empty role to the most conservative viewer.
 func NormalizeRole(role string) string {
-	if roleRank(role) == 0 {
+	if r := NormalizeLegacyRole(role); r != "" {
+		return r
+	}
+	return RoleViewer
+}
+
+// NormalizeLegacyRole maps a role value onto the four-rung ladder, translating
+// the legacy aliases carried by historical rows (org_admin→admin, member→editor).
+// It returns "" for an unrecognised value, letting callers distinguish "not a
+// role I know" from a real role — NormalizeRole collapses that to viewer, which
+// is right for storage but wrong for validating user input, where a typo should
+// be rejected rather than silently downgraded.
+func NormalizeLegacyRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case RoleOwner:
+		return RoleOwner
+	case RoleAdmin, "org_admin":
+		return RoleAdmin
+	case RoleEditor, "member":
+		return RoleEditor
+	case RoleViewer:
 		return RoleViewer
 	}
-	return role
+	return ""
+}
+
+// NormalizeSystemRole maps a system-role value (auth.User.SystemRole) onto the
+// backoffice ladder, which reuses viewer<editor<admin and has no owner. Both ""
+// and the legacy "user" mean NO system access and normalise to "" — the
+// distinction is load-bearing: a system role grants implicit read-only sight of
+// every org, so treating the "user" every ordinary account carries as a system
+// role would hand all of them cross-tenant read.
+func NormalizeSystemRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case RoleViewer, RoleEditor, RoleAdmin:
+		return strings.ToLower(strings.TrimSpace(role))
+	}
+	return ""
 }
 
 // AtLeast reports whether have satisfies the want role threshold on the ladder

@@ -75,9 +75,18 @@ func (s *Server) subjectFor(r *http.Request, orgID string) acl.Subject {
 	return subj
 }
 
-// orgRoleOf returns the caller's org role in orgID, or "" when they are not a
-// member (or are not a session user — an API key has no role ladder).
+// orgRoleOf returns the caller's effective org role in orgID, or "" when they
+// have none.
+//
+// It defers to the role PrincipalMiddleware already resolved for the active org,
+// which is the only place that knows about a system-role holder's implicit
+// read-only view. Re-deriving the role from membership alone silently dropped
+// that view: a system viewer could list an org's repos but got 404 on any single
+// one of them — read-only access that could not actually read.
 func (s *Server) orgRoleOf(r *http.Request, orgID string) string {
+	if active, ok := auth.ActiveOrgFromContext(r.Context()); ok && active.ID == orgID {
+		return active.Role
+	}
 	u, ok := auth.UserFromContext(r.Context())
 	if !ok || s.orgs == nil {
 		return ""
@@ -86,7 +95,7 @@ func (s *Server) orgRoleOf(r *http.Request, orgID string) string {
 	if err != nil || m == nil {
 		return ""
 	}
-	return m.Role
+	return org.NormalizeRole(m.Role)
 }
 
 // authorizeRepo decides whether the caller may read (needWrite=false) or

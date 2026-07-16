@@ -228,11 +228,17 @@ type LoginResponse struct {
 // MeResponse is the GET /api/v1/me payload. The base user info is always
 // present; org context fields are populated when an org store is wired in.
 type MeResponse struct {
-	User          UserDTO  `json:"user"`
-	IsAdmin       bool     `json:"is_admin"`
-	ActiveOrgID   string   `json:"active_org_id,omitempty"`
-	ActiveOrgRole string   `json:"active_org_role,omitempty"`
-	Orgs          []OrgDTO `json:"orgs,omitempty"`
+	User          UserDTO `json:"user"`
+	IsAdmin       bool    `json:"is_admin"`
+	ActiveOrgID   string  `json:"active_org_id,omitempty"`
+	ActiveOrgRole string  `json:"active_org_role,omitempty"`
+	// ActiveOrgSystemAccess reports that the active org is visible only through
+	// an implicit system-role read-only view, not a real membership.
+	ActiveOrgSystemAccess bool `json:"active_org_system_access,omitempty"`
+	// Orgs is every org the caller is a member of. Always serialised (never
+	// null) — an empty list is the actionable "you belong to no organization"
+	// signal the org switcher and RequireOrg both key off.
+	Orgs []OrgDTO `json:"orgs"`
 }
 
 // ---- verification events (GET /api/v1/admin/events) --------------------------
@@ -296,12 +302,23 @@ type OrgDTO struct {
 	// Role is the caller's effective role in the org; populated by handlers
 	// that have access to the member record.
 	Role string `json:"role,omitempty"`
+	// SystemAccess marks an org visible only through a system-role holder's
+	// implicit read-only view rather than a real membership.
+	SystemAccess bool `json:"system_access,omitempty"`
 }
 
-// CreateOrgRequest is the POST /api/v1/orgs body.
+// CreateOrgRequest is the POST /api/v1/orgs body. Slug is optional: it is
+// derived from Name when omitted, so a user creating their first org need only
+// think of a name.
 type CreateOrgRequest struct {
 	Name string `json:"name"`
-	Slug string `json:"slug"`
+	Slug string `json:"slug,omitempty"`
+}
+
+// UpdateOrgRequest is the PUT /api/v1/orgs/{id} body. Fields are pointers so an
+// omitted field means "leave unchanged" rather than "set to empty".
+type UpdateOrgRequest struct {
+	Name *string `json:"name,omitempty"`
 }
 
 // OrgsResponse is the paginated org-list payload.
@@ -364,9 +381,17 @@ type CreateInvitationRequest struct {
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
-// AcceptInvitationRequest is the POST /api/v1/invitations/accept body.
+// AcceptInvitationRequest is the POST /api/v1/invitations/accept body (the
+// legacy alias for PATCH /api/v1/invitations/{token}).
 type AcceptInvitationRequest struct {
 	Token string `json:"token"`
+}
+
+// PatchInvitationRequest is the PATCH /api/v1/invitations/{token} body. The
+// invitation's status is a property of the resource, so responding to an
+// invitation is an update to it rather than an action endpoint.
+type PatchInvitationRequest struct {
+	Status string `json:"status"` // "accepted" | "declined"
 }
 
 // ---- api keys (POST/GET/DELETE /api/v1/keys) ---------------------------------

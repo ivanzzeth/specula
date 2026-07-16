@@ -1966,7 +1966,11 @@ func TestMeOrgContext(t *testing.T) {
 		OrgID: org.DefaultOrgID, Email: adminUser.Email, Role: org.RoleOwner,
 	})
 
-	t.Run("/me includes org context", func(t *testing.T) {
+	t.Run("/me lists memberships; no X-Org-Id means no active org", func(t *testing.T) {
+		// Without a header the caller has named no org, so there is no active
+		// one to report. Defaulting to org_default here was the phantom
+		// membership: it claimed an org the caller had not selected, and for a
+		// non-member claimed one they had no right to at all.
 		rr := h.do("GET", "/api/v1/me", adminTok, nil)
 		assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -1974,10 +1978,23 @@ func TestMeOrgContext(t *testing.T) {
 		decodeJSON(t, rr, &resp)
 		assert.Equal(t, adminUser.ID, resp.User.ID)
 		assert.True(t, resp.IsAdmin, "first user must be admin")
-		assert.Equal(t, org.DefaultOrgID, resp.ActiveOrgID)
-		assert.Equal(t, org.RoleOwner, resp.ActiveOrgRole)
+		assert.Empty(t, resp.ActiveOrgID, "no X-Org-Id means no active org")
+		assert.Empty(t, resp.ActiveOrgRole)
+		// The membership list is still the truth, and is what the client uses
+		// to pick an org to send back as X-Org-Id.
 		require.Len(t, resp.Orgs, 1)
 		assert.Equal(t, org.DefaultOrgID, resp.Orgs[0].ID)
+	})
+
+	t.Run("/me with X-Org-Id reports the resolved org and role", func(t *testing.T) {
+		rr := h.doWithOrgHeader("GET", "/api/v1/me", adminTok, org.DefaultOrgID, nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+
+		var resp MeResponse
+		decodeJSON(t, rr, &resp)
+		assert.Equal(t, org.DefaultOrgID, resp.ActiveOrgID)
+		assert.Equal(t, org.RoleOwner, resp.ActiveOrgRole)
+		assert.False(t, resp.ActiveOrgSystemAccess, "a real member is not system access")
 	})
 
 	t.Run("/me without org store returns just user", func(t *testing.T) {

@@ -137,27 +137,28 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.orgs != nil {
-		// Resolve active org: prefer PrincipalMiddleware context, then header,
-		// then DefaultOrgID.
-		orgID, hasOrg := auth.OrgFromContext(r.Context())
-		if !hasOrg {
-			orgID = r.Header.Get("X-Org-Id")
-			if orgID == "" {
-				orgID = org.DefaultOrgID
-			}
-		}
-		resp.ActiveOrgID = orgID
-
-		mem, err := s.orgs.GetOrgMember(r.Context(), orgID, u.Email)
-		if err == nil {
-			resp.ActiveOrgRole = mem.Role
+		// The active org is whatever PrincipalMiddleware actually resolved — a
+		// real membership (or a system-role holder's implicit read-only view).
+		// There is no DefaultOrgID fallback: telling a user who belongs to
+		// nothing that they are in org_default is a phantom membership, and the
+		// UI believed it and then 403'd on every org-scoped call.
+		if active, ok := auth.ActiveOrgFromContext(r.Context()); ok {
+			resp.ActiveOrgID = active.ID
+			resp.ActiveOrgRole = active.Role
+			resp.ActiveOrgSystemAccess = active.SystemAccess
 		}
 
-		orgs, _ := s.orgs.ListOrgsForEmail(r.Context(), u.Email)
+		orgs, err := s.orgs.ListOrgsForEmail(r.Context(), u.Email)
+		if err != nil {
+			s.log.Error("admin: list orgs for /me", "err", err)
+			writeError(w, http.StatusInternalServerError, "failed to resolve organizations")
+			return
+		}
+		// Always a list, never null: "no orgs" is an answer the client must be
+		// able to act on (show the invite-only + create-your-own state).
 		resp.Orgs = make([]OrgDTO, 0, len(orgs))
 		for _, o := range orgs {
-			dto := toOrgDTO(*o)
-			resp.Orgs = append(resp.Orgs, dto)
+			resp.Orgs = append(resp.Orgs, toOrgDTO(*o))
 		}
 	}
 
@@ -614,13 +615,14 @@ func (s *Server) isLastAdmin(ctx context.Context, id int64) (bool, error) {
 // toOrgDTO converts an org.Org to its client-facing projection.
 func toOrgDTO(o org.Org) OrgDTO {
 	return OrgDTO{
-		ID:        o.ID,
-		Name:      o.Name,
-		Slug:      o.Slug,
-		Status:    o.Status,
-		CreatedBy: o.CreatedBy,
-		CreatedAt: o.CreatedAt,
-		Role:      o.Role,
+		ID:           o.ID,
+		Name:         o.Name,
+		Slug:         o.Slug,
+		Status:       o.Status,
+		CreatedBy:    o.CreatedBy,
+		CreatedAt:    o.CreatedAt,
+		Role:         o.Role,
+		SystemAccess: o.SystemAccess,
 	}
 }
 
@@ -637,18 +639,109 @@ func toMemberDTO(m org.Member) MemberDTO {
 }
 
 // toInvitationDTO converts an org.Invitation to its client-facing projection.
-func toInvitationDTO(inv org.Invitation) InvitationDTO {
-	return InvitationDTO{
+// withToken gates the one-time disclosure of the invitation token: the creation
+// response carries it (it is how the invitee is reached, standing in for email
+// delivery), every other view withholds it.
+func toInvitationDTO(inv org.Invitation, withToken bool) InvitationDTO {
+	dto := InvitationDTO{
 		ID:        inv.ID,
 		OrgID:     inv.OrgID,
 		Email:     inv.Email,
 		Role:      inv.Role,
 		InvitedBy: inv.InvitedBy,
-		Token:     inv.Token,
 		Status:    inv.Status,
 		ExpiresAt: inv.ExpiresAt,
 		CreatedAt: inv.CreatedAt,
 	}
+	if withToken {
+		dto.Token = inv.Token
+	}
+	return dto
+}
+
+// decodeJSONBody decodes an request body, writing the uniform 400 on failure.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, v any) error {
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return err
+	}
+	return nil
+}
+
+// slugify renders a display name as a lower-case hyphenated slug, so callers
+// creating an org need only supply a name (mirrors ai-sandbox).
+func slugify(s string) string {
+	var b strings.Builder
+	prevDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(s)) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+			prevDash = false
+		default:
+			if !prevDash {
+				b.WriteByte('-')
+				prevDash = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+// callerIsOrgOwner reports whether the caller wields owner-level authority over
+// orgID. Ownership-sensitive acts (granting owner, demoting or removing a
+// sitting owner) demand it: plain org admins manage members, but they must not
+// be able to seize or dissolve ownership. System admins pass as platform
+// superusers.
+func (s *Server) callerIsOrgOwner(r *http.Request, orgID string) bool {
+	if subj, _ := auth.SubjectFromContext(r.Context()); subj.Admin {
+		return true
+	}
+	u, isUser := auth.UserFromContext(r.Context())
+	if !isUser || s.orgs == nil {
+		return false
+	}
+	m, err := s.orgs.GetOrgMember(r.Context(), orgID, strings.ToLower(strings.TrimSpace(u.Email)))
+	return err == nil && org.NormalizeRole(m.Role) == org.RoleOwner
+}
+
+// guardLastPrivileged blocks changes that would strand an org without an owner
+// (or without an admin). curRole is the member's role today; newRole is what
+// they are becoming ("" for removal/leave). action names the act for the error
+// message ("demote" / "remove" / "leave").
+//
+// fail-CLOSED: if a count cannot be read, the change is refused with 503 rather
+// than waved through. A guard that disables itself under database trouble is
+// exactly when the last owner gets removed.
+func (s *Server) guardLastPrivileged(w http.ResponseWriter, r *http.Request, orgID, curRole, newRole, action string) bool {
+	if curRole == org.RoleOwner && !org.AtLeast(newRole, org.RoleOwner) {
+		n, err := s.orgs.CountOrgOwners(r.Context(), orgID)
+		if err != nil {
+			s.log.Error("admin: count org owners", "err", err, "org_id", orgID)
+			writeError(w, http.StatusServiceUnavailable, "cannot verify owner count; try again")
+			return false
+		}
+		if n <= 1 {
+			writeError(w, http.StatusConflict, "cannot "+action+" the last owner of the organization")
+			return false
+		}
+	}
+	// Owners are counted on the ownership axis above, not here: CountOrgAdmins
+	// tallies role="admin" only, so running this branch for an owner would
+	// spuriously 409 on an org that has owners but no separate admin.
+	if curRole != org.RoleOwner && org.AtLeast(curRole, org.RoleAdmin) && !org.AtLeast(newRole, org.RoleAdmin) {
+		n, err := s.orgs.CountOrgAdmins(r.Context(), orgID)
+		if err != nil {
+			s.log.Error("admin: count org admins", "err", err, "org_id", orgID)
+			writeError(w, http.StatusServiceUnavailable, "cannot verify admin count; try again")
+			return false
+		}
+		if n <= 1 {
+			writeError(w, http.StatusConflict, "cannot "+action+" the last admin of the organization")
+			return false
+		}
+	}
+	return true
 }
 
 // toKeyDTO converts an apikey.KeyInfo to its client-facing projection.
@@ -794,6 +887,29 @@ func (s *Server) handleListOrgs(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to list orgs")
 			return
 		}
+		// A system-role holder additionally sees every other org as an implicit
+		// read-only viewer, marked system_access so the UI can distinguish a
+		// real membership from a backoffice view. Membership always wins.
+		if org.NormalizeSystemRole(u.SystemRole) != "" {
+			member := make(map[string]bool, len(orgList))
+			for _, o := range orgList {
+				member[o.ID] = true
+			}
+			all, listErr := s.orgs.ListOrgs(r.Context())
+			if listErr != nil {
+				s.log.Error("admin: list all orgs", "err", listErr)
+				writeError(w, http.StatusInternalServerError, "failed to list orgs")
+				return
+			}
+			for _, o := range all {
+				if member[o.ID] {
+					continue
+				}
+				o.Role = org.RoleViewer
+				o.SystemAccess = true
+				orgList = append(orgList, o)
+			}
+		}
 	} else if subj.OrgID != "" {
 		// API-key caller: return just the key's pinned org.
 		o, getErr := s.orgs.GetOrg(r.Context(), subj.OrgID)
@@ -822,20 +938,35 @@ func (s *Server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if strings.TrimSpace(req.Name) == "" {
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if strings.TrimSpace(req.Slug) == "" {
-		writeError(w, http.StatusBadRequest, "slug is required")
+	slug := strings.ToLower(strings.TrimSpace(req.Slug))
+	if slug == "" {
+		slug = slugify(name)
+	}
+	if slug == "" {
+		writeError(w, http.StatusBadRequest, "name must contain at least one letter or digit")
+		return
+	}
+
+	// Self-service org creation is for humans only: the new org's owner is the
+	// caller's email, and an API key has no email to own anything with. This is
+	// also the escape hatch for a user who belongs to no org, so it must not be
+	// gated on already having one.
+	u, isUser := auth.UserFromContext(r.Context())
+	if !isUser {
+		writeError(w, http.StatusForbidden, "human login required to create an org")
 		return
 	}
 
 	subj, _ := auth.SubjectFromContext(r.Context())
 	now := time.Now().UTC()
 	newOrg := &org.Org{
-		Name:      req.Name,
-		Slug:      req.Slug,
+		Name:      name,
+		Slug:      slug,
 		Status:    org.StatusActive,
 		CreatedBy: subj.UserID,
 		CreatedAt: now,
@@ -847,17 +978,21 @@ func (s *Server) handleCreateOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Add the creator as org owner if we have a session user.
-	u, isUser := auth.UserFromContext(r.Context())
-	if isUser && newOrg.ID != "" {
-		_ = s.orgs.AddOrgMember(r.Context(), &org.Member{
-			OrgID:     newOrg.ID,
-			Email:     u.Email,
-			Role:      org.RoleOwner,
-			CreatedAt: now,
-		})
+	// The creator becomes owner. This is not best-effort: an org whose creator
+	// is not a member is an org nobody can administer — the exact dead end this
+	// endpoint exists to escape.
+	if err := s.orgs.AddOrgMember(r.Context(), &org.Member{
+		OrgID:     newOrg.ID,
+		Email:     u.Email,
+		Role:      org.RoleOwner,
+		CreatedAt: now,
+	}); err != nil {
+		s.log.Error("admin: add creator as owner", "err", err, "org_id", newOrg.ID)
+		writeError(w, http.StatusInternalServerError, "failed to assign org owner")
+		return
 	}
 
+	newOrg.Role = org.RoleOwner
 	writeJSON(w, http.StatusCreated, toOrgDTO(*newOrg))
 }
 
@@ -902,31 +1037,82 @@ func (s *Server) handleGetOrg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toOrgDTO(*o))
 }
 
+// handleUpdateOrg → PUT /api/v1/orgs/{id}. Updates the org's display name.
+// Requires org admin on the path org (or system editor+).
+func (s *Server) handleUpdateOrg(w http.ResponseWriter, r *http.Request) {
+	if s.orgs == nil {
+		writeError(w, http.StatusNotImplemented, "org store not configured")
+		return
+	}
+	orgID := r.PathValue("id")
+	o, err := s.orgs.GetOrg(r.Context(), orgID)
+	if err != nil {
+		if errors.Is(err, org.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "org not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to get org")
+		return
+	}
+	if !s.requireOrgAdmin(w, r, orgID) {
+		return
+	}
+
+	var req UpdateOrgRequest
+	if err := decodeJSONBody(w, r, &req); err != nil {
+		return
+	}
+	if req.Name != nil {
+		name := strings.TrimSpace(*req.Name)
+		if name == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		o.Name = name
+	}
+	if err := s.orgs.UpdateOrg(r.Context(), o); err != nil {
+		s.log.Error("admin: update org", "err", err, "org_id", orgID)
+		writeError(w, http.StatusInternalServerError, "failed to update org")
+		return
+	}
+	writeJSON(w, http.StatusOK, toOrgDTO(*o))
+}
+
 // ---- members -----------------------------------------------------------------
 
 // requireOrgAdmin checks that the caller holds at least the admin role in the
 // given org. Returns true on success, writes the error response and returns
 // false on failure.
+// Authorization is decided against the PATH org, never the caller's active org:
+// holding admin in one org must not confer member management in another.
 func (s *Server) requireOrgAdmin(w http.ResponseWriter, r *http.Request, orgID string) bool {
 	subj, _ := auth.SubjectFromContext(r.Context())
 	if subj.Admin {
 		return true // system admin bypass
 	}
-	u, isUser := auth.UserFromContext(r.Context())
-	if !isUser {
-		writeError(w, http.StatusForbidden, "forbidden")
-		return false
-	}
 	if s.orgs == nil {
 		writeError(w, http.StatusForbidden, "forbidden")
 		return false
+	}
+	// An API key is org-admin inside the org it is pinned to, and nowhere else.
+	u, isUser := auth.UserFromContext(r.Context())
+	if !isUser {
+		if subj.UserID != "" && subj.OrgID == orgID {
+			return true
+		}
+		writeError(w, http.StatusForbidden, "forbidden")
+		return false
+	}
+	// System editor+ manages members from the backoffice, across orgs.
+	if org.AtLeast(org.NormalizeSystemRole(u.SystemRole), org.RoleEditor) {
+		return true
 	}
 	mem, err := s.orgs.GetOrgMember(r.Context(), orgID, u.Email)
 	if err != nil {
 		writeError(w, http.StatusForbidden, "not a member of this org")
 		return false
 	}
-	if !org.AtLeast(mem.Role, org.RoleAdmin) {
+	if !org.AtLeast(org.NormalizeRole(mem.Role), org.RoleAdmin) {
 		writeError(w, http.StatusForbidden, "org admin role required")
 		return false
 	}
@@ -979,11 +1165,43 @@ func (s *Server) handleAddMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	role := org.RoleViewer // least privilege: promoting is an explicit act
+	if strings.TrimSpace(req.Role) != "" {
+		if role = org.NormalizeLegacyRole(req.Role); role == "" {
+			writeError(w, http.StatusBadRequest, "role must be viewer, editor, admin or owner")
+			return
+		}
+	}
+
+	// Current role decides both the ownership check and the guards below.
+	// fail-CLOSED: only a genuine "not a member yet" may read as no role — a
+	// lookup failure must not quietly switch the guards off.
+	curRole := ""
+	if cur, err := s.orgs.GetOrgMember(r.Context(), orgID, req.Email); err == nil {
+		curRole = org.NormalizeRole(cur.Role)
+	} else if !errors.Is(err, org.ErrNotFound) {
+		writeError(w, http.StatusServiceUnavailable, "cannot verify current membership; try again")
+		return
+	}
+
+	// Ownership-sensitive: granting owner, or touching a sitting owner, requires
+	// the caller to be an owner themselves. Member management is admin+, but
+	// ownership transfer is owner-only.
+	if role == org.RoleOwner || curRole == org.RoleOwner {
+		if !s.callerIsOrgOwner(r, orgID) {
+			writeError(w, http.StatusForbidden, "org owner role required for ownership changes")
+			return
+		}
+	}
+	if curRole != "" && !s.guardLastPrivileged(w, r, orgID, curRole, role, "demote") {
+		return
+	}
+
 	subj, _ := auth.SubjectFromContext(r.Context())
 	m := &org.Member{
 		OrgID:     orgID,
 		Email:     req.Email,
-		Role:      org.NormalizeRole(req.Role),
+		Role:      role,
 		InvitedBy: subj.UserID,
 		CreatedAt: time.Now().UTC(),
 	}
@@ -1043,16 +1261,26 @@ func (s *Server) handlePatchMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard: cannot demote the last owner.
-	if current.Role == org.RoleOwner && org.NormalizeRole(*req.Role) != org.RoleOwner {
-		n, countErr := s.orgs.CountOrgOwners(r.Context(), orgID)
-		if countErr == nil && n <= 1 {
-			writeError(w, http.StatusConflict, "cannot demote the last owner")
+	newRole := org.NormalizeLegacyRole(*req.Role)
+	if newRole == "" {
+		writeError(w, http.StatusBadRequest, "role must be viewer, editor, admin or owner")
+		return
+	}
+	curRole := org.NormalizeRole(current.Role)
+
+	// Ownership-sensitive: granting owner or changing a sitting owner is
+	// owner-only, even for an org admin.
+	if newRole == org.RoleOwner || curRole == org.RoleOwner {
+		if !s.callerIsOrgOwner(r, orgID) {
+			writeError(w, http.StatusForbidden, "org owner role required for ownership changes")
 			return
 		}
 	}
+	if !s.guardLastPrivileged(w, r, orgID, curRole, newRole, "demote") {
+		return
+	}
 
-	current.Role = org.NormalizeRole(*req.Role)
+	current.Role = newRole
 	if err := s.orgs.AddOrgMember(r.Context(), current); err != nil {
 		s.log.Error("admin: patch member role", "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to update member role")
@@ -1088,13 +1316,14 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard: cannot remove the last owner.
-	if target.Role == org.RoleOwner {
-		n, countErr := s.orgs.CountOrgOwners(r.Context(), orgID)
-		if countErr == nil && n <= 1 {
-			writeError(w, http.StatusConflict, "cannot remove the last owner")
-			return
-		}
+	curRole := org.NormalizeRole(target.Role)
+	// Ownership-sensitive: removing a sitting owner is owner-only.
+	if curRole == org.RoleOwner && !s.callerIsOrgOwner(r, orgID) {
+		writeError(w, http.StatusForbidden, "org owner role required to remove an owner")
+		return
+	}
+	if !s.guardLastPrivileged(w, r, orgID, curRole, "", "remove") {
+		return
 	}
 
 	if err := s.orgs.RemoveOrgMember(r.Context(), orgID, email); err != nil {
@@ -1103,104 +1332,4 @@ func (s *Server) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// ---- invitations -------------------------------------------------------------
-
-// handleCreateInvitation → POST /api/v1/orgs/{id}/invitations. Returns 201 + InvitationDTO.
-func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) {
-	if s.orgs == nil {
-		writeError(w, http.StatusNotImplemented, "org store not configured")
-		return
-	}
-	orgID := r.PathValue("id")
-	if !s.requireOrgAdmin(w, r, orgID) {
-		return
-	}
-
-	var req CreateInvitationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	req.Email = strings.ToLower(strings.TrimSpace(req.Email))
-	if req.Email == "" {
-		writeError(w, http.StatusBadRequest, "email is required")
-		return
-	}
-
-	subj, _ := auth.SubjectFromContext(r.Context())
-	inv := &org.Invitation{
-		OrgID:     orgID,
-		Email:     req.Email,
-		Role:      org.NormalizeRole(req.Role),
-		InvitedBy: subj.UserID,
-		Status:    org.InviteStatusPending,
-		ExpiresAt: req.ExpiresAt,
-		CreatedAt: time.Now().UTC(),
-	}
-	if err := s.orgs.CreateInvitation(r.Context(), inv); err != nil {
-		s.log.Error("admin: create invitation", "err", err)
-		writeError(w, http.StatusInternalServerError, "failed to create invitation")
-		return
-	}
-	writeJSON(w, http.StatusCreated, toInvitationDTO(*inv))
-}
-
-// handleAcceptInvitation → POST /api/v1/invitations/accept. Returns 200.
-// The caller must present their own valid session; the invitation is matched
-// by token and the caller's email must match (no cross-user acceptance).
-func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) {
-	if s.orgs == nil {
-		writeError(w, http.StatusNotImplemented, "org store not configured")
-		return
-	}
-
-	var req AcceptInvitationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.Token == "" {
-		writeError(w, http.StatusBadRequest, "token is required")
-		return
-	}
-
-	inv, err := s.orgs.GetInvitationByToken(r.Context(), req.Token)
-	if err != nil {
-		if errors.Is(err, org.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "invitation not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to get invitation")
-		return
-	}
-
-	if inv.Status != org.InviteStatusPending {
-		writeError(w, http.StatusConflict, "invitation is not pending")
-		return
-	}
-	if inv.Expired() {
-		writeError(w, http.StatusConflict, "invitation has expired")
-		return
-	}
-
-	// Verify the caller is the invited email.
-	u, isUser := auth.UserFromContext(r.Context())
-	if isUser && strings.ToLower(u.Email) != strings.ToLower(inv.Email) {
-		writeError(w, http.StatusForbidden, "invitation email does not match")
-		return
-	}
-
-	now := time.Now().UTC()
-	_ = s.orgs.AddOrgMember(r.Context(), &org.Member{
-		OrgID:     inv.OrgID,
-		Email:     inv.Email,
-		Role:      inv.Role,
-		InvitedBy: inv.InvitedBy,
-		CreatedAt: now,
-	})
-	_ = s.orgs.SetInvitationStatus(r.Context(), inv.ID, org.InviteStatusAccepted)
-
-	writeJSON(w, http.StatusOK, toInvitationDTO(*inv))
 }

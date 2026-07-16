@@ -151,9 +151,20 @@ func (s *Service) Register(ctx context.Context, email, password, name string) (*
 		return nil, fmt.Errorf("auth: create user: %w", err)
 	}
 
-	// Bootstrap multi-tenancy: when this is the first user AND an org store is
-	// wired in, create the default org and grant the first user org ownership.
-	// Failures are best-effort (the user account is already committed).
+	// Bootstrap multi-tenancy: the FIRST user creates the default org and owns it.
+	//
+	// Everyone after joins by invitation only. Registration is open, so
+	// auto-joining later registrants would hand anyone who can reach the sign-up
+	// page push access to the default org's repositories — the org boundary is
+	// the authorization boundary, and it must not be crossed by self-service.
+	//
+	// A user with no org therefore has no org-scoped access, by design. That is
+	// an authorization decision, not a broken state: the UI must say "you need an
+	// invitation" plainly (see OrgSwitcher / RequireOrg) rather than silently
+	// rendering an inert app.
+	//
+	// Failures are best-effort: the user account is already committed, and a
+	// membership error must not fail an otherwise valid registration.
 	if count == 0 && s.orgStore != nil {
 		now := time.Now().UTC()
 		createdBy := org.UserSubjectID(u.ID)
