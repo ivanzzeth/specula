@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 
-import { deleteRepoTag, getRepo, listRepoTags, patchRepo } from '@/api/client';
+import { ApiError, deleteRepoTag, getRepo, listRepoTags, patchRepo } from '@/api/client';
 import type { RepoDTO, TagDTO } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -28,8 +29,21 @@ import {
 } from '@/components/ui/dialog';
 import { useOrg } from '@/components/org-context';
 import { useToast } from '@/hooks/use-toast';
+import { translateServerError } from '@/i18n/server-errors';
 import { formatBytes, formatRelative, formatUnix } from '@/lib/utils';
 import { useRegistryHost } from '../hooks/useRegistryHost';
+
+/**
+ * errText — the message to show for a failed request.
+ *
+ * ApiError carries the server's raw English `detail`; translateServerError
+ * localises the small allow-list of user-actionable errors and passes anything
+ * else through verbatim (see src/i18n/server-errors.ts for why).
+ */
+function errText(e: unknown): string {
+  if (e instanceof ApiError) return translateServerError(e.detail) || e.message;
+  return e instanceof Error ? e.message : String(e);
+}
 
 /** Convert an RFC3339 date string to Unix seconds. Returns 0 for missing/invalid. */
 function toUnix(s: string | undefined): number {
@@ -55,10 +69,13 @@ function shortDigest(digest: string): string {
  */
 function CopyButton({ text }: { text: string }) {
   const [done, setDone] = useState(false);
+  const { t } = useTranslation();
   return (
     <Button
       size="sm"
       variant="outline"
+      // Keep an accessible name while the label is the transient "✓".
+      aria-label={done ? t('common.copied') : t('common.copy')}
       onClick={() => {
         void navigator.clipboard
           .writeText(text)
@@ -71,7 +88,7 @@ function CopyButton({ text }: { text: string }) {
           });
       }}
     >
-      {done ? '✓' : 'Copy'}
+      {done ? '✓' : t('common.copy')}
     </Button>
   );
 }
@@ -94,6 +111,7 @@ export function RepoDetail() {
   const { repo: repoParam } = useParams<{ repo: string }>();
   const { activeOrg, canAdminOrg } = useOrg();
   const { toast } = useToast();
+  const { t } = useTranslation();
 
   const [repo, setRepo] = useState<RepoDTO | null>(null);
   const [tags, setTags] = useState<TagDTO[]>([]);
@@ -113,7 +131,7 @@ export function RepoDetail() {
         setRepo(repoData);
         setTags(tagsData.tags ?? []);
       })
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => setErr(errText(e)))
       .finally(() => setLoading(false));
   }, [activeOrg, repoParam]);
 
@@ -130,12 +148,12 @@ export function RepoDetail() {
       setTags((prev) => prev.filter((t) => t.tag !== tag));
       // Keep the tag_count in sync so the header stat stays accurate
       setRepo({ ...current, tag_count: Math.max(0, current.tag_count - 1) });
-      toast({ variant: 'success', title: 'Tag deleted', description: tag });
+      toast({ variant: 'success', title: t('repoDetail.toast.tagDeleted'), description: tag });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Could not delete tag',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('repoDetail.toast.tagDeleteFailed'),
+        description: errText(e),
         duration: Infinity,
       });
     } finally {
@@ -155,17 +173,20 @@ export function RepoDetail() {
       setRepo(updated);
       toast({
         variant: 'success',
-        title: next === 'public' ? 'Repository is now public' : 'Repository is now private',
+        title:
+          next === 'public'
+            ? t('repoDetail.toast.nowPublic')
+            : t('repoDetail.toast.nowPrivate'),
         description:
           next === 'public'
-            ? 'Anonymous pull is now allowed.'
-            : 'Only org members may pull.',
+            ? t('repoDetail.toast.nowPublicDesc')
+            : t('repoDetail.toast.nowPrivateDesc'),
       });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Could not update visibility',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('repoDetail.toast.visibilityFailed'),
+        description: errText(e),
         duration: Infinity,
       });
     } finally {
@@ -173,11 +194,17 @@ export function RepoDetail() {
     }
   };
 
+  // Hooks must run on every render path: this sits above the early returns
+  // below, not beside its only use further down. Called conditionally, React's
+  // hook order diverges between the loading/error/no-org branches and the happy
+  // path — a rules-of-hooks violation that breaks state, not merely a lint nit.
+  const host = useRegistryHost();
+
   if (!activeOrg) {
     return (
       <Card>
         <CardContent className="text-data text-slate-400">
-          No active organisation selected.
+          {t('repos.noActiveOrg')}
         </CardContent>
       </Card>
     );
@@ -202,14 +229,13 @@ export function RepoDetail() {
         <Breadcrumb repoName={repoParam ?? ''} />
         <Card>
           <CardContent className="text-data text-destructive">
-            {err || 'Repository not found.'}
+            {err || t('repoDetail.notFound')}
           </CardContent>
         </Card>
       </div>
     );
   }
 
-  const host = useRegistryHost();
   // repo.name is already the full "org/repo" pull reference (e.g. "acme/app").
   const pullBase = `${host}/${repo.name}`;
   // Use the most-recently-pushed tag as the exemplar; fall back to a placeholder.
@@ -231,12 +257,13 @@ export function RepoDetail() {
           </div>
           <p className="mt-0.5 text-data text-slate-400">
             <span className="tnum">{repo.tag_count}</span>{' '}
-            {repo.tag_count === 1 ? 'tag' : 'tags'}
+            {t('repoDetail.tagsUnit', { count: repo.tag_count })}
             {' · '}
             {/* Manifest size only — never present as image pull size */}
-            <span className="tnum">{formatBytes(repo.size_bytes)}</span> manifest
+            <span className="tnum">{formatBytes(repo.size_bytes)}</span>{' '}
+            {t('repoDetail.manifestUnit')}
             {' · '}
-            created{' '}
+            {t('repoDetail.created')}{' '}
             <span className="tnum" title={formatUnix(toUnix(repo.created_at))}>
               {formatRelative(toUnix(repo.created_at))}
             </span>
@@ -250,7 +277,9 @@ export function RepoDetail() {
             disabled={busyVis}
             onClick={() => void onToggleVisibility()}
           >
-            {repo.visibility === 'public' ? 'Make private' : 'Make public'}
+            {repo.visibility === 'public'
+              ? t('repoDetail.makePrivate')
+              : t('repoDetail.makePublic')}
           </Button>
         )}
       </div>
@@ -258,11 +287,11 @@ export function RepoDetail() {
       {/* ── docker pull command ─────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle>Pull</CardTitle>
+          <CardTitle>{t('repoDetail.pull.title')}</CardTitle>
           <span className="text-data text-slate-500">
             {repo.visibility === 'public'
-              ? 'Public — anonymous pull allowed'
-              : 'Private — docker login required'}
+              ? t('repoDetail.pull.public')
+              : t('repoDetail.pull.private')}
           </span>
         </CardHeader>
         <CardContent className="flex items-center gap-2">
@@ -276,28 +305,28 @@ export function RepoDetail() {
       {/* ── Tags table ──────────────────────────────────────────────────────── */}
       <Card>
         <CardHeader>
-          <CardTitle>Tags</CardTitle>
+          <CardTitle>{t('repoDetail.tags.title')}</CardTitle>
           <span className="tnum text-data text-slate-500">{repo.tag_count}</span>
         </CardHeader>
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Tag</TableHead>
-              <TableHead className="w-44">Digest</TableHead>
+              <TableHead>{t('repoDetail.col.tag')}</TableHead>
+              <TableHead className="w-44">{t('repoDetail.col.digest')}</TableHead>
               {/* "Manifest size" — not "layer size" or "image size" */}
-              <TableHead className="w-28 text-right">Manifest size</TableHead>
+              <TableHead className="w-28 text-right">{t('repoDetail.col.manifestSize')}</TableHead>
               {/* arch is always empty today — column stays honest */}
-              <TableHead className="w-12 text-right">Arch</TableHead>
-              <TableHead className="w-28 text-right">Pushed</TableHead>
-              <TableHead className="w-20 text-right">Pull</TableHead>
-              {canAdminOrg && <TableHead className="w-20 text-right">Delete</TableHead>}
+              <TableHead className="w-12 text-right">{t('repoDetail.col.arch')}</TableHead>
+              <TableHead className="w-28 text-right">{t('repoDetail.col.pushed')}</TableHead>
+              <TableHead className="w-20 text-right">{t('repoDetail.col.pull')}</TableHead>
+              {canAdminOrg && (
+                <TableHead className="w-20 text-right">{t('repoDetail.col.delete')}</TableHead>
+              )}
             </TableRow>
           </TableHeader>
           <TableBody>
             {tags.length === 0 ? (
-              <EmptyRow colSpan={canAdminOrg ? 7 : 6}>
-                No tags yet. Push an image to this repository to create the first tag.
-              </EmptyRow>
+              <EmptyRow colSpan={canAdminOrg ? 7 : 6}>{t('repoDetail.tags.empty')}</EmptyRow>
             ) : (
               tags.map((t) => {
                 const tagPullCmd = `docker pull ${pullBase}:${t.tag}`;
@@ -346,13 +375,17 @@ export function RepoDetail() {
 }
 
 function Breadcrumb({ repoName }: { repoName: string }) {
+  const { t } = useTranslation();
   return (
-    <nav className="flex items-center gap-1.5 text-data text-slate-400" aria-label="Breadcrumb">
+    <nav
+      className="flex items-center gap-1.5 text-data text-slate-400"
+      aria-label={t('repoDetail.breadcrumbAria')}
+    >
       <Link
         to="/repos"
         className="rounded transition-colors duration-fast hover:text-slate-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
-        Repositories
+        {t('repos.title')}
       </Link>
       <span aria-hidden className="text-slate-700">
         /
@@ -379,27 +412,30 @@ function DeleteTagDialog({
   onConfirm: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const { t } = useTranslation();
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button size="sm" variant="destructive" disabled={busy}>
-          Delete
+          {t('common.delete')}
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Delete tag</DialogTitle>
+          <DialogTitle>{t('repoDetail.deleteTag.title')}</DialogTitle>
           <DialogDescription>
-            Remove the tag pointer{' '}
-            <span className="font-medium text-slate-200">{tag}</span>? The manifest and layers
-            remain in the content-addressable store and are cleaned up by the garbage
-            collector on its next eviction cycle.
+            {/* The tag name rides in as a component, not an interpolated value:
+                Trans parses the interpolated string as HTML. */}
+            <Trans
+              i18nKey="repoDetail.deleteTag.description"
+              components={{ tag: <span className="font-medium text-slate-200">{tag}</span> }}
+            />
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <DialogClose asChild>
             <Button size="sm" variant="outline">
-              Cancel
+              {t('common.cancel')}
             </Button>
           </DialogClose>
           <Button
@@ -410,7 +446,7 @@ function DeleteTagDialog({
               setOpen(false);
             }}
           >
-            Delete tag
+            {t('repoDetail.deleteTag.confirm')}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -14,6 +14,7 @@
  */
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Check, Copy, Pin, Trash2 } from 'lucide-react';
 
 import { deleteCacheEntry, pinCacheEntry } from '@/api/client';
@@ -32,6 +33,7 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { cn, formatBytes, formatUnix } from '@/lib/utils';
 
+import { errorText } from './types';
 import type { ProtocolMeta, ProtocolSlug } from './types';
 import { useRegistryHost } from '../../hooks/useRegistryHost';
 
@@ -54,6 +56,8 @@ export function EntryDetail({
   onEvict,
   onPinChange,
 }: EntryDetailProps) {
+  const { t } = useTranslation();
+  const host = useRegistryHost();
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
   const [confirmEvict, setConfirmEvict] = useState(false);
@@ -79,14 +83,20 @@ export function EntryDetail({
       onPinChange(entry.id, next);
       toast({
         variant: 'success',
-        title: next ? 'Entry pinned' : 'Entry unpinned',
-        description: `${entry.name} · ${entry.version} — ${next ? 'protected from GC' : 'GC may now evict'}`,
+        title: next ? t('entryDetail.toast.pinned') : t('entryDetail.toast.unpinned'),
+        description: t('entryDetail.toast.pinDesc', {
+          name: entry.name,
+          version: entry.version,
+          state: next
+            ? t('entryDetail.protectedFromGC')
+            : t('entryDetail.gcMayEvict'),
+        }),
       });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
-        title: 'Could not update pin',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('entryDetail.toast.pinFailed'),
+        description: errorText(e),
         duration: Infinity,
       });
     } finally {
@@ -103,22 +113,25 @@ export function EntryDetail({
       onClose();
       toast({
         variant: 'success',
-        title: 'Entry evicted',
-        description: `${entry.name} · ${entry.version} removed from cache`,
+        title: t('entryDetail.toast.evicted'),
+        description: t('entryDetail.toast.evictedDesc', {
+          name: entry.name,
+          version: entry.version,
+        }),
       });
     } catch (e: unknown) {
       setBusy(null);
       setConfirmEvict(false);
       toast({
         variant: 'destructive',
-        title: 'Could not evict entry',
-        description: e instanceof Error ? e.message : String(e),
+        title: t('entryDetail.toast.evictFailed'),
+        description: errorText(e),
         duration: Infinity,
       });
     }
   };
 
-  const usageHint = entry ? buildUsageHint(protocol, entry) : null;
+  const usageHint = entry ? buildUsageHint(protocol, entry, host) : null;
 
   return (
     <Dialog
@@ -137,11 +150,14 @@ export function EntryDetail({
               <DialogTitle className="text-body font-semibold text-slate-100 pr-6">
                 <span className="block truncate">{entry.name}</span>
                 <span className="mt-0.5 block truncate text-data font-normal text-slate-400">
-                  {meta.versionCol.toLowerCase()}: {entry.version}
+                  {t('entryDetail.versionLine', {
+                    label: meta.versionCol.toLowerCase(),
+                    version: entry.version,
+                  })}
                 </span>
               </DialogTitle>
-              <DialogDescription className="text-micro uppercase tracking-wider text-slate-500">
-                {protocol} · {entry.upstream || 'unknown upstream'}
+              <DialogDescription className="label-caps text-micro text-slate-500">
+                {protocol} · {entry.upstream || t('entryDetail.unknownUpstream')}
               </DialogDescription>
             </DialogHeader>
 
@@ -152,7 +168,7 @@ export function EntryDetail({
               {entry.pinned && (
                 <span className="ml-auto flex items-center gap-1 text-micro text-brand">
                   <Pin className="size-2.5" />
-                  protected from GC
+                  {t('entryDetail.protectedFromGC')}
                 </span>
               )}
             </div>
@@ -164,7 +180,7 @@ export function EntryDetail({
 
             {/* ── digest ──────────────────────────────────────────────────── */}
             <div className="border-b border-slate-800 px-3 py-2">
-              <div className="section-label mb-1">Digest</div>
+              <div className="section-label mb-1">{t('entryDetail.digest')}</div>
               <div className="flex items-center gap-2">
                 <code className="min-w-0 flex-1 truncate rounded-[2px] bg-slate-950 px-2 py-1 text-data text-slate-300 font-mono">
                   {entry.digest}
@@ -179,8 +195,10 @@ export function EntryDetail({
                       ? 'text-tier-signed'
                       : 'text-slate-400 hover:text-brand'
                   )}
-                  title={copied ? 'Copied' : 'Copy digest'}
-                  aria-label={copied ? 'Copied to clipboard' : 'Copy digest to clipboard'}
+                  title={copied ? t('common.copied') : t('entryDetail.copyDigest')}
+                  aria-label={
+                    copied ? t('entryDetail.copiedAria') : t('entryDetail.copyDigestAria')
+                  }
                 >
                   {copied ? (
                     <Check className="size-3.5" />
@@ -194,13 +212,13 @@ export function EntryDetail({
             {/* ── timestamps ──────────────────────────────────────────────── */}
             <div className="grid grid-cols-2 gap-4 border-b border-slate-800 px-3 py-2">
               <div>
-                <div className="section-label mb-0.5">First cached</div>
+                <div className="section-label mb-0.5">{t('entryDetail.firstCached')}</div>
                 <span className="tnum text-data text-slate-200">
                   {formatUnix(entry.first_cached_unix)}
                 </span>
               </div>
               <div>
-                <div className="section-label mb-0.5">Verified at</div>
+                <div className="section-label mb-0.5">{t('entryDetail.verifiedAt')}</div>
                 <span className="tnum text-data text-slate-200">
                   {formatUnix(entry.verified_unix)}
                 </span>
@@ -210,7 +228,7 @@ export function EntryDetail({
             {/* ── protocol-specific fetch hint ─────────────────────────────── */}
             {usageHint && (
               <div className="border-b border-slate-800 px-3 py-2">
-                <div className="section-label mb-1">Fetch via proxy</div>
+                <div className="section-label mb-1">{t('entryDetail.fetchViaProxy')}</div>
                 <code className="block overflow-x-auto whitespace-pre rounded-[2px] bg-slate-950 px-2 py-1.5 text-data text-slate-300">
                   {usageHint}
                 </code>
@@ -229,20 +247,22 @@ export function EntryDetail({
                 aria-pressed={entry.pinned}
               >
                 <Pin className="size-3.5" />
-                {entry.pinned ? 'Unpin' : 'Pin'}
+                {entry.pinned ? t('entryDetail.unpin') : t('entryDetail.pin')}
               </Button>
 
               {/* Evict — inline confirm to avoid a nested dialog */}
               {confirmEvict ? (
                 <div className="flex items-center gap-1.5">
-                  <span className="text-data text-destructive">Evict this entry?</span>
+                  <span className="text-data text-destructive">
+                    {t('entryDetail.evictConfirmPrompt')}
+                  </span>
                   <Button
                     variant="ghost"
                     size="sm"
                     disabled={busy === 'evict'}
                     onClick={() => setConfirmEvict(false)}
                   >
-                    Cancel
+                    {t('common.cancel')}
                   </Button>
                   <Button
                     variant="destructive"
@@ -250,7 +270,9 @@ export function EntryDetail({
                     disabled={busy === 'evict'}
                     onClick={() => void handleEvict()}
                   >
-                    {busy === 'evict' ? 'Evicting…' : 'Confirm evict'}
+                    {busy === 'evict'
+                      ? t('entryDetail.evicting')
+                      : t('entryDetail.evictConfirm')}
                   </Button>
                 </div>
               ) : (
@@ -262,7 +284,7 @@ export function EntryDetail({
                   className="gap-1.5"
                 >
                   <Trash2 className="size-3.5" />
-                  Evict
+                  {t('entryDetail.evict')}
                 </Button>
               )}
 
@@ -270,7 +292,7 @@ export function EntryDetail({
 
               <DialogClose asChild>
                 <Button variant="secondary" size="sm">
-                  Close
+                  {t('common.close')}
                 </Button>
               </DialogClose>
             </DialogFooter>
@@ -287,8 +309,14 @@ export function EntryDetail({
  * Returns null when no useful command can be derived — for example apt entries
  * name a suite/component, not a package name; tarball names are already URLs.
  */
-function buildUsageHint(protocol: ProtocolSlug, entry: CacheEntryDTO): string | null {
-  const host = useRegistryHost();
+function buildUsageHint(
+  protocol: ProtocolSlug,
+  entry: CacheEntryDTO,
+  host: string,
+): string | null {
+  // host is a parameter, not a useRegistryHost() call: this is a plain helper,
+  // and calling a hook here is a rules-of-hooks violation (it runs outside a
+  // component/hook, so React cannot track it). Caught by eslint, not by tsc.
   switch (protocol) {
     case 'oci':
       return `docker pull ${host}/${entry.name}:${entry.version}`;

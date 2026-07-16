@@ -138,14 +138,19 @@ test-realclient:
 ## test-e2e: the dimensions needing a real binary + real infra (needs: network + docker + clients)
 test-e2e: test-conformance test-realclient
 
-## test-ui: WebUI typecheck + production build (needs: node + npm)
+## test-ui: WebUI lint + typecheck + production build (needs: node + npm)
+#
+# `npm run lint` exists for one bug class neither tsc nor vite can see: React's rules of
+# hooks. A hook called after an early return, or from a plain helper, type-checks and builds
+# cleanly and then corrupts state at runtime. We shipped both variants; a human reading the
+# file caught one, eslint caught the other. Reading files is not a gate.
 #
 # `npm run typecheck` is `tsc -b`, NOT `tsc --noEmit`. This matters: web/tsconfig.json is a
 # solution-style config (`files: []` + `references`), against which `tsc --noEmit` checks
 # NOTHING and always exits 0. It once "passed" while src/main.tsx imported a deleted file.
 # Only the -b (build-mode) form follows the project references. Do not "simplify" this back.
 test-ui:
-	cd web && npm run typecheck && npm run build
+	cd web && npm run lint && npm run typecheck && npm run build
 
 ## test-all: every dimension (needs: everything above — network, docker, node, clients)
 test-all: test-unit test-integration test-postgres test-ui test-conformance test-realclient
