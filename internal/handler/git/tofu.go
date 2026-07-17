@@ -157,5 +157,53 @@ func isFastForward(mirrorPath, oldSHA, newSHA string) bool {
 // refTOFUKey returns the MetadataStore mutable-entry key for a git ref TOFU pin.
 // Format: "git:tofu:<host>/<project>:<refname>"
 func refTOFUKey(ref repoRef, refname string) string {
-	return "git:tofu:" + ref.Host + "/" + ref.ProjectPath + ":" + refname
+	return RefTOFUKeyFor(ref.Host+"/"+ref.ProjectPath, refname)
+}
+
+// RefTOFUKeyFor returns the TOFU pin key for refname in repo, where repo is the
+// canonical "<host>/<project>" repository name (e.g. "github.com/octocat/Hello-World").
+//
+// Exported so the control plane can ask what a mirrored repo has actually
+// earned, rather than guessing at the key format.
+func RefTOFUKeyFor(repo, refname string) string {
+	return "git:tofu:" + repo + ":" + refname
+}
+
+// RepoTier reports the honest trust tier a mirrored repo has EARNED, as a
+// PRD §G2 tier name, or "" when it has earned nothing.
+//
+// The tier is derived from real state, never asserted from configuration: it
+// returns artifact.TierTofu only when a ref→SHA pin actually exists in the
+// MetadataStore for one of the mirror's refs. A pin is what makes the tofu
+// guarantee true — first-sight lock plus a non-fast-forward alert on every later
+// change (see updateTOFUPins) — so a repo with pins has force-push /
+// history-rewrite detection live, and one without has nothing.
+//
+// # Why this tops out at tofu
+//
+// PRD §G2 lists `signed` as git's reachable ceiling via signed tag/commit
+// verification (allowed-signers). That anchor is NOT reached here, and RepoTier
+// will not claim it: Handler.signedRefs is injected by cmd/specula but never
+// invoked on any code path in this package, so no git ref in this build has ever
+// had a signature verified. Reporting `signed` would be a claim about
+// cryptography we did not do. See the package doc.
+func RepoTier(ctx context.Context, ms meta.MetadataStore, mirrorDir, repo string) string {
+	if ms == nil || mirrorDir == "" || repo == "" {
+		return ""
+	}
+	refs, err := listRefs(filepath.Join(mirrorDir, repo+gitSuffix))
+	if err != nil {
+		return "" // cannot enumerate refs → cannot substantiate any tier
+	}
+	for refname := range refs {
+		me, err := ms.GetMutable(ctx, RefTOFUKeyFor(repo, refname))
+		if err != nil {
+			return ""
+		}
+		if me != nil && me.Digest != "" {
+			// At least one ref is pinned: change detection is live for this repo.
+			return artifact.TierTofu.String()
+		}
+	}
+	return ""
 }

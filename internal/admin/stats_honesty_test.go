@@ -13,6 +13,7 @@ package admin
 //     startup logs "git tops out at tofu".
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -92,23 +93,30 @@ func TestHandleStats_ObjectsNull_SerialisesAsJSONNull(t *testing.T) {
 }
 
 // TestListGitMirrors_TierIsNotAFifthTier pins the tier label: a bare-mirror row
-// must not invent a tier outside the documented four.
+// must not invent a tier outside the documented four, and must not claim one it
+// has not earned.
+//
+// This mirror has no TOFU pins recorded against it, so it has earned nothing and
+// must report nothing.
+//
+// NOTE: this test previously asserted the tier is ALWAYS empty, on the reasoning
+// that "a bare-mirror row is a repository directory, not a verified artifact".
+// That reasoning deleted the fabricated "mirror" tier correctly but overshot:
+// when ref→SHA pins DO exist for a repo, force-push / history-rewrite detection
+// is live for it, which is precisely PRD §G2's tofu tier, and reporting "" then
+// under-claims a real guarantee. Empty is the right answer for an UNPINNED repo,
+// which is what this test now says. The pinned case is
+// TestListGitMirrors_ReportsTofuTierWhenPinned.
 func TestListGitMirrors_TierIsNotAFifthTier(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "github.com", "alice", "hello.git"), 0o755))
 
-	entries, err := listGitMirrors(dir)
+	entries, err := listGitMirrors(context.Background(), &fakeMetaStore{}, dir)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
 
-	fourTiers := map[string]bool{"signed": true, "consensus": true, "tofu": true, "checksum": true}
 	assert.NotEqual(t, "mirror", entries[0].Tier,
-		`"mirror" is a fifth tier outside PRD §G2's four-tier model, and contradicts the `+
-			`startup log's "git tops out at tofu"`)
-	assert.False(t, fourTiers[entries[0].Tier] && entries[0].Tier != "",
-		"a bare-mirror directory carries no verification verdict, so it must not claim one of "+
-			"the four tiers either")
+		`"mirror" is a fifth tier outside PRD §G2's four-tier model`)
 	assert.Empty(t, entries[0].Tier,
-		"a bare-mirror row is a repository directory, not a verified artifact: tier is not "+
-			"applicable and must render as '—'")
+		"no pins recorded against this mirror → no verdict earned → no tier claimed")
 }

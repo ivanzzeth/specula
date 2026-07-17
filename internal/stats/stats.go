@@ -18,24 +18,33 @@ import (
 )
 
 // CollectorConfig controls the background refresh loop behaviour.
+//
+// # Removed: EnableDUFallback
+//
+// This struct used to carry an EnableDUFallback bool, defaulting to false, whose
+// documentation promised it "causes the background refresh loop to also
+// recompute disk usage for opaque-cache roots". By the time it was removed it
+// gated nothing — refreshOnce ignored it — and no production caller ever set it,
+// since nothing but DefaultCollectorConfig constructed a CollectorConfig at all.
+//
+// It was deleted rather than re-defaulted. The question "is false a defensible
+// default?" has no good answer, because both answers are wrong: a flag whose
+// documented effect is not implemented misinforms every reader of the config
+// surface, and re-implementing the gate would make the opaque-cache measurement
+// opt-in again — which is precisely the defect that made git bytes invisible to
+// Prometheus. There is no operator for whom "measure the cache I configured,
+// but not that part of it" is the desired behaviour. A registered opaque root is
+// walked. That is the whole contract.
 type CollectorConfig struct {
 	// RefreshInterval is how often Run re-reads MetadataStore.CacheSizeByProtocol
 	// to re-sync the Prometheus gauges. Zero or negative values default to 30s.
 	RefreshInterval time.Duration
-
-	// EnableDUFallback, when true, causes the background refresh loop to also
-	// recompute disk usage for opaque-cache roots registered via AddOpaquePath
-	// and update the corresponding Prometheus gauge specula_cache_bytes{protocol}.
-	// AddOpaquePath roots are always included in Total() regardless of this flag.
-	EnableDUFallback bool
 }
 
-// DefaultCollectorConfig returns production-safe defaults (30 s interval, du
-// fallback disabled).
+// DefaultCollectorConfig returns production-safe defaults (30 s interval).
 func DefaultCollectorConfig() CollectorConfig {
 	return CollectorConfig{
-		RefreshInterval:  30 * time.Second,
-		EnableDUFallback: false,
+		RefreshInterval: 30 * time.Second,
 	}
 }
 
@@ -206,11 +215,8 @@ func (c *collector) Run(ctx context.Context) {
 // then always walks every opaque-cache root registered via AddOpaquePath to
 // update their specula_cache_bytes{protocol} gauge.
 //
-// The EnableDUFallback flag is kept for API compatibility but no longer gates
-// already-registered paths: any path explicitly registered via AddOpaquePath is
-// unconditionally walked on every refresh. This is the fix for git being
-// invisible in /metrics (the flag's original early-return guard silently
-// prevented the git gauge from ever being set).
+// Any path registered via AddOpaquePath is unconditionally walked on every
+// refresh: registration IS the opt-in.
 //
 // In standalone mode (store == nil) it is a no-op because RecordPut/RecordEvict
 // already keep the gauges current between refreshes.
@@ -236,10 +242,7 @@ func (c *collector) refreshOnce(ctx context.Context) {
 	}
 
 	// Always walk opaque-cache roots registered via AddOpaquePath (e.g., git
-	// bare mirror dirs). This unconditional walk replaces the former
-	// EnableDUFallback gate which silently prevented the git Prometheus gauge
-	// from being set, causing git to be invisible in /metrics even when it was
-	// caching correctly.
+	// bare mirror dirs).
 	c.mu.Lock()
 	paths := append([]duEntry(nil), c.duPaths...)
 	c.mu.Unlock()

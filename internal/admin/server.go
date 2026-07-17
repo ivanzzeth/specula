@@ -118,13 +118,15 @@ type Server struct {
 
 // New constructs an admin Server from deps. The logger falls back to
 // slog.Default() when Deps.Logger is nil. No dependency is dialed here; the
-// server is inert until its routes are mounted and requests arrive.
+// server is inert until its routes are mounted and requests arrive — with one
+// deliberate exception: opaque-cache roots are registered with the stats
+// collector here, because they must be measurable before any request arrives.
 func New(deps Deps) *Server {
 	log := deps.Logger
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{
+	s := &Server{
 		stats:  deps.Stats,
 		meta:   deps.Meta,
 		users:  deps.Users,
@@ -145,6 +147,13 @@ func New(deps Deps) *Server {
 
 		settings: deps.Settings,
 	}
+
+	// Opaque caches (git's bare-mirror root) must be measurable from the moment
+	// the process is up: a headless replica scraped by Prometheus never calls a
+	// UI handler. See registerOpaqueCaches in cache.go.
+	s.registerOpaqueCaches()
+
+	return s
 }
 
 // toUserDTO converts an auth.User to the safe client projection (drops the

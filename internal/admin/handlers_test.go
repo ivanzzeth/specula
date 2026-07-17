@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -178,9 +180,14 @@ func (s *fakeUserStore) UpdateUserFields(ctx context.Context, id int64, name, pa
 
 // fakeStatsCollector is a preset-data stats.Collector.
 type fakeStatsCollector struct {
+	mu      sync.Mutex
 	byProto map[string]artifact.SizeStat
 	total   artifact.SizeStat
+	opaque  []fakeOpaquePath
 }
+
+// fakeOpaquePath records an AddOpaquePath registration.
+type fakeOpaquePath struct{ path, protocol string }
 
 func newFakeStatsCollector() *fakeStatsCollector {
 	return &fakeStatsCollector{
@@ -192,8 +199,42 @@ func newFakeStatsCollector() *fakeStatsCollector {
 	}
 }
 
+// ByProtocol returns the preset per-protocol rows PLUS a du-measured row for
+// every opaque path actually registered via AddOpaquePath — the same contract
+// the real collector implements.
+//
+// The opaque half is not decoration. AddOpaquePath used to be a no-op here and
+// ByProtocol returned only the preset map, so a test could assert "git appears
+// in /admin/stats" by presetting a git row, and it would pass no matter whether
+// production ever registered the mirror dir. The double answered whatever the
+// code asked. Reproducing the real linkage — bytes appear IF AND ONLY IF the
+// path was registered — is what lets these tests fail when the wiring is wrong.
 func (c *fakeStatsCollector) ByProtocol(ctx context.Context) (map[string]artifact.SizeStat, error) {
-	return c.byProto, nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	out := make(map[string]artifact.SizeStat, len(c.byProto))
+	for k, v := range c.byProto {
+		out[k] = v
+	}
+	for _, e := range c.opaque {
+		var total int64
+		_ = filepath.WalkDir(e.path, func(_ string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil //nolint:nilerr
+			}
+			if info, e := d.Info(); e == nil {
+				total += info.Size()
+			}
+			return nil
+		})
+		s := out[e.protocol]
+		s.Bytes += total
+		s.Objects = 0
+		s.ObjectsCountable = false
+		out[e.protocol] = s
+	}
+	return out, nil
 }
 func (c *fakeStatsCollector) Total(ctx context.Context) (artifact.SizeStat, error) {
 	return c.total, nil
@@ -201,7 +242,19 @@ func (c *fakeStatsCollector) Total(ctx context.Context) (artifact.SizeStat, erro
 func (c *fakeStatsCollector) RecordPut(_ context.Context, _ string, _ int64) error   { return nil }
 func (c *fakeStatsCollector) RecordEvict(_ context.Context, _ string, _ int64) error { return nil }
 func (c *fakeStatsCollector) Run(_ context.Context)                                  {}
-func (c *fakeStatsCollector) AddOpaquePath(_, _ string)                              {}
+
+// AddOpaquePath records the registration (idempotently, like the real one)
+// instead of discarding it.
+func (c *fakeStatsCollector) AddOpaquePath(path, protocol string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.opaque {
+		if e.path == path && e.protocol == protocol {
+			return
+		}
+	}
+	c.opaque = append(c.opaque, fakeOpaquePath{path: path, protocol: protocol})
+}
 
 // fakeBlobReporter implements BlobUsageReporter.
 type fakeBlobReporter struct{ usedBytes int64 }
@@ -215,6 +268,7 @@ func (r *fakeBlobReporter) UsageBytes(_ context.Context) (int64, error) { return
 type fakeMetaStore struct {
 	mu      sync.Mutex
 	entries []meta.Entry
+	mutable map[string]artifact.MutableEntry
 	listErr error
 }
 
@@ -251,11 +305,41 @@ func (m *fakeMetaStore) Delete(_ context.Context, ref artifact.ArtifactRef) erro
 	return nil
 }
 
-func (m *fakeMetaStore) GetMutable(_ context.Context, _ string) (*artifact.MutableEntry, error) {
-	return nil, nil
+// GetMutable / PutMutable / DeleteMutable are backed by a real map.
+//
+// They used to be stubs: PutMutable discarded the entry and GetMutable always
+// answered (nil, nil), so no test could ever observe a mutable entry that the
+// code under test had written — the double answered "nothing is pinned"
+// regardless of the truth. That is how git's tier could report "" while five
+// real TOFU pins sat in mutable_entries: the only tests that could have caught
+// it were being told what they expected to hear.
+func (m *fakeMetaStore) GetMutable(_ context.Context, key string) (*artifact.MutableEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.mutable[key]
+	if !ok {
+		return nil, nil
+	}
+	cp := e
+	return &cp, nil
 }
-func (m *fakeMetaStore) PutMutable(_ context.Context, _ artifact.MutableEntry) error { return nil }
-func (m *fakeMetaStore) DeleteMutable(_ context.Context, _ string) error             { return nil }
+
+func (m *fakeMetaStore) PutMutable(_ context.Context, e artifact.MutableEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mutable == nil {
+		m.mutable = map[string]artifact.MutableEntry{}
+	}
+	m.mutable[e.Key] = e
+	return nil
+}
+
+func (m *fakeMetaStore) DeleteMutable(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.mutable, key)
+	return nil
+}
 func (m *fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	return map[string]artifact.SizeStat{}, nil
 }

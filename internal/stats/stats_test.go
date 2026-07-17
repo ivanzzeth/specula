@@ -523,7 +523,7 @@ func TestRefreshOnce_StoreError_GaugesUnchanged(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// refreshOnce — du-sb fallback tests (EnableDUFallback=true)
+// refreshOnce — du-sb fallback tests (opaque paths registered)
 // ---------------------------------------------------------------------------
 
 func TestRefreshOnce_DUFallback_UpdatesGauge(t *testing.T) {
@@ -537,8 +537,7 @@ func TestRefreshOnce_DUFallback_UpdatesGauge(t *testing.T) {
 	// Store reports no entries; the opaque path should fill the gauge.
 	store := &fakeStore{stats: map[string]artifact.SizeStat{}}
 	c := newCollector(store, reg, CollectorConfig{
-		RefreshInterval:  30 * time.Second,
-		EnableDUFallback: true,
+		RefreshInterval: 30 * time.Second,
 	})
 	c.AddOpaquePath(dir, "git")
 
@@ -558,8 +557,7 @@ func TestRefreshOnce_DUFallback_MultiplePathsSameProtocol(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	store := &fakeStore{stats: map[string]artifact.SizeStat{}}
 	c := newCollector(store, reg, CollectorConfig{
-		RefreshInterval:  30 * time.Second,
-		EnableDUFallback: true,
+		RefreshInterval: 30 * time.Second,
 	})
 	c.AddOpaquePath(dir1, "git")
 	c.AddOpaquePath(dir2, "git")
@@ -573,33 +571,31 @@ func TestRefreshOnce_DUFallback_MultiplePathsSameProtocol(t *testing.T) {
 
 func TestRefreshOnce_DUFallback_Disabled(t *testing.T) {
 	// After the git-visibility fix: paths registered via AddOpaquePath are
-	// ALWAYS walked in refreshOnce, even when EnableDUFallback=false.
-	// The EnableDUFallback flag is now irrelevant for already-registered paths.
+	// ALWAYS walked in refreshOnce, even when no flag required.
+	// Registration is the only opt-in; there is no separate flag.
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "pack"), make([]byte, 4000), 0o644))
 
 	reg := prometheus.NewRegistry()
 	store := &fakeStore{stats: map[string]artifact.SizeStat{}}
 	c := newCollector(store, reg, CollectorConfig{
-		RefreshInterval:  30 * time.Second,
-		EnableDUFallback: false, // explicitly disabled — now irrelevant for registered paths
+		RefreshInterval: 30 * time.Second,
 	})
 	c.AddOpaquePath(dir, "git")
 
 	c.refreshOnce(context.Background())
 
-	// Registered paths are always updated; EnableDUFallback no longer gates them.
+	// Registered paths are always updated; registration is the opt-in.
 	found := gatherGaugeVals(t, reg)
 	assert.Equal(t, float64(4000), found["specula_cache_bytes[git]"],
-		"registered opaque paths must always update the gauge (EnableDUFallback no longer gates them)")
+		"registered opaque paths must always update the gauge (registration is the opt-in)")
 }
 
 func TestRefreshOnce_DUFallback_UnreachablePath_Skipped(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	store := &fakeStore{stats: map[string]artifact.SizeStat{}}
 	c := newCollector(store, reg, CollectorConfig{
-		RefreshInterval:  30 * time.Second,
-		EnableDUFallback: true,
+		RefreshInterval: 30 * time.Second,
 	})
 	c.AddOpaquePath("/nonexistent/cache/dir", "git")
 
@@ -761,8 +757,8 @@ func TestByProtocol_IncludesOpaquePathsStandalone(t *testing.T) {
 
 // TestRefreshOnce_AlwaysUpdatesGaugeForRegisteredPaths verifies that
 // AddOpaquePath-registered paths always update specula_cache_bytes in
-// refreshOnce, even when EnableDUFallback=false (the default).
-// BUG (before fix): refreshOnce returned early when EnableDUFallback=false,
+// refreshOnce, even when no flag required.
+// BUG (before fix): refreshOnce returned early when the du fallback was off,
 // leaving specula_cache_bytes{protocol="git"} permanently unset → /metrics
 // showed no git gauge even though caching was working correctly.
 func TestRefreshOnce_AlwaysUpdatesGaugeForRegisteredPaths(t *testing.T) {
@@ -771,7 +767,7 @@ func TestRefreshOnce_AlwaysUpdatesGaugeForRegisteredPaths(t *testing.T) {
 
 	reg := prometheus.NewRegistry()
 	store := &fakeStore{stats: map[string]artifact.SizeStat{}}
-	// Explicitly use the production default (EnableDUFallback=false).
+	// Production defaults.
 	c := newCollector(store, reg, DefaultCollectorConfig())
 	c.AddOpaquePath(dir, "git")
 
@@ -780,7 +776,7 @@ func TestRefreshOnce_AlwaysUpdatesGaugeForRegisteredPaths(t *testing.T) {
 	found := gatherGaugeVals(t, reg)
 	assert.Equal(t, float64(2500), found["specula_cache_bytes[git]"],
 		"registered opaque paths must always update the gauge in refreshOnce, "+
-			"regardless of EnableDUFallback")
+			"regardless of configuration")
 }
 
 // TestAddOpaquePath_Idempotent verifies that duplicate registrations of the

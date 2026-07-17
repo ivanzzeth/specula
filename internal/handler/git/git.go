@@ -25,10 +25,19 @@
 //   - public-only: only anonymously-readable repos are mirrored; the visibility
 //     probe fails closed to passthrough (fail_closed) — the probe-failure window
 //     is exactly when an attacker's public copy could win.
-//   - signed refs: an optional verify.GitSignedVerifier lifts a ref to the signed
-//     tier (allowed-signers); Chain wiring is cmd/specula's job at integration.
 //   - TOFU: ref→SHA pins are recorded in MetadataStore; non-fast-forward updates
-//     trigger a logged warning (force-push / history-rewrite detection).
+//     trigger a logged warning (force-push / history-rewrite detection). This is
+//     the ceiling this package actually reaches — see RepoTier.
+//   - signed refs: NOT REACHED. A verify.GitSignedVerifier is accepted by
+//     WithSignedRefsVerifier and stored on the Handler, but no code path in this
+//     package ever invokes it, so no git ref in this build has had a signature
+//     verified. PRD §G2 lists `signed` as git's reachable ceiling ("签名 tag/commit,
+//     配 allowed-signers"); that row describes an intent, not this code. The
+//     startup log ("git allowed-signers not configured — git tops out at tofu")
+//     is the accurate description of every deployment today, because the
+//     configured case is not implemented either. Reported rather than papered
+//     over: the fix is to invoke the verifier on the ref-advertise path, which is
+//     a feature, not a bug fix, and is out of scope here.
 package git
 
 import (
@@ -173,7 +182,13 @@ func WithFailClosed(failClosed bool) Option {
 	return func(h *Handler) { h.failClosed = failClosed }
 }
 
-// WithSignedRefsVerifier injects the signed tag/commit verifier (signed tier).
+// WithSignedRefsVerifier injects the signed tag/commit verifier.
+//
+// WARNING — currently inert: the verifier is stored and never called. Injecting
+// it does NOT lift any ref to the signed tier, and no tier this package reports
+// will ever say "signed" (see RepoTier). Kept wired so the integration seam and
+// its cmd/specula construction survive, but it buys no verification today. See
+// the package doc.
 func WithSignedRefsVerifier(v *verify.GitSignedVerifier) Option {
 	return func(h *Handler) { h.signedRefs = v }
 }
@@ -215,7 +230,7 @@ func NewHandler(opts ...Option) *Handler {
 	// Initialise runtime internals after options are applied so they reflect
 	// any overrides (e.g., syncStaleAfter, upstreamScheme).
 	h.transport = &http.Transport{Proxy: http.ProxyFromEnvironment}
-	h.mirror = newMirrorStore(h.mirrorDir, h.syncStaleAfter)
+	h.mirror = newMirrorStore(h.mirrorDir, h.syncStaleAfter, h.upstreamTimeout)
 	h.pubCheck = newPublicChecker(defaultPublicProbeTTL, h.transport)
 	return h
 }
