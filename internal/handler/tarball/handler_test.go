@@ -74,10 +74,18 @@ func cacheKey(ref artifact.ArtifactRef) string {
 	return ref.Protocol + ":" + ref.Name + ":" + ref.Version
 }
 
+// Lookup mirrors the real manager: entries are keyed by (protocol, name,
+// version) — NOT by digest — and a caller-supplied ref.Digest that contradicts
+// the entry we hold is a PinMismatchError rather than a silent hit. A double
+// that skipped this check would let the handler's pin test pass while
+// production fails open, which is exactly how this bug shipped green.
 func (s *storingFakeCache) Lookup(_ context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
 	e, ok := s.entries[cacheKey(ref)]
 	if !ok {
 		return nil, nil
+	}
+	if ref.Digest != "" && ref.Digest != e.Digest {
+		return nil, &cache.PinMismatchError{Ref: ref, Want: ref.Digest, Got: e.Digest}
 	}
 	return e, nil
 }
@@ -113,10 +121,15 @@ func (s *storingFakeCache) Store(_ context.Context, ref artifact.ArtifactRef, ar
 	return entry, nil
 }
 
+// Serve mirrors the real manager, which implements Serve as Lookup+ServeEntry
+// and therefore applies the same digest-pin gate.
 func (s *storingFakeCache) Serve(_ context.Context, ref artifact.ArtifactRef, offset, length int64) (io.ReadCloser, *artifact.CacheEntry, error) {
 	e, ok := s.entries[cacheKey(ref)]
 	if !ok {
 		return nil, nil, cache.ErrCacheMiss
+	}
+	if ref.Digest != "" && ref.Digest != e.Digest {
+		return nil, nil, &cache.PinMismatchError{Ref: ref, Want: ref.Digest, Got: e.Digest}
 	}
 	data := s.blobs[e.Digest]
 	total := int64(len(data))
@@ -478,6 +491,81 @@ func TestHandlerDigestPinMismatch(t *testing.T) {
 
 	// CAS must remain empty — the quarantine file must have been removed.
 	assert.Empty(t, sc.blobs, "CAS must not contain any blob after verify-on-write failure")
+}
+
+// TestHandlerDigestPinMismatchWarmCache is the load-bearing regression test for
+// the warm-path fail-open: TestHandlerDigestPinMismatch above only ever runs
+// against an EMPTY cache, so it proves the cold path and nothing else. In
+// production the cache is warm almost always, which is exactly when the pin
+// stopped being enforced.
+//
+// The caller's pin is an integrity assertion: "serve me these bytes or fail".
+// Answering a DIFFERENT artifact with 200 is a correctness and trust failure.
+func TestHandlerDigestPinMismatchWarmCache(t *testing.T) {
+	content := []byte("real tarball content")
+	correctDigest := sha256sum(content)
+	wrongDigest := sha256sum([]byte("completely different content — NOT what the server returns"))
+	require.NotEqual(t, correctDigest, wrongDigest, "precondition: digests must differ")
+
+	var upstreamHits int
+	fakeUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits++
+		_, _ = w.Write(content)
+	}))
+	defer fakeUpstream.Close()
+
+	host := fakeUpstream.Listener.Addr().String()
+	sc := newStoringFakeCache()
+	tmp := t.TempDir()
+
+	h := NewHandler(sc,
+		WithAllowedHosts([]string{host}),
+		WithScheme("http"),
+		WithQuarantineDir(tmp),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	base := srv.URL + "/" + host + "/releases/pkg.tar.gz"
+
+	// 1. WARM the cache with a legitimate, correctly-pinned request.
+	warm, err := http.Get(base + "?digest=" + correctDigest)
+	require.NoError(t, err)
+	defer warm.Body.Close()
+	require.Equal(t, http.StatusOK, warm.StatusCode, "precondition: correct pin must populate the cache")
+	require.NotEmpty(t, sc.blobs, "precondition: cache must now be warm")
+
+	// 2. Same URL, WRONG pin, against the now-warm cache. This must NOT be 200.
+	resp, err := http.Get(base + "?digest=" + wrongDigest)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	assert.NotEqual(t, http.StatusOK, resp.StatusCode,
+		"warm cache + wrong digest pin must NOT return 200 (fail-open)")
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode,
+		"wrong pin must fail the same way warm as cold (502)")
+	assert.NotEqual(t, content, body,
+		"handler must never serve a different artifact than the one pinned")
+
+	// 3. A bad-faith pin must not be a cache-denial lever: the legitimately
+	//    cached entry must survive untouched.
+	assert.NotEmpty(t, sc.blobs, "wrong pin must not evict the cached blob")
+
+	after, err := http.Get(base + "?digest=" + correctDigest)
+	require.NoError(t, err)
+	defer after.Body.Close()
+	afterBody, _ := io.ReadAll(after.Body)
+	assert.Equal(t, http.StatusOK, after.StatusCode, "correct pin must still work after a bad pin")
+	assert.Equal(t, content, afterBody, "cached entry must be unpoisoned")
+
+	// 4. The pin is optional — unpinned callers must keep working.
+	noPin, err := http.Get(base)
+	require.NoError(t, err)
+	defer noPin.Body.Close()
+	noPinBody, _ := io.ReadAll(noPin.Body)
+	assert.Equal(t, http.StatusOK, noPin.StatusCode, "no pin must still serve from cache")
+	assert.Equal(t, content, noPinBody)
 }
 
 // ────────────────────────────────────────────────────────────────────────────

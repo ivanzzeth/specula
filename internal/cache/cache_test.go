@@ -128,9 +128,24 @@ func (f *fakeBlobStore) UsageBytes(_ context.Context) (int64, error) {
 // fakeMetaStore — in-memory MetadataStore
 // --------------------------------------------------------------------------
 
+// entryKey mirrors the REAL immutable keying of the production MetadataStore
+// implementations, which is (protocol, name, version) and deliberately does NOT
+// include the digest:
+//
+//	sqlite: WHERE protocol = ? AND name = ? AND version = ?
+//
+// This double previously keyed on ref.Digest alone — the exact inverse of
+// production. That made a wrong caller-supplied pin look like a clean cache
+// miss in every test, hiding the warm-path pin fail-open that a real client
+// later caught. A double must key the way the real store keys, or the tests
+// above it prove nothing.
+func entryKey(ref artifact.ArtifactRef) string {
+	return ref.Protocol + ":" + ref.Name + ":" + ref.Version
+}
+
 type fakeMetaStore struct {
 	mu      sync.Mutex
-	entries map[string]*artifact.CacheEntry   // keyed by digest
+	entries map[string]*artifact.CacheEntry   // keyed by entryKey (protocol:name:version)
 	mutable map[string]*artifact.MutableEntry // keyed by mutableKey
 	log     *callLog
 	putErr  error
@@ -149,7 +164,7 @@ var _ meta.MetadataStore = (*fakeMetaStore)(nil)
 func (f *fakeMetaStore) Get(_ context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	e := f.entries[ref.Digest]
+	e := f.entries[entryKey(ref)]
 	if e == nil {
 		return nil, nil
 	}
@@ -167,14 +182,14 @@ func (f *fakeMetaStore) Put(_ context.Context, entry artifact.CacheEntry) error 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	cp := entry
-	f.entries[entry.Digest] = &cp
+	f.entries[entryKey(entry.Ref)] = &cp
 	return nil
 }
 
 func (f *fakeMetaStore) Delete(_ context.Context, ref artifact.ArtifactRef) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.entries, ref.Digest)
+	delete(f.entries, entryKey(ref))
 	return nil
 }
 
@@ -349,7 +364,7 @@ func TestLookupImmutable(t *testing.T) {
 		{
 			name: "meta hit + blob present returns entry",
 			setupMeta: func(fm *fakeMetaStore) {
-				fm.entries[digest] = &artifact.CacheEntry{Ref: ref, Digest: digest, Protocol: "oci"}
+				fm.entries[entryKey(ref)] = &artifact.CacheEntry{Ref: ref, Digest: digest, Protocol: "oci"}
 			},
 			setupBlob: func(fb *fakeBlobStore) {
 				fb.blobs[digest] = []byte("layer data")
@@ -359,7 +374,7 @@ func TestLookupImmutable(t *testing.T) {
 		{
 			name: "M1: meta hit + blob missing returns nil",
 			setupMeta: func(fm *fakeMetaStore) {
-				fm.entries[digest] = &artifact.CacheEntry{Ref: ref, Digest: digest, Protocol: "oci"}
+				fm.entries[entryKey(ref)] = &artifact.CacheEntry{Ref: ref, Digest: digest, Protocol: "oci"}
 			},
 			// no blob
 			wantNil: true,
@@ -384,6 +399,69 @@ func TestLookupImmutable(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestLookupImmutableRejectsPinMismatch pins the invariant that was silently
+// violated on every warm hit: if a ref carries a caller-supplied digest pin,
+// Lookup must never hand back an entry for DIFFERENT content.
+//
+// The real MetadataStore keys on (protocol, name, version) and ignores
+// ref.Digest, so an entry found by name can carry any digest at all. Enforcing
+// the pin is one string comparison against the entry we already hold — no
+// re-hash of the blob, and no weakening of §3's "CAS is never re-verified".
+func TestLookupImmutableRejectsPinMismatch(t *testing.T) {
+	const storedDigest = "sha256:aaa111"
+	const wrongPin = "sha256:bbb222"
+
+	// The cached entry, keyed by name — this is what the store will return.
+	baseRef := artifact.ArtifactRef{Protocol: "tarball", Name: "example.com/rel", Version: "pkg.tgz"}
+	m, fb, fm := newTestManager(t, nil)
+	fm.entries[entryKey(baseRef)] = &artifact.CacheEntry{
+		Ref: baseRef, Digest: storedDigest, Protocol: "tarball",
+	}
+	fb.blobs[storedDigest] = []byte("the legitimately cached bytes")
+
+	t.Run("no pin serves the cached entry", func(t *testing.T) {
+		got, err := m.Lookup(context.Background(), baseRef)
+		require.NoError(t, err)
+		require.NotNil(t, got, "an unpinned lookup must still hit")
+		assert.Equal(t, storedDigest, got.Digest)
+	})
+
+	t.Run("matching pin serves the cached entry", func(t *testing.T) {
+		ref := baseRef
+		ref.Digest = storedDigest
+		got, err := m.Lookup(context.Background(), ref)
+		require.NoError(t, err)
+		require.NotNil(t, got, "a matching pin must hit")
+		assert.Equal(t, storedDigest, got.Digest)
+	})
+
+	t.Run("mismatched pin must not return the entry", func(t *testing.T) {
+		ref := baseRef
+		ref.Digest = wrongPin
+		got, err := m.Lookup(context.Background(), ref)
+
+		require.Error(t, err, "a mismatched pin must be an explicit error, not a silent hit")
+		assert.Nil(t, got, "Lookup must never return an entry whose digest contradicts the pin")
+
+		pe, ok := AsPinMismatchError(err)
+		require.True(t, ok, "error must be a typed *PinMismatchError so handlers can map it")
+		assert.Equal(t, wrongPin, pe.Want)
+		assert.Equal(t, storedDigest, pe.Got)
+
+		// A bad-faith pin must not be a cache-denial lever.
+		assert.Contains(t, fb.blobs, storedDigest, "mismatched pin must not evict the blob")
+		assert.Contains(t, fm.entries, entryKey(baseRef), "mismatched pin must not evict the metadata")
+	})
+
+	t.Run("Serve is gated by the same pin check", func(t *testing.T) {
+		ref := baseRef
+		ref.Digest = wrongPin
+		rc, _, err := m.Serve(context.Background(), ref, 0, -1)
+		require.Error(t, err, "Serve must not stream bytes that contradict the pin")
+		assert.Nil(t, rc)
+	})
 }
 
 // --------------------------------------------------------------------------
@@ -647,7 +725,7 @@ func TestServeHitReturnsFullBlob(t *testing.T) {
 	ref := artifact.ArtifactRef{Protocol: "oci", Name: "img", Version: "v1", Digest: digest}
 
 	fb.blobs[digest] = content
-	fm.entries[digest] = &artifact.CacheEntry{
+	fm.entries[entryKey(ref)] = &artifact.CacheEntry{
 		Ref:      ref,
 		Digest:   digest,
 		Protocol: "oci",
@@ -672,7 +750,7 @@ func TestServeRangeRead(t *testing.T) {
 	ref := artifact.ArtifactRef{Protocol: "oci", Name: "img", Version: "v2", Digest: digest}
 
 	fb.blobs[digest] = content
-	fm.entries[digest] = &artifact.CacheEntry{Ref: ref, Digest: digest, Protocol: "oci", Size: int64(len(content))}
+	fm.entries[entryKey(ref)] = &artifact.CacheEntry{Ref: ref, Digest: digest, Protocol: "oci", Size: int64(len(content))}
 
 	// bytes [3, 3+4) = "3456"
 	rc, _, err := m.Serve(context.Background(), ref, 3, 4)

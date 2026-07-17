@@ -167,6 +167,18 @@ sequenceDiagram
   签名验证对落盘文件做，不驻留内存。多 GB layer 不入内存。
 - **写序**（修 M1）：blob 先落 CAS，metadata 后写；读路径把"meta 命中但 blob 缺失"当 miss；GC 清孤儿。
 - **tee 流式**：大 blob 回填 CAS 的同时，喂给同一 digest 上等待的 waiters（zot 模式），单上游出口。
+- **请求级 digest pin（pin ≠ 重验）**：调用方显式 pin 的 digest（如 tarball `?digest=`）是一条
+  **请求自身的完整性断言**——"给我这些字节，否则失败"。CAS 不可变层按
+  `(protocol, name, version)` 建键，**digest 不参与建键**，因此按 URL/名字命中的条目可能持有
+  任意 digest。故 `cache.Lookup` 必须把 pin 与**命中条目**的 digest 比对，不匹配即
+  `PinMismatchError` → 502，与 cold path 行为一致。
+  - 这是**元数据比对**，不是**重验字节**：§3 的"CAS 永久缓存，绝不重验"依然成立
+    （仍然信任已存字节，只是拒绝用工件 Y 回答对 X 的请求）。绝不因为一个 pin 就重算 blob 哈希。
+  - 只在 miss 路径校验 pin 会**静默失效于每次缓存命中**（即生产环境的绝大多数请求）——
+    断言在测试中有效、在负载下失效，比 cold path 正确更危险。
+  - pin 不匹配**绝不驱逐/失效**已缓存条目（不可作缓存拒绝服务的杠杆），
+    也**不触发上游重取**（不可作上游放大的杠杆）。
+  - pin 是**可选**的：`ref.Digest == ""` 表示无断言，行为不变。
 
 ---
 

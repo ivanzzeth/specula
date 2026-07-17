@@ -48,6 +48,17 @@ type CacheManager interface {
 	// Lookup returns the verified CacheEntry for ref if present and the blob
 	// exists (treats "meta hit but blob missing" as a miss, fix M1).
 	// For mutable refs it checks TTL freshness; stale entries return nil.
+	//
+	// Digest pin: entries are keyed by (protocol, name, version) — ref.Digest is
+	// NOT part of the key — so an entry found by name may hold a different
+	// digest than the caller pinned. When ref.Digest is set and contradicts the
+	// entry, Lookup returns a *PinMismatchError and a nil entry; it never hands
+	// back an artifact that contradicts the caller's pin. An empty ref.Digest
+	// means "no pin" and is always satisfied.
+	//
+	// Handlers that accept a caller-supplied pin should map PinMismatchError to
+	// the same status as a cold-path verification failure (502) rather than to a
+	// 500: it is the client's assertion failing, not a server fault.
 	Lookup(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error)
 
 	// Store runs the verification chain over the quarantined artifact and, on
@@ -130,6 +141,30 @@ func mutableKey(ref artifact.ArtifactRef) string {
 	return ref.Protocol + ":" + ref.Name + ":" + ref.Version
 }
 
+// checkDigestPin enforces the caller's digest pin against the digest of the
+// entry the cache is about to hand back.
+//
+// The immutable tier is keyed by (protocol, name, version) — ref.Digest is
+// stored but is NOT part of the lookup key — so an entry found by name can
+// carry any digest at all. A caller who supplies ref.Digest is making an
+// integrity assertion ("serve me these bytes or fail"); without this check the
+// assertion is honoured on the cold path (where the verify chain compares the
+// pin against the streaming-computed digest) and silently ignored on every warm
+// hit, i.e. almost always in production.
+//
+// This is a string comparison against metadata already in hand. It does NOT
+// re-verify or re-hash the stored blob, so ARCHITECTURE §3 ("CAS 永久缓存,
+// 绝不重验") is preserved: we still trust the stored bytes; we simply refuse to
+// answer a request for X with the artifact Y.
+//
+// An empty ref.Digest means "no pin" and always passes — the pin is optional.
+func checkDigestPin(ref artifact.ArtifactRef, got string) error {
+	if ref.Digest == "" || ref.Digest == got {
+		return nil
+	}
+	return &PinMismatchError{Ref: ref, Want: ref.Digest, Got: got}
+}
+
 // isMutableFresh reports whether the mutable entry's TTL window has not
 // expired. Sentinels: -1 = never expire, 0 = always expired.
 func isMutableFresh(e *artifact.MutableEntry) bool {
@@ -178,6 +213,13 @@ func (m *manager) lookupImmutable(ctx context.Context, ref artifact.ArtifactRef)
 	if !ok {
 		return nil, nil
 	}
+	// Pin check runs AFTER the M1 blob-existence gate: a missing blob is a miss
+	// (the caller re-fetches and the verify chain adjudicates the pin on write,
+	// which also self-heals metadata pointing at a since-GC'd digest). Only once
+	// we hold genuinely servable bytes does a contradicting pin become an error.
+	if err := checkDigestPin(ref, entry.Digest); err != nil {
+		return nil, err
+	}
 	return entry, nil
 }
 
@@ -202,6 +244,12 @@ func (m *manager) lookupMutable(ctx context.Context, ref artifact.ArtifactRef, a
 		if !ok {
 			return nil, nil
 		}
+	}
+	// Same pin invariant as the immutable tier. A payload-backed mutable entry
+	// (me.Digest == "") cannot satisfy a digest pin either, and falls out of the
+	// same comparison rather than being waved through.
+	if err := checkDigestPin(ref, me.Digest); err != nil {
+		return nil, err
 	}
 	// Synthesize a CacheEntry from the MutableEntry metadata.
 	return &artifact.CacheEntry{

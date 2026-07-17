@@ -20,9 +20,28 @@
 // # verify-on-write and optional digest pin
 //
 // Callers may supply an expected digest via the "digest" query parameter
-// (e.g. ?digest=sha256:abc…). When provided, the ChecksumVerifier compares
-// it against the streaming-computed digest during verify-on-write: a mismatch
-// causes the quarantine file to be removed and the handler returns 502.
+// (e.g. ?digest=sha256:abc…). The pin is optional; unpinned callers are
+// unaffected. When provided it is an integrity assertion — "serve me these
+// bytes or fail" — and it is enforced on BOTH paths:
+//
+//   - cache MISS: the ChecksumVerifier compares the pin against the
+//     streaming-computed digest during verify-on-write. A mismatch removes the
+//     quarantine file and the handler returns 502.
+//   - cache HIT: the CAS is keyed by (protocol, name, version), NOT by digest,
+//     so the entry found for this URL may hold any digest. cache.Lookup
+//     compares the pin against the entry's digest and returns a
+//     *cache.PinMismatchError, which the handler maps to the same 502.
+//
+// Enforcing only the miss path — as this handler originally did — means the
+// assertion works in testing and silently stops working once the cache is warm,
+// i.e. almost always in production.
+//
+// The hit-path check is a metadata comparison, not a re-hash: stored bytes are
+// still trusted exactly as ARCHITECTURE §3 specifies ("CAS 永久缓存, 绝不重验").
+// A mismatched pin never evicts or invalidates the cached entry, so a bad-faith
+// pin cannot be used as a cache-denial lever, and it is answered without a new
+// upstream fetch, so it cannot be used to amplify load onto the upstream.
+//
 // Without a pin the TOFU verifier records the first-seen digest and alerts on
 // later changes.
 //
@@ -253,6 +272,20 @@ func (h *Handler) serveTarball(w http.ResponseWriter, r *http.Request, host, key
 	// 3. Fast path: verified CAS hit.
 	entry, err := h.cache.Lookup(ctx, ref)
 	if err != nil {
+		// A caller-supplied pin that contradicts the cached entry is the
+		// client's assertion failing, not a server fault — and it must fail the
+		// same way warm as it does cold, where the verify chain rejects the
+		// mismatch with 502. Reported here without re-fetching upstream: the
+		// answer is already known, and re-fetching would let any stranger with a
+		// bogus ?digest= turn a warm hit into upstream load. The cached entry is
+		// deliberately left intact — a bad-faith pin is not an eviction lever.
+		if pe, ok := cache.AsPinMismatchError(err); ok {
+			h.log.Warn("tarball: digest pin mismatch on cache hit",
+				"key", key, "file", file, "pinned", pe.Want, "cached", pe.Got)
+			writeError(w, http.StatusBadGateway,
+				"digest pin mismatch: requested "+pe.Want+", cache holds "+pe.Got)
+			return
+		}
 		h.log.Error("tarball: CAS lookup", "key", key, "file", file, "err", err)
 		writeError(w, http.StatusInternalServerError, "cache lookup failed")
 		return
@@ -345,9 +378,19 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref art
 	ctx := r.Context()
 	rc, cacheEntry, err := h.cache.Serve(ctx, ref, 0, -1)
 	if err != nil {
-		if errors.Is(err, cache.ErrCacheMiss) {
+		switch pe, isPin := cache.AsPinMismatchError(err); {
+		case isPin:
+			// Serve routes through Lookup, so the pin gate applies here too.
+			// Map it to the same 502 rather than letting it read as a server
+			// fault; reaching this branch means the entry changed between our
+			// Lookup and this call.
+			h.log.Warn("tarball: digest pin mismatch on serve",
+				"ref", ref, "pinned", pe.Want, "cached", pe.Got)
+			writeError(w, http.StatusBadGateway,
+				"digest pin mismatch: requested "+pe.Want+", cache holds "+pe.Got)
+		case errors.Is(err, cache.ErrCacheMiss):
 			writeError(w, http.StatusNotFound, "tarball: artifact not in cache")
-		} else {
+		default:
 			h.log.Error("tarball: serve from cache", "ref", ref, "err", err)
 			writeError(w, http.StatusInternalServerError, "cache serve failed")
 		}
