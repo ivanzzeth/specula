@@ -115,41 +115,34 @@ print(f"patched: specula_cache_bytes inflated by 4096 at {n} site(s)")
 PY
 }
 
-patch_singleflight_repair() {
+patch_singleflight_break() {
   python3 - "$1" <<'PY'
 import sys, pathlib
-# NOT a lie — a REPAIR, and it is here as a positive control.
+# A NORMAL break-it injection.
 #
-# single_flight_collapses_stampede is already RED at HEAD, so mutating
-# single-flight to break it proves nothing: you cannot break what is already
-# broken. But a claim that is red no matter what is just as worthless as one
-# that is green no matter what. So we do the opposite: wrap the gomod cold-fetch
-# in the coalescer that ARCHITECTURE §7 says should already be there, and prove
-# the claim goes GREEN. That establishes the check discriminates 1 from N and is
-# measuring single-flight rather than merely always failing.
+# This used to be inverted (patch_singleflight_repair): the claim was ALREADY
+# red at HEAD, so breaking single-flight proved nothing — you cannot break what
+# is already broken — and the injection instead REPAIRED the code to prove the
+# check could go green at all. Single-flight is now genuinely implemented at the
+# cold-fetch path (keyed by request identity, not by the post-download digest),
+# so the inversion is obsolete and the injection is expressed the normal way
+# round: break it, and the gate must catch it.
+#
+# The mutation bypasses the coalescer while still referencing FetchKey and ctx,
+# so it COMPILES and is a behavioural lie rather than a build error. A mutation
+# that fails to compile proves nothing.
 p = pathlib.Path(sys.argv[1]) / "internal/handler/gomod/endpoints.go"
 s = p.read_text()
 
-old_imp = '"github.com/ivanzzeth/specula/internal/artifact"'
-assert old_imp in s, "import anchor not found"
-s = s.replace(old_imp, old_imp + '\n\t"github.com/ivanzzeth/specula/internal/coalesce"', 1)
-
-old = "	entry, err = h.fetchAndStoreImmutable(ctx, ref)"
-assert old in s, "fetchAndStoreImmutable call anchor not found"
-new = """	sfKey := ref.Protocol + "|" + ref.Name + "|" + ref.Version
-	sfVal, sfErr, _ := injectedFetchSF.Do(ctx, sfKey, func() (any, error) {
-		return h.fetchAndStoreImmutable(ctx, ref)
-	})
-	entry, err = nil, sfErr
-	if sfErr == nil {
-		if e, ok := sfVal.(*artifact.CacheEntry); ok {
-			entry = e
-		}
-	}"""
+old = """\tkey := coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest)
+\treturn coalesce.Fetch(ctx, h.fetchSF, key, fn)"""
+assert old in s, "coalescedFetch anchor not found — did the fetch collapse move?"
+new = """\t_ = coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest)
+\t_ = ctx
+\treturn fn() // INJECTED: bypass the coalescer; every caller fetches for itself"""
 s = s.replace(old, new, 1)
-s += "\n\n// injectedFetchSF collapses concurrent cold fetches for one artifact.\nvar injectedFetchSF = coalesce.NewLocalCoalescer()\n"
 p.write_text(s)
-print("patched: gomod cold fetch wrapped in a single-flight coalescer (REPAIR)")
+print("patched: gomod cold fetch NO LONGER coalesced (LIE)")
 PY
 }
 
@@ -158,19 +151,19 @@ declare -A INJ_PATCH=(
   [hit_refetches]=patch_hit_refetches
   [stale_fail_closed]=patch_stale_fail_closed
   [fabricated_bytes]=patch_fabricated_bytes
-  [singleflight_repair]=patch_singleflight_repair
+  [singleflight_break]=patch_singleflight_break
 )
 declare -A INJ_CLAIMS=(
   [hit_refetches]="cold_miss_contacts_upstream warm_immutable_hit_zero_upstream"
   [stale_fail_closed]="serve_stale_on_upstream_failure"
   [fabricated_bytes]="cold_miss_contacts_upstream cache_bytes_gauge_matches_db"
-  [singleflight_repair]="single_flight_collapses_stampede"
+  [singleflight_break]="single_flight_collapses_stampede"
 )
 declare -A INJ_TARGET=(
   [hit_refetches]="warm_immutable_hit_zero_upstream"
   [stale_fail_closed]="serve_stale_on_upstream_failure"
   [fabricated_bytes]="cache_bytes_gauge_matches_db"
-  [singleflight_repair]="single_flight_collapses_stampede"
+  [singleflight_break]="single_flight_collapses_stampede"
 )
 # What the target claim must read AFTER the mutation. Lies must turn a green
 # check red; the repair must turn the already-red check green.
@@ -178,13 +171,13 @@ declare -A INJ_EXPECT=(
   [hit_refetches]=false
   [stale_fail_closed]=false
   [fabricated_bytes]=false
-  [singleflight_repair]=true
+  [singleflight_break]=false
 )
 declare -A INJ_KIND=(
   [hit_refetches]=lie
   [stale_fail_closed]=lie
   [fabricated_bytes]=lie
-  [singleflight_repair]=repair
+  [singleflight_break]=lie
 )
 
 # export_head <dir> — pristine HEAD, no working-tree contamination.
@@ -228,7 +221,7 @@ if [[ "${INJ_SOURCE_ONLY:-0}" == "1" ]]; then
 fi
 
 WANT=("$@")
-[[ ${#WANT[@]} -eq 0 ]] && WANT=(hit_refetches stale_fail_closed fabricated_bytes singleflight_repair)
+[[ ${#WANT[@]} -eq 0 ]] && WANT=(hit_refetches stale_fail_closed fabricated_bytes singleflight_break)
 
 for name in "${WANT[@]}"; do
   log "INJECTION: ${name} (${INJ_KIND[$name]})"

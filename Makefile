@@ -10,6 +10,7 @@ export CGO_ENABLED := 0
         test test-unit test-integration test-postgres test-conformance \
         test-trust-oracle test-trust-oracle-mutations \
         test-groundtruth test-groundtruth-meta \
+        test-mutation \
         test-realclient test-e2e test-ui test-all
 
 all: build
@@ -238,6 +239,53 @@ test-groundtruth:
 # Emits results/groundtruth/injections.json.
 test-groundtruth-meta:
 	bash scripts/groundtruth-inject.sh
+
+## test-mutation: do our tests TEST, or do they merely EXECUTE? (needs: gremlins; ~6 min)
+#
+# The dimension that grades the TESTS rather than the code.
+#
+# coverage-gate.sh asks "was this line executed?". This asks the only question that
+# matters: "if this line were WRONG, would any test notice?". Those differ, and we have
+# shipped the gap between them at least four times — every time with the same shape, a test
+# double that answered whatever the code asked instead of what the real dependency does, so
+# the test could not fail no matter what production did. fakeMetaStore.Get keyed on
+# ref.Digest, the exact OPPOSITE of production (3ccd5ad): a wrong digest pin looked like a
+# clean cache miss, and that passed unit tests, the OCI conformance suite AND the coverage
+# gate. fakeStatsCollector.AddOpaquePath was {}. fakeMetaStore.GetMutable always returned
+# (nil, nil), which is how tier="" shipped beside 6 real pins. sumdb_test.go answered
+# whatever URL the handler built, so any URL shape passed — including the broken one.
+#
+# A lying double means the tests never exercise production behaviour, so mutants in that
+# code SURVIVE, in clusters. This gate enumerates them mechanically. That is the whole
+# point: the hand-written "mutation proofs" in test-trust-oracle-mutations are chosen by the
+# same agent that wrote the fix — it picks mutations it already knows its tests catch. That
+# is self-certification. A tool cannot be cherry-picked. (The two are complements, not
+# rivals: that gate proves the ORACLE catches lies; this one proves the TESTS do.)
+#
+# Tool: go-gremlins/gremlins v0.6.0 — not hand-rolled. Scoped to the trust-bearing packages
+# (internal/verify, internal/cache, internal/metrics); full-repo is O(mutants x package test
+# time) and far too slow to be useful. internal/artifact is deliberately absent: it is
+# declarations only and yields ZERO mutants.
+#
+# REPORT-ONLY today (proposed threshold: 85% efficacy). The per-mutant timeout is derived
+# from wall-clock and so is machine-dependent — and a too-tight budget does not redden this
+# gate, it INFLATES it (a timed-out mutant leaves the efficacy denominator), so the failure
+# mode of a flaky budget is a false GREEN. That is also why gremlins is driven with
+# GOFLAGS=-count=1 here: run as shipped, it measures a CACHED coverage run, and printed
+# "efficacy: 100.00%" on internal/verify while silently discarding 240 of 288 mutants
+# (upstream #267). An UNEXPLAINED timeout therefore fails this gate even in report-only mode:
+# that is an invalid measurement, not a low score. See the THRESHOLD note in the script.
+#
+# Emits results/mutation/survivors.tsv + summary.json: every survivor with file:line:col,
+# the operator applied, and its source line. A headline score is summarisable; a survivor
+# list is not. Read the artifact — each row is a concrete claim that production can be
+# broken THAT way with no test noticing.
+#
+# Equivalent mutants are NOT excluded — they cost us points on purpose, and each is listed
+# with a proof in docs/MUTATION-TESTING.md. A score propped up by hidden exclusions is the
+# exact dishonesty this repo exists to fight.
+test-mutation:
+	bash scripts/mutation-gate.sh
 
 ## test-all: every dimension (needs: everything above — network, docker, node, clients)
 test-all: test-unit test-integration test-postgres test-ui test-conformance test-realclient
