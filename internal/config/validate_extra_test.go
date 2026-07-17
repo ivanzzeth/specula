@@ -151,6 +151,74 @@ func TestValidate_GPGPolicyInvalid(t *testing.T) {
 	assertValidationErr(t, err, "verification.gpg.policy: must be")
 }
 
+// pypiLikeConsensusCfg builds a config with a single pypi protocol whose
+// verification asks for the consensus tier. mirrors is the number of non-official
+// (independent-mirror) upstreams; one official (origin-witness) upstream is always
+// appended. quorum is the requested agreement threshold.
+func pypiLikeConsensusCfg(mirrors, quorum int) *config.Config {
+	cfg := validCfg()
+	ups := make([]config.UpstreamConfig, 0, mirrors+1)
+	for i := 0; i < mirrors; i++ {
+		ups = append(ups, config.UpstreamConfig{
+			Name:     "mirror" + string(rune('a'+i)),
+			BaseURL:  "https://mirror" + string(rune('a'+i)) + ".example.cn",
+			Official: false,
+		})
+	}
+	ups = append(ups, config.UpstreamConfig{
+		Name: "origin", BaseURL: "https://pypi.org", Official: true,
+	})
+	cfg.Protocols = map[string]config.ProtocolConfig{
+		"pypi": {
+			Upstreams: ups,
+			Verification: config.VerificationConfig{
+				Tiers:  []string{"consensus", "tofu", "checksum"},
+				Quorum: quorum,
+			},
+		},
+	}
+	return cfg
+}
+
+// TestValidate_ConsensusQuorumExceedsMirrors is the Bug-2 guard: an
+// unsatisfiable consensus quorum (quorum > available independent mirrors) must be
+// rejected at config validation, not silently at boot. PRD §6's own example
+// shipped exactly this — pypi quorum:2 with a single non-official upstream (the
+// other being the official origin WITNESS) — and it could not start a server, yet
+// a parse-only test named for §6 passed it. This is the a5080cb rule, moved to the
+// layer that config.Load already gates on so the doc test actually catches drift.
+func TestValidate_ConsensusQuorumExceedsMirrors(t *testing.T) {
+	// 1 non-official mirror + 1 official witness, quorum 2 → unsatisfiable.
+	err := config.Validate(pypiLikeConsensusCfg(1, 2))
+	assertValidationErr(t, err, "consensus quorum 2 exceeds")
+}
+
+// TestValidate_ConsensusQuorumSatisfiable confirms the fix's shape: two genuine
+// independent mirrors + an origin witness makes quorum:2 satisfiable, so the
+// config validates. This is the configuration §6 must teach — one that both boots
+// AND demonstrates cross-source consensus.
+func TestValidate_ConsensusQuorumSatisfiable(t *testing.T) {
+	if err := config.Validate(pypiLikeConsensusCfg(2, 2)); err != nil {
+		t.Fatalf("2 mirrors + witness, quorum 2 must validate, got: %v", err)
+	}
+}
+
+// TestValidate_ConsensusQuorumNonMetadataProtocol pins that the check is gated by
+// consensus ACHIEVABILITY: npm advertises sha512 integrity, never a metadata-only
+// sha256, so its consensus tier is a documented no-op that downgrades to tofu at
+// boot (cmd/specula) and must NOT be rejected here — rejecting it would break a
+// config the server actually starts.
+func TestValidate_ConsensusQuorumNonMetadataProtocol(t *testing.T) {
+	cfg := pypiLikeConsensusCfg(1, 2)
+	// Re-key the protocol as npm (non-metadata-consensus-capable).
+	proto := cfg.Protocols["pypi"]
+	delete(cfg.Protocols, "pypi")
+	cfg.Protocols["npm"] = proto
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("npm consensus quorum>mirrors must NOT be rejected (downgrades to tofu), got: %v", err)
+	}
+}
+
 // TestValidate_ProvenancePolicyInvalid covers the
 // "protocols.<name>.verification.provenance.policy: must be …" rule.
 func TestValidate_ProvenancePolicyInvalid(t *testing.T) {

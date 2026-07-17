@@ -415,7 +415,7 @@ graph TB
     root[根 http.ServeMux<br/>最长前缀分流]
     root -->|/api/ /healthz /readyz /metrics| api[Admin API]
     root -->|/ 兜底| spa[Embedded SPA<br/>//go:embed all:dist]
-    api --> mw[Auth 中间件<br/>Bearer key / admin-key / session cookie]
+    api --> mw[Auth 中间件<br/>Bearer API key / session cookie]
     mw --> h[handlers]
     spa -->|真实文件| asset[assets/* immutable 1y]
     spa -->|路由回落| index[index.html no-cache]
@@ -424,7 +424,8 @@ graph TB
 - **用户模型**：`users(id,email,password_hash,system_role,token_gen,...)`；**首个 = admin**（`CountUsers()==0`）。
 - **认证**：bcrypt.DefaultCost 密码（用户不存在跑 dummy bcrypt 防枚举）；手写 HS256 JWT（stdlib，拒 alg=none/RS*）
   in httpOnly + SameSite=Lax + Secure(HTTPS) cookie；`token_gen` 快照入 claims → logout 服务端 bump 撤销所有会话。
-- **中间件三通道**：Bearer API key → Bearer admin-key(break-glass) → 本地 session。cookie+改状态+跨源 → 403。
+- **中间件双通道**：Bearer API key（`spck_` 前缀）→ 本地 session（JWT cookie/Bearer）。cookie+改状态+跨源 → 403。
+  （无独立 admin-key 破窗通道：静态密钥旁路会绕过多租户 RBAC、`token_gen` 撤销与按用户审计；恢复走首用户引导/运维层，见 PRD §G6。）
 - **WebUI**：React18 + Vite + Tailwind"工程控制台"暗色（IBM Plex Mono + 琥珀 #ffb02e + 发丝线 + 近直角）。
   页面：缓存统计仪表盘、验签/告警、策略配置、上游健康、GC 操作、用户管理。
 - **构建**：Makefile `ui` 先 `vite build`→`web/dist`，再 `go build` 嵌入；`web/dist/.gitkeep` 让裸 clone 可编译。

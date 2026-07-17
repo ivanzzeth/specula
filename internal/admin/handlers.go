@@ -530,8 +530,8 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 // ---- config + events (admin) -------------------------------------------------
 
 // handleConfig → GET /api/v1/admin/config. Returns ConfigResponse (redacted).
-// Secrets (jwt_secret, admin_key, DSN passwords, S3 credentials) are never
-// included in the response.
+// Secrets (jwt_secret, DSN passwords, S3 credentials) are never included in the
+// response.
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	if s.cfg == nil {
 		writeError(w, http.StatusInternalServerError, "configuration not available")

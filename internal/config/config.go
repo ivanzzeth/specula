@@ -152,10 +152,6 @@ type AuthConfig struct {
 	// writing it into the YAML file.
 	ConfigSecret string `koanf:"config_secret"`
 
-	// AdminKey is a break-glass Bearer token that bypasses normal session
-	// auth. Should be a high-entropy random string. Empty disables it.
-	AdminKey string `koanf:"admin_key"`
-
 	// CookieSecure sets the Secure flag on session cookies. Set true when
 	// the control plane is behind HTTPS (recommended for production).
 	CookieSecure bool `koanf:"cookie_secure"`

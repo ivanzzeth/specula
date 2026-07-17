@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 )
 
@@ -59,6 +60,16 @@ type Collector interface {
 	RecordPut(ctx context.Context, protocol string, size int64) error
 	// RecordEvict decrements the aggregate for protocol by size bytes.
 	RecordEvict(ctx context.Context, protocol string, size int64) error
+	// Refresh performs ONE synchronous refresh: it reads the MetadataStore and
+	// walks any registered opaque roots, setting the Prometheus gauges to the
+	// authoritative values right now. It is what makes the FIRST measurement
+	// happen at startup instead of 30s later: cmd/specula calls it once, before
+	// the control-plane server begins listening, so /metrics reports real
+	// per-protocol bytes on the very first scrape rather than the pre-initialised
+	// zeros (which would be stale for a warm/persistent store). Idempotent and
+	// safe to call repeatedly. In standalone mode (no MetadataStore) it is a
+	// no-op, since RecordPut/RecordEvict already keep the gauges current.
+	Refresh(ctx context.Context)
 	// Run blocks, ticking every RefreshInterval, re-reading the MetadataStore
 	// and updating Prometheus gauges. Returns when ctx is cancelled. Call it in
 	// a dedicated goroutine:
@@ -110,35 +121,53 @@ var _ Collector = (*collector)(nil)
 // registry, with no MetadataStore (standalone / Prometheus-gauge-only mode).
 // ByProtocol and Total reflect in-memory counters kept by RecordPut/RecordEvict.
 func NewCollector() Collector {
-	return newCollector(nil, prometheus.DefaultRegisterer, DefaultCollectorConfig())
+	return newCollectorWithGauges(nil, metrics.CacheBytes, metrics.CacheObjects, DefaultCollectorConfig())
 }
 
 // NewCollectorWithStore constructs a Collector that reads authoritative
 // per-protocol and total cache sizes from the MetadataStore (O(1) SUM GROUP BY)
 // and keeps Prometheus gauges in sync on every ByProtocol call.
 func NewCollectorWithStore(store meta.MetadataStore) Collector {
-	return newCollector(store, prometheus.DefaultRegisterer, DefaultCollectorConfig())
+	return newCollectorWithGauges(store, metrics.CacheBytes, metrics.CacheObjects, DefaultCollectorConfig())
 }
 
 // NewCollectorWithConfig constructs a standalone Collector (no MetadataStore)
 // with caller-supplied configuration.
 func NewCollectorWithConfig(cfg CollectorConfig) Collector {
-	return newCollector(nil, prometheus.DefaultRegisterer, cfg)
+	return newCollectorWithGauges(nil, metrics.CacheBytes, metrics.CacheObjects, cfg)
 }
 
 // NewCollectorWithStoreAndConfig constructs a store-backed Collector with
 // caller-supplied configuration.
 func NewCollectorWithStoreAndConfig(store meta.MetadataStore, cfg CollectorConfig) Collector {
-	return newCollector(store, prometheus.DefaultRegisterer, cfg)
+	return newCollectorWithGauges(store, metrics.CacheBytes, metrics.CacheObjects, cfg)
 }
 
-// newCollector is the internal constructor that accepts a Registerer so tests
-// can inject a fresh prometheus.NewRegistry() and avoid duplicate-registration
-// panics across sub-tests.
-func newCollector(store meta.MetadataStore, reg prometheus.Registerer, cfg CollectorConfig) *collector {
+// newCollectorWithGauges is the real constructor: it writes THROUGH the supplied
+// gauges rather than registering its own. Production passes metrics.CacheBytes /
+// metrics.CacheObjects, which are registered and pre-initialised at metrics
+// package init — so the series exist on /metrics before any Collector is built or
+// any request arrives (PRD §7; the 7600a0e bug class). Registration is no longer
+// a side effect of construction.
+func newCollectorWithGauges(store meta.MetadataStore, cacheBytes, cacheObjects *prometheus.GaugeVec, cfg CollectorConfig) *collector {
 	if cfg.RefreshInterval <= 0 {
 		cfg.RefreshInterval = 30 * time.Second
 	}
+	return &collector{
+		store:        store,
+		cacheBytes:   cacheBytes,
+		cacheObjects: cacheObjects,
+		cfg:          cfg,
+		inmem:        make(map[string]inmemStat),
+	}
+}
+
+// newCollector accepts a Registerer so tests can inject a fresh
+// prometheus.NewRegistry() and get ISOLATED per-test gauges (no cross-test
+// bleed, no duplicate-registration panic). It is test-only plumbing: production
+// code uses the exported constructors above, which write through the shared
+// metrics-package gauges.
+func newCollector(store meta.MetadataStore, reg prometheus.Registerer, cfg CollectorConfig) *collector {
 	bytesVec := prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "specula_cache_bytes",
@@ -155,14 +184,7 @@ func newCollector(store meta.MetadataStore, reg prometheus.Registerer, cfg Colle
 	)
 	bytesVec = registerOrExisting(reg, bytesVec)
 	objectsVec = registerOrExisting(reg, objectsVec)
-
-	return &collector{
-		store:        store,
-		cacheBytes:   bytesVec,
-		cacheObjects: objectsVec,
-		cfg:          cfg,
-		inmem:        make(map[string]inmemStat),
-	}
+	return newCollectorWithGauges(store, bytesVec, objectsVec, cfg)
 }
 
 // registerOrExisting registers c with reg and returns it. On
@@ -181,6 +203,11 @@ func registerOrExisting(reg prometheus.Registerer, c *prometheus.GaugeVec) *prom
 		panic(fmt.Sprintf("stats: prometheus registration failed: %v", err))
 	}
 	return c
+}
+
+// Refresh performs one synchronous refresh cycle. See the Collector interface.
+func (c *collector) Refresh(ctx context.Context) {
+	c.refreshOnce(ctx)
 }
 
 // Run blocks, ticking every RefreshInterval (or waiting on the injected tickCh

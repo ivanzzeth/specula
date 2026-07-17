@@ -31,7 +31,6 @@ cache:
   negative_ttl_seconds: 1800
 auth:
   jwt_secret: ""
-  admin_key: ""
   cookie_secure: false
 protocols:
   oci:

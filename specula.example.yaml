@@ -101,10 +101,6 @@ auth:
   # SPECULA_AUTH__JWT_SECRET.
   jwt_secret: ""
 
-  # Break-glass admin bearer token. Leave empty to disable.
-  # Should be a high-entropy random string kept in a secret manager.
-  admin_key: ""
-
   # Set true when the control plane is served over HTTPS.
   # This sets the Secure flag on the session cookie.
   cookie_secure: false

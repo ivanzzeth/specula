@@ -308,6 +308,52 @@ func TestMarkOutsideRequestIsNoop(t *testing.T) {
 	})
 }
 
+// TestCacheBytesRegisteredOnImportAlone is the Bug-1 regression test. PRD §7's
+// opening paragraph requires that specula_cache_bytes/specula_cache_objects are
+// registered at PACKAGE INIT, independent of constructing an object — it cites
+// specula_cache_bytes{protocol="git"} by name as the cautionary tale (7600a0e).
+// They used to be registered as a side effect of constructing a stats.Collector,
+// so a fresh headless process reported nothing until the 30s refresh ticker fired.
+// Merely importing this package must now put both on the DEFAULT registry.
+func TestCacheBytesRegisteredOnImportAlone(t *testing.T) {
+	for name, c := range map[string]prometheus.Collector{
+		"specula_cache_bytes":   CacheBytes,
+		"specula_cache_objects": CacheObjects,
+	} {
+		err := prometheus.DefaultRegisterer.Register(c)
+		require.Error(t, err, "%s must already be registered on the default registry at init", name)
+		require.IsType(t, prometheus.AlreadyRegisteredError{}, err,
+			"%s must be registered at init, not fail for some other reason", name)
+	}
+}
+
+// TestCacheBytesVisibleWithZeroTraffic is the operator-facing half: on a fresh
+// headless process, with no traffic and no stats.Collector ever constructed,
+// /metrics must already expose specula_cache_bytes. This is the exact claim the
+// ground-truth gate scrapes as cache_bytes_visible_at_startup.
+func TestCacheBytesVisibleWithZeroTraffic(t *testing.T) {
+	names := gatherNames(t)
+	assert.True(t, names["specula_cache_bytes"],
+		"cache_bytes must be on /metrics with zero traffic and no collector constructed")
+}
+
+// TestCacheBytesPreInitialisedToZero proves the bounded protocol label set is
+// pre-initialised to a MEASURED zero for cache_bytes (bytes are always
+// measurable, unlike opaque object counts). This is the same honesty rule as
+// hit/miss: a bounded, knowable label set reports a real 0, not an absent series.
+//
+// cache_objects is deliberately NOT pre-initialised here: git bytes are
+// measurable via du but git OBJECT counts are not (ObjectsCountable=false), so a
+// pre-initialised cache_objects{git}=0 would fabricate "0 objects" when the truth
+// is "unknown". Absence is how cache_objects says "not countable / not measured".
+func TestCacheBytesPreInitialisedToZero(t *testing.T) {
+	for _, p := range AllProtocols {
+		assert.NotPanics(t, func() {
+			_ = testutil.ToFloat64(CacheBytes.WithLabelValues(p))
+		}, "protocol %q must have a pre-initialised cache_bytes series", p)
+	}
+}
+
 // TestMiddlewareRecordsImplicitOK covers a handler that writes a body without an
 // explicit WriteHeader — net/http implies 200 and so must the recorder.
 func TestMiddlewareRecordsImplicitOK(t *testing.T) {

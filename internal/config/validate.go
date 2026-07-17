@@ -37,6 +37,41 @@ var validOnPrivateDown = map[string]bool{
 	"serve_stale": true,
 }
 
+// MetadataConsensusProtocols is the set of protocols for which cross-source
+// consensus is actually BUILDABLE metadata-only: their mirror metadata advertises
+// a per-file sha256 that independent mirrors can be polled for without fetching
+// the blob (pypi's PEP 503 `#sha256=`, oci's manifest digest). npm advertises
+// sha512 integrity and tarball advertises nothing, so their consensus tier is a
+// documented no-op that downgrades to tofu at boot — those protocols must NOT be
+// subjected to the quorum-vs-mirrors check below, since the tier never runs.
+//
+// This is the single source of truth for that capability; cmd/specula's verifier
+// build reads the same fact (kept in sync deliberately — see buildConsensusVerifier).
+var MetadataConsensusProtocols = map[string]bool{
+	"oci":  true,
+	"pypi": true,
+}
+
+// countConsensusMirrors returns the number of independent mirrors a consensus
+// verifier would poll for this protocol, applying the SAME derivation cmd/specula
+// uses (a5080cb): an explicit verification.consensus.mirrors list wins; otherwise
+// non-official upstreams vote and the FIRST official upstream becomes the origin
+// WITNESS (not a mirror). The witness never counts toward quorum.
+func countConsensusMirrors(proto ProtocolConfig) int {
+	if cc := proto.Verification.Consensus; cc != nil && len(cc.Mirrors) > 0 {
+		return len(cc.Mirrors)
+	}
+	mirrors, witnessTaken := 0, false
+	for _, u := range proto.Upstreams {
+		if u.Official && !witnessTaken {
+			witnessTaken = true // first official is the origin witness, not a mirror
+			continue
+		}
+		mirrors++
+	}
+	return mirrors
+}
+
 // Validate checks a loaded Config for consistency and completeness.
 // All detected problems are collected and returned as a single error
 // with one message per line so callers see the full picture at once.
@@ -138,6 +173,25 @@ func Validate(cfg *Config) error {
 		if cc := proto.Verification.Consensus; cc != nil && cc.Quorum < 1 {
 			add("protocols.%s.verification.consensus.quorum: must be >= 1, got %d",
 				name, cc.Quorum)
+		}
+		// Unsatisfiable consensus quorum (quorum > available independent mirrors)
+		// is a HARD error, not a boot-time surprise. This is a5080cb's rule lifted
+		// to the config layer that config.Load already gates on: an `official: true`
+		// upstream becomes the origin WITNESS, not a mirror, so two upstreams with
+		// quorum:2 leaves a single voter and the tier can never pass — every fetch
+		// of that protocol would then fail closed forever. Only checked for
+		// protocols whose consensus is genuinely buildable metadata-only; npm/tarball
+		// downgrade to tofu and must not be rejected. effectiveQuorum >= 1 is assumed
+		// (the guard above already fired otherwise, but we still want a clean number).
+		if hasConsensus && MetadataConsensusProtocols[name] && effectiveQuorum >= 1 {
+			if mirrors := countConsensusMirrors(proto); effectiveQuorum > mirrors {
+				add("protocols.%s.verification: consensus quorum %d exceeds the %d "+
+					"available independent mirror(s) — the tier can never pass and every "+
+					"%s fetch would fail closed. An upstream marked `official: true` becomes "+
+					"the origin WITNESS, not a mirror. Either lower quorum to <= %d, or add "+
+					"%d more non-official upstream(s)/consensus mirror(s)",
+					name, effectiveQuorum, mirrors, name, mirrors, effectiveQuorum-mirrors)
+			}
 		}
 
 		// cosign block (only meaningful for "oci"): tlog must be false

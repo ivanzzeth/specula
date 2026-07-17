@@ -241,6 +241,7 @@ func (c *fakeStatsCollector) Total(ctx context.Context) (artifact.SizeStat, erro
 }
 func (c *fakeStatsCollector) RecordPut(_ context.Context, _ string, _ int64) error   { return nil }
 func (c *fakeStatsCollector) RecordEvict(_ context.Context, _ string, _ int64) error { return nil }
+func (c *fakeStatsCollector) Refresh(_ context.Context)                              {}
 func (c *fakeStatsCollector) Run(_ context.Context)                                  {}
 
 // AddOpaquePath records the registration (idempotently, like the real one)
@@ -1636,7 +1637,6 @@ func TestHandleConfig(t *testing.T) {
 	raw := rr.Body.String()
 	assert.NotContains(t, raw, "jwt_secret", "jwt_secret must be redacted")
 	assert.NotContains(t, raw, "test-secret", "JWT secret value must be redacted")
-	assert.NotContains(t, raw, "admin_key", "admin_key must be redacted")
 }
 
 // ---- events ------------------------------------------------------------------

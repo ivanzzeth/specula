@@ -338,6 +338,16 @@ func run() error {
 	dataSrv := &http.Server{Addr: cfg.Server.DataPlaneAddr, Handler: dataMux, ReadHeaderTimeout: 15 * time.Second}
 	ctrlSrv := &http.Server{Addr: cfg.Server.ControlPlaneAddr, Handler: ctrlMux, ReadHeaderTimeout: 15 * time.Second}
 
+	// Take the FIRST stats measurement SYNCHRONOUSLY, before /metrics is
+	// reachable. metrics package init pre-initialises specula_cache_bytes{protocol}
+	// to a cold-cache zero, but a warm/persistent store (SQLite file, shared HA DB)
+	// already holds real bytes; without this a headless replica would scrape those
+	// stale zeros for up to RefreshInterval (30s) after restart — the same
+	// "gauge read 50 while the DB said 138" lag the ground-truth gate caught. Run
+	// AFTER admin.New's registerOpaqueCaches so the git bare-mirror bytes are
+	// included in this first pass too. The 30s ticker (below) keeps it fresh after.
+	collector.Refresh(ctx)
+
 	return serve(ctx, log, dataSrv, ctrlSrv)
 }
 

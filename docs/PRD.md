@@ -72,8 +72,8 @@
 |---|---|---|---|
 | apt | **signed** | 发行版 keyring（预置，离线可验） | 端到端金标准 |
 | Go | **signed** | sumdb Ed25519 签名 tree head + Merkle 证明 | 经代理透传仍可验 |
-| Helm (repo) | **signed** | `.prov` GPG 签名 + keyring | 无 .prov 降级 |
-| OCI | **signed**（需配公钥） | cosign keyed（关闭 tlog）；否则 consensus/tofu | keyless 在 CN 默认不可用；已接线：cosign keyed 校验 + go-containerregistry 发现签名 |
+| Helm (repo) | **signed**（需配 keyring 且上游发布 `.prov`） | `.prov` GPG 签名 + keyring | 无 `.prov` 降级到 tofu（不谎称 signed）。**已验证**：`helm package --sign` 产出的真实 `.prov` 经 Specula 验证达到 signed（`TestHelmProv_RealHelm_*` + `scripts/trust-oracle-signed.sh`）。**注意**：这证明的是「我们的验证器接受真实 helm 产出的 `.prov`」，**不**代表任何公网 CN 镜像发布 `.prov`——`mirror.azure.cn/kubernetes/charts` 一个都不发（见 `scripts/trust-oracle.sh`）。故 CN 实务中 helm 通常停在 tofu，除非 operator 指向自建/发布 `.prov` 的仓库并配 keyring |
+| OCI | **signed**（需配公钥且镜像被签名） | cosign keyed（关闭 tlog）；否则 consensus/tofu | keyless 在 CN 默认不可用。**已端到端验证**：真实 `cosign sign --key --tlog-upload=false` 签名的镜像经 Specula 拉取达到 signed，未签名/被篡改（他人密钥签名）均 fail-closed 且真正到达验证器（`TestCosign_RealBinary_*`、`TestCosignVerifier_RealFetcher_*` + `scripts/trust-oracle-signed.sh`）。cosign CLI 在 CN 可经 goproxy.cn 从源码构建。**验证器只作用于镜像 manifest/index**（按上游 content-type 门控），layer/config blob 跳过——否则每个未签名的 layer 会 fail-close 整个 pull |
 | git | **signed**（可选） | 签名 tag/commit（配 allowed-signers）；否则 tofu | git 对象天然 Merkle |
 | npm | **consensus / tofu** | provenance CN 不可用且覆盖 ~3–12% | 实务上 TOFU + 依赖混淆 guard；metadata 仅暴露 sha512 integrity/sha1 shasum，metadata-only 的 sha256 跨源共识不可用，故默认停在 tofu |
 | PyPI | **consensus / tofu** | PEP 740 CN 不可用且覆盖 ~5% | 已接线：consensus（PEP 503 simple-index `#sha256=` 跨源 quorum 比对，metadata-only）+ TOFU |
@@ -214,14 +214,22 @@ protocols:
   # CN 下可达 consensus + tofu 档。Specula 作唯一 index 防依赖混淆。
   pypi:
     mutable_ttl_seconds: 1800
+    # consensus quorum:2 needs TWO independent (non-official) mirrors to vote —
+    # the `official: true` upstream becomes the origin WITNESS, not a mirror, so
+    # a single non-official upstream would make quorum:2 unsatisfiable and the
+    # server would refuse to start. tuna + aliyun are the two voters.
     upstreams:
       - name: tuna
         base_url: https://pypi.tuna.tsinghua.edu.cn
         priority: 1
         official: false
+      - name: aliyun
+        base_url: https://mirrors.aliyun.com/pypi
+        priority: 2
+        official: false
       - name: pypi-org
         base_url: https://pypi.org
-        priority: 2
+        priority: 3
         official: true
     verification:
       tiers: [consensus, tofu, checksum]
@@ -458,11 +466,25 @@ gauge 打到 1。但 HTTP 451（法律封锁）是格式良好的 4xx——clien
 |---|---|---|
 | `cache_hits/misses_total{protocol}` | 8 个 protocol，init() 时 | ✅ 真实的 0 |
 | `upstream_blocked{protocol,upstream}` | 由 config 声明（`PreInitUpstream`） | ✅ 真实的 0 |
+| `cache_bytes{protocol}` | 8 个 protocol，init() 时 → **启动同步测量**覆写 | ✅ 真实的 0（冷）/ 真实值（热） |
+| `cache_objects{protocol}` | ❌ 不透明缓存对象数不可数 | 首次可数测量后 |
 | `requests_total{protocol,method,status}` | ❌ status 不可预知 | 首次请求后 |
 | `verification_total{...,tier,result}` | ❌ 预初始化会捏造从未发生的组合 | 首次验证后 |
 
-后两者的**缺席是正确且诚实的**：它表示"尚未发生"，而非"坏了"。为它们预初始化等于捏造
-从未出现过的组合，与本节要根除的是同一类谎言。
+`requests_total` / `verification_total` 的**缺席是正确且诚实的**：它表示"尚未发生"，而非
+"坏了"。为它们预初始化等于捏造从未出现过的组合，与本节要根除的是同一类谎言。
+
+`cache_bytes` **可以**预初始化，且这不是捏造——**字节永远可测**（CAS 行 `SUM(size)`；
+git 不透明镜像 `du -sb`），冷缓存下"0 字节"是一次真实测量，与 `cache_hits=0` 同类。
+两处避免了 7600a0e 那类谎言：(1) 注册与预初始化都在 `internal/metrics` 的 **init()**，
+不再是构造 `stats.Collector` 的副作用（曾导致 `cache_bytes{protocol="git"}` 要等人点开
+WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula` 在控制面开始监听前调用
+`collector.Refresh`），所以热/持久存储（SQLite 文件、HA 共享库）重启后不会在头 30s 里被
+刮到过时的 0——init() 那批 0 在服务器可达之前就已被真实 `SUM(size)` 覆写。
+`cache_objects` **不**预初始化：不透明缓存（git bare mirror）的对象藏在 packfile 里、
+非可数 CAS 行（`ObjectsCountable=false`），预初始化 `cache_objects{git}=0` 会把"不可数"
+谎报成"零个"，正是 e181e5a 立下的"渲染 '—'，绝不捏造零"那条规矩要根除的。**缺席**才是
+本 gauge 表达"不可数/未测量"的方式。
 
 > **已知缺口（未解决，不得当作已解决）**：`verify.Chain` 在**没有任何 verifier**时返回
 > `TierChecksum` + pass，即在一次哈希都没比过的情况下声称 checksum 档。该 Result 会被

@@ -522,6 +522,31 @@ func TestRefreshOnce_StoreError_GaugesUnchanged(t *testing.T) {
 	assert.Equal(t, float64(777), found["specula_cache_bytes[helm]"], "gauge unchanged on store error")
 }
 
+// TestRefresh_SynchronouslySetsGaugesFromStore is the Bug-1 startup-measurement
+// guard. cmd/specula calls collector.Refresh(ctx) ONCE before the control-plane
+// server begins listening, so /metrics reports real per-protocol bytes on the
+// very first scrape instead of the pre-initialised cold zeros (which would be
+// stale for a warm/persistent store). Refresh must set the gauges synchronously
+// — no ticker, no goroutine.
+func TestRefresh_SynchronouslySetsGaugesFromStore(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	store := &fakeStore{
+		stats: map[string]artifact.SizeStat{
+			"oci": {Bytes: 138, Objects: 7},
+		},
+	}
+	// A long interval proves the ticker plays no part: only the synchronous
+	// Refresh call can populate the gauge within this test.
+	c := newCollector(store, reg, CollectorConfig{RefreshInterval: time.Hour})
+
+	c.Refresh(context.Background())
+
+	found := gatherGaugeVals(t, reg)
+	assert.Equal(t, float64(138), found["specula_cache_bytes[oci]"],
+		"Refresh must set cache_bytes from the warm store synchronously, not wait for the 30s tick")
+	assert.Equal(t, float64(7), found["specula_cache_objects[oci]"])
+}
+
 // ---------------------------------------------------------------------------
 // refreshOnce — du-sb fallback tests (opaque paths registered)
 // ---------------------------------------------------------------------------

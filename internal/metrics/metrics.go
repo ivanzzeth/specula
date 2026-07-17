@@ -204,6 +204,47 @@ var (
 		},
 		[]string{"protocol", "check", "tier", "result"},
 	)
+
+	// CacheBytes reports cached bytes per protocol (Grafana sum() for the total).
+	//
+	// It lives HERE, registered at package init, and NOT inside stats.newCollector,
+	// on purpose. Registering it as a side effect of constructing a Collector is
+	// the exact bug class PRD §7 opens by forbidding and that shipped once already
+	// (7600a0e: specula_cache_bytes{protocol="git"} was invisible on /metrics until
+	// somebody opened the WebUI). stats.Collector now writes THROUGH this gauge
+	// rather than owning its own, so a fresh headless process — one that never
+	// constructs a Collector and serves no traffic — still reports the series.
+	//
+	// The bytes are AUTHORITATIVE-store values (SUM(size) GROUP BY protocol) for
+	// CAS protocols and a du -sb walk for opaque roots (git). Both are always
+	// measurable, which is why (unlike CacheObjects) this gauge is pre-initialised
+	// to zero for the bounded protocol set at init — see PreInitCacheBytes.
+	CacheBytes = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "specula_cache_bytes",
+			Help: "Cached bytes per protocol (use sum() in Grafana for the total).",
+		},
+		[]string{"protocol"},
+	)
+
+	// CacheObjects reports the cached object count per protocol.
+	//
+	// Registered at init like CacheBytes, but DELIBERATELY NOT pre-initialised.
+	// Object counts are exact only for CAS-backed protocols; an opaque cache (a git
+	// bare mirror) stores its content inside packfiles, not as countable CAS rows,
+	// so its object count is UNKNOWABLE (artifact.SizeStat.ObjectsCountable=false).
+	// A pre-initialised cache_objects{protocol="git"}=0 would fabricate "zero
+	// objects" when the honest answer is "not countable" — the very "render '—',
+	// never a fabricated zero" rule this repo set in e181e5a. Absence is how this
+	// gauge says "not countable / not measured". The Collector Sets it only for
+	// protocols whose count is real.
+	CacheObjects = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "specula_cache_objects",
+			Help: "Cached object count per protocol (CAS-backed protocols only; opaque caches such as git are absent because their object count is not countable).",
+		},
+		[]string{"protocol"},
+	)
 )
 
 func init() {
@@ -214,6 +255,8 @@ func init() {
 		UpstreamLatencySeconds,
 		UpstreamBlocked,
 		VerificationTotal,
+		CacheBytes,
+		CacheObjects,
 	)
 	// Pre-initialise every bounded label set that is knowable without traffic.
 	// Counters and gauges here report a true zero on a fresh headless process,
@@ -222,6 +265,15 @@ func init() {
 	for _, p := range AllProtocols {
 		CacheHitsTotal.WithLabelValues(p)
 		CacheMissesTotal.WithLabelValues(p)
+		// cache_bytes is pre-initialised too: bytes are ALWAYS measurable, so 0 on
+		// a cold cache is a real "measured, nothing cached", identical in kind to a
+		// hit counter reading 0 — not the fabricated zero e181e5a forbids (that rule
+		// is about UNKNOWABLE quantities, which is why cache_objects is NOT here).
+		// A warm/persistent store overwrites these zeros with the real SUM(size)
+		// SYNCHRONOUSLY at startup, before /metrics is reachable (see
+		// cmd/specula: collector.Refresh before the servers listen), so an operator
+		// never scrapes a stale zero on restart either.
+		CacheBytes.WithLabelValues(p)
 	}
 }
 
