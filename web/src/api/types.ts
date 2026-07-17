@@ -34,7 +34,17 @@ export interface MeResponse {
 export interface ProtocolStat {
   protocol: string;
   bytes: number;
-  objects: number;
+  /**
+   * Cached object count, or null when the count is NOT APPLICABLE.
+   *
+   * null for opaque caches — protocols whose bytes are measured by walking a
+   * directory rather than by counting cache rows. git is the case in point: its
+   * objects live inside packfiles in a bare mirror, so there is nothing to count
+   * (`bytes` is still real). Render '—', never 0: a 0 would claim the cache is
+   * empty when `bytes` says otherwise. The Prometheus gauge
+   * specula_cache_objects likewise emits no series for such protocols.
+   */
+  objects: number | null;
   oldest_unix: number;
   newest_unix: number;
 }

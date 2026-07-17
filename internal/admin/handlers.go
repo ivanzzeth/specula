@@ -205,7 +205,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		ps := ProtocolStat{
 			Protocol: proto,
 			Bytes:    ss.Bytes,
-			Objects:  ss.Objects,
+		}
+		// Objects stays null for opaque caches (git): unknown, not zero.
+		if ss.ObjectsCountable {
+			n := ss.Objects
+			ps.Objects = &n
 		}
 		if !ss.Oldest.IsZero() {
 			ps.OldestUnix = ss.Oldest.Unix()

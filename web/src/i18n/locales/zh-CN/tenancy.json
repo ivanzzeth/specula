@@ -19,6 +19,7 @@
     "colBytes": "字节数",
     "colOldest": "最早条目",
     "colNewest": "最新条目",
+    "objectsNA": "不适用：该缓存为不透明镜像（对象存放于 packfile 内），仅可统计其体积。",
     "charts": "缓存图表",
     "chartsHint": "内存指标 · 单副本 · 重启清零。",
     "empty": "尚无缓存 — 通过代理 pull 一个制品后，此页会填充数据。"

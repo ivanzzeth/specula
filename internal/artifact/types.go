@@ -155,7 +155,22 @@ type MutableEntry struct {
 // MetadataStore.CacheSizeByProtocol / stats.Collector (G7).
 type SizeStat struct {
 	Bytes   int64     // SUM(size)
-	Objects int64     // COUNT(*)
+	Objects int64     // COUNT(*) — meaningful only when ObjectsCountable is true
 	Oldest  time.Time // MIN(created_at)
 	Newest  time.Time // MAX(created_at)
+
+	// ObjectsCountable reports whether Objects is a real count.
+	//
+	// It is false for OPAQUE caches — protocols whose bytes are measured by
+	// walking a directory rather than by counting CAS/metadata rows. git is the
+	// case in point: its objects live inside packfiles in a bare mirror, so the
+	// collector can size the tree but cannot count objects in it.
+	//
+	// When false, Objects is 0 because it is UNKNOWN, not because the cache is
+	// empty (Bytes proves otherwise). Consumers must render "—" / null rather
+	// than a fabricated zero — the same honesty rule dto.go states for
+	// UpstreamHealth's companion flags. The Prometheus gauge
+	// specula_cache_objects deliberately emits no series for such protocols:
+	// absent is how a Prometheus gauge says "not applicable".
+	ObjectsCountable bool
 }

@@ -127,7 +127,17 @@ func TestByProtocol_WithStore(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tc.storeStats, got)
+
+			// ByProtocol annotates each store row as countable: CAS/metadata rows
+			// are counted exactly by the SUM/COUNT query. (Only opaque-cache
+			// protocols such as git are ObjectsCountable=false — see
+			// TestByProtocol_OpaqueGitMirror_ObjectsNotCountable.)
+			want := make(map[string]artifact.SizeStat, len(tc.storeStats))
+			for k, v := range tc.storeStats {
+				v.ObjectsCountable = true
+				want[k] = v
+			}
+			assert.Equal(t, want, got)
 		})
 	}
 }

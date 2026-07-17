@@ -199,7 +199,16 @@ export function Dashboard() {
                     </Link>
                   </TableCell>
                   <TableCell className="tnum text-right text-slate-300">
-                    {p.objects.toLocaleString()}
+                    {/* null = not applicable (opaque cache such as git, whose
+                        objects live inside packfiles). Show '—', never a 0 that
+                        would read as "empty" next to a non-zero size. */}
+                    {p.objects === null ? (
+                      <span className="text-slate-500" title={t('dashboard.objectsNA')}>
+                        —
+                      </span>
+                    ) : (
+                      p.objects.toLocaleString()
+                    )}
                   </TableCell>
                   <TableCell className="tnum text-right text-slate-300">
                     {formatBytes(p.bytes)}

@@ -160,8 +160,16 @@ func listGitMirrors(mirrorDir string) ([]CacheEntryDTO, error) {
 			ID:       name,
 			Protocol: "git",
 			Name:     name,
-			// Tier "mirror" distinguishes a bare-mirror entry from a CAS/verified entry.
-			Tier:     "mirror",
+			// Tier is EMPTY, not "mirror". The trust model has exactly four tiers
+			// (signed > consensus > tofu > checksum, PRD §G2); "mirror" invented a
+			// fifth and contradicted the startup log's "git tops out at tofu".
+			//
+			// A bare-mirror row is a repository directory, not a verified artifact:
+			// it carries no verification verdict at all, so there is no tier to
+			// report. Empty means "not applicable" — the UI renders "—". Per-ref
+			// git verdicts (tofu pins, signed refs) are recorded by the verify
+			// chain against the four-tier model, not here.
+			Tier:     "",
 			Size:     mirrorDirSize(path),
 			Upstream: "https://" + name,
 		})

@@ -185,9 +185,10 @@ type fakeStatsCollector struct {
 func newFakeStatsCollector() *fakeStatsCollector {
 	return &fakeStatsCollector{
 		byProto: map[string]artifact.SizeStat{
-			"oci": {Bytes: 2048, Objects: 3},
+			// oci is CAS-backed: its object count is exact.
+			"oci": {Bytes: 2048, Objects: 3, ObjectsCountable: true},
 		},
-		total: artifact.SizeStat{Bytes: 2048, Objects: 3},
+		total: artifact.SizeStat{Bytes: 2048, Objects: 3, ObjectsCountable: true},
 	}
 }
 
@@ -761,6 +762,7 @@ type harness struct {
 	store    *fakeUserStore
 	verifier auth.TokenVerifier
 	hasher   *fakeHasher
+	stats    *fakeStatsCollector // preset stats data; mutate before calling /admin/stats
 }
 
 // newHarness creates a complete admin server wired with fakes (no multi-tenant stores).
@@ -771,8 +773,9 @@ func newHarness(t *testing.T) *harness {
 	hasher := &fakeHasher{}
 	svc := auth.NewService(store, hasher, verifier, false, nil)
 
+	stats := newFakeStatsCollector()
 	srv := New(Deps{
-		Stats:  newFakeStatsCollector(),
+		Stats:  stats,
 		Meta:   &fakeMetaStore{},
 		Users:  store,
 		Auth:   svc,
@@ -789,7 +792,7 @@ func newHarness(t *testing.T) *harness {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	return &harness{srv: srv, mux: mux, store: store, verifier: verifier, hasher: hasher}
+	return &harness{srv: srv, mux: mux, store: store, verifier: verifier, hasher: hasher, stats: stats}
 }
 
 // newHarnessWithMT creates a harness with multi-tenant (org + apikey + grant) stores.

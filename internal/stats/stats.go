@@ -292,6 +292,8 @@ func (c *collector) ByProtocol(ctx context.Context) (map[string]artifact.SizeSta
 		// mutating the store's internal representation.
 		result = make(map[string]artifact.SizeStat, len(stats))
 		for k, v := range stats {
+			// CAS/metadata rows are counted exactly by the SUM/COUNT query.
+			v.ObjectsCountable = true
 			result[k] = v
 		}
 	} else {
@@ -300,8 +302,9 @@ func (c *collector) ByProtocol(ctx context.Context) (map[string]artifact.SizeSta
 		result = make(map[string]artifact.SizeStat, len(c.inmem))
 		for proto, s := range c.inmem {
 			result[proto] = artifact.SizeStat{
-				Bytes:   s.bytes,
-				Objects: s.objects,
+				Bytes:            s.bytes,
+				Objects:          s.objects,
+				ObjectsCountable: true, // RecordPut/RecordEvict maintain an exact count
 			}
 		}
 		c.mu.Unlock()
@@ -329,6 +332,13 @@ func (c *collector) ByProtocol(ctx context.Context) (map[string]artifact.SizeSta
 	for proto, size := range byProto {
 		s := result[proto]
 		s.Bytes += size
+		// Opaque caches contribute bytes but no countable objects: their content
+		// lives inside packfiles/blobs on disk, not as CAS rows. Mark the object
+		// count UNKNOWN rather than letting a 0 masquerade as "counted, none".
+		// If a protocol mixes CAS rows with an opaque root, the count is only
+		// partial, which is likewise not a trustworthy number.
+		s.Objects = 0
+		s.ObjectsCountable = false
 		result[proto] = s
 		// Also update the Prometheus gauge so /metrics reflects the opaque bytes
 		// immediately without waiting for the next background-refresh tick.

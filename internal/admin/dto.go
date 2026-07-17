@@ -14,10 +14,21 @@ import "time"
 
 // ProtocolStat is the per-protocol capacity aggregate (G7). OldestUnix and
 // NewestUnix are Unix seconds (0 when the protocol has no cached objects).
+//
+// # Honesty rule
+//
+// Objects is null for OPAQUE caches, where the object count is unknown rather
+// than zero. git is the case in point: its bytes are measured by walking the bare
+// mirror tree, but its objects live inside packfiles and are not cache rows, so
+// there is nothing to count. Bytes is still reported. Render "—" for a null
+// Objects, never 0 — a 0 would claim the cache is empty when Bytes says it is not.
+// This matches the Prometheus side, where specula_cache_objects simply emits no
+// series for such protocols (absent = not applicable).
 type ProtocolStat struct {
-	Protocol   string `json:"protocol"`
-	Bytes      int64  `json:"bytes"`
-	Objects    int64  `json:"objects"`
+	Protocol string `json:"protocol"`
+	Bytes    int64  `json:"bytes"`
+	// Objects is null when the count is not applicable (opaque cache).
+	Objects    *int64 `json:"objects"`
 	OldestUnix int64  `json:"oldest_unix"`
 	NewestUnix int64  `json:"newest_unix"`
 }

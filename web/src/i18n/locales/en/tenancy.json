@@ -18,6 +18,7 @@
     "colBytes": "Bytes",
     "colOldest": "Oldest entry",
     "colNewest": "Newest entry",
+    "objectsNA": "Not applicable: this cache is an opaque mirror (objects live inside packfiles), so only its size can be measured.",
     "charts": "Cache charts",
     "chartsHint": "In-memory metrics · per-replica · reset on restart.",
     "empty": "Nothing cached yet — pull an artifact through the proxy, then this page fills in."
