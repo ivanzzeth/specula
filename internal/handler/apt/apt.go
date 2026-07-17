@@ -33,6 +33,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
 	"github.com/ivanzzeth/specula/internal/verify"
@@ -68,6 +69,13 @@ type Handler struct {
 	// gpgVerifier is the optional apt GPG chain verifier (signed tier). Injected
 	// here as a seam; the Chain wiring happens in cmd/specula.
 	gpgVerifier *verify.GPGVerifier
+
+	// fetchSF collapses concurrent COLD fetches for the same request identity
+	// (ARCHITECTURE §7): N concurrent cold requests for one artifact become ONE
+	// upstream round trip. Keyed by protocol|name|version|digest — what the
+	// callers asked for — because the content digest cache.Store coalesces on is
+	// only knowable after the download it should have prevented.
+	fetchSF coalesce.Coalescer
 
 	log *slog.Logger
 }
@@ -116,6 +124,7 @@ func WithGPGVerifier(v *verify.GPGVerifier) Option {
 func NewHandler(cm cache.CacheManager, opts ...Option) *Handler {
 	h := &Handler{
 		cache:         cm,
+		fetchSF:       coalesce.NewLocalCoalescer(),
 		mutableTTLSec: ttlAlwaysRevalidate, // InRelease has its own Valid-Until
 		log:           slog.Default(),
 	}

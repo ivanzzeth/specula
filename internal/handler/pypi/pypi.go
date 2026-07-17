@@ -34,6 +34,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
 	"github.com/ivanzzeth/specula/internal/verify"
@@ -75,6 +76,13 @@ type Handler struct {
 	// guard is the wired DependencyConfusionGuard built from the private-name
 	// configuration in NewHandler. It is nil when no private names are configured.
 	guard *verify.DependencyConfusionGuard
+
+	// fetchSF collapses concurrent COLD fetches for the same request identity
+	// (ARCHITECTURE §7): N concurrent cold requests for one artifact become ONE
+	// upstream round trip. Keyed by protocol|name|version|digest — what the
+	// callers asked for — because the content digest cache.Store coalesces on is
+	// only knowable after the download it should have prevented.
+	fetchSF coalesce.Coalescer
 
 	log *slog.Logger
 }
@@ -165,6 +173,7 @@ func WithFailClosed(failClosed bool) Option {
 func NewHandler(cm cache.CacheManager, opts ...Option) *Handler {
 	h := &Handler{
 		cache:         cm,
+		fetchSF:       coalesce.NewLocalCoalescer(),
 		mutableTTLSec: 1800, // 30 minutes default (devpi mirror_cache_expiry)
 		failClosed:    true,
 		log:           slog.Default(),

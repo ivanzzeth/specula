@@ -1181,11 +1181,14 @@ func upstreamsFor(protocol string, in []config.UpstreamConfig) []upstream.Upstre
 
 // mutableTTL resolves the effective mutable TTL for a protocol, falling back to
 // the global default when the protocol does not set its own.
+//
+// The resolution rule lives in config.EffectiveMutableTTL. It used to live here
+// as `if pc.MutableTTLSeconds != 0`, which conflated the documented sentinel 0
+// ("revalidate every request") with "unset" and so made the sentinel
+// unreachable per-protocol — silently overriding our own shipped
+// specula.example.yaml, where apt.mutable_ttl_seconds: 0 became 300s.
 func mutableTTL(pc config.ProtocolConfig, cfg *config.Config) int64 {
-	if pc.MutableTTLSeconds != 0 {
-		return pc.MutableTTLSeconds
-	}
-	return cfg.Cache.DefaultMutableTTLSeconds
+	return cfg.EffectiveMutableTTL(pc)
 }
 
 // resolveJWTSecret is gone: see ensureJWTSecret in settings.go. It generated a

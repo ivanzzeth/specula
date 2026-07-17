@@ -11,6 +11,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
 )
 
@@ -104,7 +105,14 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
 			return
 		}
-		entry, err = h.fetchAndStoreBlob(ctx, imageName, digest)
+		// Collapsed on request identity (ARCHITECTURE §7): concurrent pulls of the
+		// same cold blob — the common case when N nodes schedule one image at
+		// once — cost ONE upstream round trip.
+		entry, err = coalesce.Fetch(ctx, h.fetchSF,
+			coalesce.FetchKey("oci", "blob:"+imageName, digest, ""),
+			func() (*artifact.CacheEntry, error) {
+				return h.fetchAndStoreBlob(ctx, imageName, digest)
+			})
 		if err != nil {
 			h.log.Error("oci: fetch blob from upstream", "image", imageName, "digest", digest, "err", err)
 			writeOCIError(w, http.StatusBadGateway, "BLOB_UNKNOWN", "upstream fetch failed")

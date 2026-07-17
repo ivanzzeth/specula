@@ -36,6 +36,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
 )
@@ -79,6 +80,18 @@ type Handler struct {
 	mutableTTLSec int64               // TTL for @v/list & @latest mutable entries (seconds)
 	quarantineDir string              // directory for on-disk quarantine temp files
 	log           *slog.Logger
+
+	// fetchSF collapses concurrent COLD fetches for the same request identity
+	// (ARCHITECTURE §7). It is keyed by protocol|name|version|digest — what the
+	// callers asked for — because the content digest that cache.Store coalesces
+	// on is not knowable until the download it is supposed to prevent has
+	// already happened.
+	//
+	// Constructed unconditionally in NewHandler rather than injected by an
+	// option: stampede protection is not a feature an operator opts into, and
+	// leaving it to wiring is precisely how the coalescer came to exist while
+	// nothing collapsed.
+	fetchSF coalesce.Coalescer
 }
 
 // Option is a functional option applied to Handler during construction.
@@ -135,6 +148,7 @@ func NewHandler(cm cache.CacheManager, opts ...Option) *Handler {
 		cache:         cm,
 		mutableTTLSec: 300, // 5 minutes default for @v/list & @latest
 		log:           slog.Default(),
+		fetchSF:       coalesce.NewLocalCoalescer(),
 	}
 	for _, opt := range opts {
 		opt(h)

@@ -182,7 +182,15 @@ type ProtocolConfig struct {
 
 	// MutableTTLSeconds overrides CacheConfig.DefaultMutableTTLSeconds for
 	// this protocol. TTLNeverRevalidate (-1), TTLAlwaysRevalidate (0), or >0.
-	MutableTTLSeconds int64 `koanf:"mutable_ttl_seconds"`
+	//
+	// It is a POINTER because 0 is a meaningful sentinel ("revalidate every
+	// request"), not an absence. A plain int64 cannot distinguish "the operator
+	// wrote 0" from "the operator wrote nothing" — Go's zero value collapses the
+	// two — and resolution consequently discarded a documented, shipped sentinel
+	// as if it were unset. nil means unset (inherit the global default); a
+	// non-nil 0 is the sentinel. Use EffectiveMutableTTL to resolve it rather
+	// than reading this field directly.
+	MutableTTLSeconds *int64 `koanf:"mutable_ttl_seconds"`
 
 	// SumDB configures the Go checksum-database verification + /sumdb/
 	// passthrough. Only meaningful for the "go" protocol; nil for all others.
@@ -544,6 +552,33 @@ const (
 	DefaultDataPlaneAddr    = ":7732"
 	DefaultControlPlaneAddr = ":7733"
 )
+
+// TTLPtr returns a pointer to v, for building ProtocolConfig literals in code
+// and tests: `MutableTTLSeconds: TTLPtr(TTLAlwaysRevalidate)` states "this
+// protocol explicitly sets the always-revalidate sentinel", which a bare int64
+// field could not express distinctly from "unset".
+func TTLPtr(v int64) *int64 { return &v }
+
+// EffectiveMutableTTL resolves the mutable-metadata TTL that actually applies to
+// a protocol: the protocol's own value when it set one, otherwise the global
+// CacheConfig.DefaultMutableTTLSeconds.
+//
+// The sentinels (ARCHITECTURE §3) are part of the value space, not markers of
+// absence:
+//
+//	-1 (TTLNeverRevalidate)  = never revalidate
+//	 0 (TTLAlwaysRevalidate) = revalidate on every request
+//	>0                       = seconds
+//
+// Absence is carried by the pointer being nil, which is the whole reason
+// ProtocolConfig.MutableTTLSeconds is a pointer. This is the ONLY place that
+// distinction should be interpreted; callers take the resolved int64.
+func (c *Config) EffectiveMutableTTL(pc ProtocolConfig) int64 {
+	if pc.MutableTTLSeconds != nil {
+		return *pc.MutableTTLSeconds
+	}
+	return c.Cache.DefaultMutableTTLSeconds
+}
 
 // defaults returns the built-in configuration, applied beneath the YAML file and
 // environment overrides.

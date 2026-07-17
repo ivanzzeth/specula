@@ -24,6 +24,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
 )
@@ -49,6 +50,11 @@ type Handler struct {
 	hostedAuthz   HostedReadAuthz        // optional: visibility enforcement for hosted repos (R2)
 	owned         OwnedNamespaceResolver // optional: authoritative-local namespace gate (R2)
 	log           *slog.Logger
+
+	// fetchSF collapses concurrent COLD fetches for the same request identity
+	// (ARCHITECTURE §7). Blobs and manifests share it under distinct key
+	// namespaces, so a blob and a manifest naming the same string never collide.
+	fetchSF coalesce.Coalescer
 }
 
 // Option is a functional option applied to Handler during construction.
@@ -90,6 +96,7 @@ func WithLogger(l *slog.Logger) Option {
 func NewHandler(cm cache.CacheManager, opts ...Option) *Handler {
 	h := &Handler{
 		cache:         cm,
+		fetchSF:       coalesce.NewLocalCoalescer(),
 		mutableTTLSec: 300, // 5 minutes default
 		log:           slog.Default(),
 	}

@@ -833,7 +833,7 @@ func testConfig() *config.Config {
 					{Name: "dockerhub", BaseURL: "https://registry-1.docker.io", Priority: 0, Official: true},
 				},
 				Verification:      config.VerificationConfig{Tiers: []string{"checksum", "tofu"}},
-				MutableTTLSeconds: 300,
+				MutableTTLSeconds: config.TTLPtr(300),
 			},
 		},
 	}

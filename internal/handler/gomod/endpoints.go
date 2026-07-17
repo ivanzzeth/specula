@@ -12,6 +12,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
 )
 
@@ -244,7 +245,14 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, escMod,
 	}
 
 	// 3. Fetch → quarantine → verify-on-write → CAS promotion.
-	entry, err = h.fetchAndStoreImmutable(ctx, ref)
+	//
+	// Collapsed on request identity (ARCHITECTURE §7): N concurrent cold
+	// requests for this artifact produce ONE upstream round trip, and the other
+	// N-1 wait for the leader's result instead of each hammering a slow CN
+	// mirror (PRD §G5).
+	entry, err = h.coalescedFetch(ctx, ref, func() (*artifact.CacheEntry, error) {
+		return h.fetchAndStoreImmutable(ctx, ref)
+	})
 	if err != nil {
 		h.log.Error("gomod: fetch immutable", "module", escMod, "file", file, "err", err)
 		writeGoError(w, http.StatusBadGateway, "upstream fetch failed")
@@ -263,6 +271,22 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, escMod,
 // --------------------------------------------------------------------------
 // Shared fetch/store helpers
 // --------------------------------------------------------------------------
+
+// coalescedFetch runs fn under the cold-fetch single-flight, so concurrent
+// callers for the SAME request identity share one upstream round trip.
+//
+// The key is the request (protocol|name|version|digest), not the content digest:
+// the digest cache.Store coalesces on is only known once the download has
+// finished, so it can never prevent one. See coalesce.Fetch for the failure and
+// bounded-wait semantics.
+func (h *Handler) coalescedFetch(
+	ctx context.Context,
+	ref artifact.ArtifactRef,
+	fn func() (*artifact.CacheEntry, error),
+) (*artifact.CacheEntry, error) {
+	key := coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest)
+	return coalesce.Fetch(ctx, h.fetchSF, key, fn)
+}
 
 // fetchAndStoreImmutable fetches an immutable artifact (one of .info/.mod/.zip)
 // from the first healthy upstream, streams it through the quarantine /

@@ -548,8 +548,13 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	for proto, pc := range s.cfg.Protocols {
 		pv := ProtocolConfigView{
-			Protocol:      proto,
-			MutableTTLSec: pc.MutableTTLSeconds,
+			Protocol: proto,
+			// The RESOLVED TTL, not the raw per-protocol field: the field is
+			// nil when the protocol inherits the global default, and an
+			// operator asking "what TTL applies to apt?" wants the answer that
+			// actually applies. Echoing the raw field also could not
+			// distinguish an unset protocol from the 0 sentinel.
+			MutableTTLSec: s.cfg.EffectiveMutableTTL(pc),
 			VerifyTiers:   pc.Verification.Tiers,
 			Upstreams:     make([]UpstreamView, 0, len(pc.Upstreams)),
 		}

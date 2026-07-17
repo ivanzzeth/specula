@@ -271,23 +271,57 @@ copy/move/delete = 引用操作，末次引用才物理删。
 
 ---
 
-## 7. Stampede 保护 — 两层 (修 M3)
+## 7. Stampede 保护 — 两层设计（第 1 层已实现；第 2 层未接线）(修 M3)
+
+> **实现状态（务必先读）**：第 1 层（进程内）**已实现并有 ground-truth 测试守护**；
+> 第 2 层（跨实例）**尚未接线** —— 接口与 `PGAdvisoryLocker` 实现均存在，但 `cmd/specula`
+> 从不构造它们。本节曾把整个两层设计写成既成事实，而当时**连第 1 层都没有生效**：
+> coalescer 只在 `cache.Store` 里按 **digest** 合并，而 digest 要等下载**完成**才知道 —— 
+> 也就是说，唯一昂贵的东西（回源往返）从来没有被合并过。10 个并发冷请求 → 10 次真实回源，
+> 而计数器自洽地显示 10，任何读自家计数器的测试都看不见（见 `results/groundtruth/agreement.json`
+> 的 `single_flight_collapses_stampede`）。下面区分「已实现」与「未接线」，不再混为一谈。
 
 ```mermaid
 graph TB
-    r1[请求1 miss] & r2[请求2 同digest] & r3[请求3 同digest] --> sf[进程内 singleflight<br/>key=digest/module@ver/pkg@ver]
-    sf -->|leader| dl[跨实例分布式锁<br/>Redis SET NX PX / PG advisory / S3 lease<br/>TTL + owner-checked 释放]
-    dl -->|获得| fetch[回源 + verify-on-write]
-    dl -->|等待超时| fallback[waiter 自行回源<br/>幂等, digest 相同]
-    fetch -->|tee| r1 & r2 & r3
+    r1[请求1 miss] & r2[请求2 同name@ver] & r3[请求3 同name@ver] --> sf["✅ 进程内 singleflight<br/>key=protocol|name|version|digest-pin<br/>（请求身份，下载前即可知）"]
+    sf -->|leader| fetch[回源 + verify-on-write]
+    sf -.->|follower 等待| fetch
+    fetch -->|leader 的结果广播给所有 follower| r1 & r2 & r3
+    fetch --> store["cache.Store<br/>key=digest（仅合并 verify+promote 尾部）"]
+    sf -.->|"❌ 未接线：跨实例分布式锁<br/>coalesce.Locker / PGAdvisoryLocker 已存在但无人构造"| dl[跨实例锁]
+    style dl stroke-dasharray: 5 5
 ```
 
-- **进程内**：`golang.org/x/sync/singleflight`。**注意陷阱**：错误放大（一次失败拖垮整群）→ 用 `DoChan`+ctx 超时；
-  panic 在 DoChan 新 goroutine 重抛可崩进程 → recover 包裹；poison 时 `Forget`；高 QPS 按 key 分片多 Group。
-- **跨实例**：短 TTL 分布式锁，**必须 owner-checked/fenced 释放**（防崩溃 filler 卡死所有 waiter）。
-  复用 ai-sandbox 的 GUDC `locker`(redsync goredis) 或 PG advisory lock。
-- **有界等待**：waiter 等待超时后自行回源（幂等）。
-- **可选**：可变元数据用 XFetch 概率提前刷新（避免同步过期悬崖）+ stale-while-revalidate（RFC 5861）。
+- **进程内（已实现）**：`golang.org/x/sync/singleflight`，按 key 分片（16 个 Group）降低锁竞争。
+  合并发生在 **handler 的冷取路径**（gomod / apt / npm / pypi / helm / oci 的 blob 与 manifest），
+  由 `coalesce.Fetch` + `coalesce.FetchKey` 统一。
+  - **key 必须是「请求身份」而非内容 digest**：digest 只有在下载完成后才知道，用它做 key
+    只能合并「verify+promote」这个便宜的尾巴，永远挡不住它本该阻止的那次下载。
+    `cache.Store` 的 digest 合并**保留**（对同内容的并发 promote 仍然有意义），但它**不是**
+    stampede 保护。
+  - **digest pin 参与 key**：pin 是断言（「给我这些字节，否则失败」）。两个 pin 不同的调用者
+    不是同一个请求，合并它们会把与调用者 pin 矛盾的产物递给它 —— 那是拿性能 bug 换正确性 bug。
+  - **错误语义**：leader 失败时 follower **共享 leader 的错误，不各自回源**。上游正在出问题时
+    让 N 个 follower 各自再打一遍，正是这个 bug 最痛的复现场景；而 leader 那一次调用内部
+    **已经做完**了配置的重试与多上游 fallback，follower 再试并不是新机会，只是同一次尝试的重复。
+    这**不会**把一次抖动放大成 N 次失败：错误返回后每个 handler **各自独立**走 serve-stale
+    （§3），降级仍是每请求粒度且零额外回源。错误**不缓存**（singleflight 在 fn 返回即丢弃在飞
+    条目），故抖动在下一个请求即自愈。
+  - **有界等待**：follower select 自己的 ctx，客户端断开/超时即刻释放，不依赖 leader 守规矩；
+    leader 自身由上游客户端的 30s 整请求超时兜底（「leader 很慢」是常态而非边界情况：
+    实测某 aliyun 链路 27 kB/s）。
+  - **陷阱防护**：panic 在 DoChan 的新 goroutine 重抛会崩进程 → `wrapFn` recover 成 `*PanicError`
+    并 `Forget` 该 key，下一个调用者重新开始。
+  - **刻意未实现**：本节旧图里的「waiter 等待超时后自行回源」。waiter 超时后各自回源，就是这里
+    要消除的 stampede 本身，只是延迟了一个超时而已。follower 自己的 ctx 才是诚实的边界。
+- **跨实例（❌ 未接线，非本次改动）**：`coalesce.Locker` 接口与 `internal/store/postgres`
+  的 `PGAdvisoryLocker`（owner-checked / fenced 释放）**代码都在**，但 `cmd/specula` 从未构造
+  过任何 `Locker`。因此当前 **N 个副本 = 最多 N 次回源**（每副本 1 次），而非全局 1 次。
+  PRD §G3 规定实例无状态、仅共享 blob store + DB，且 `bcc92b4` 已让 apt 信任链真正跨副本，
+  多副本是真实拓扑而非假设 —— 所以这是一个**真实缺口**，只是范围大于本次修复：
+  正确的跨实例合并需要「拿到锁后**重新查缓存**」（否则第二个副本在第一个释放后照样回源，
+  等于白锁），这会改动每个 handler 的冷取路径签名。**在它被接线之前，本节不应再声称它存在。**
+- **可选（未实现）**：可变元数据用 XFetch 概率提前刷新（避免同步过期悬崖）+ stale-while-revalidate（RFC 5861）。
 
 ---
 

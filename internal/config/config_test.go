@@ -104,7 +104,8 @@ func TestLoad_ExampleFile(t *testing.T) {
 	// OCI spot-check.
 	oci := cfg.Protocols["oci"]
 	assert.Len(t, oci.Upstreams, 3)
-	assert.Equal(t, int64(300), oci.MutableTTLSeconds)
+	require.NotNil(t, oci.MutableTTLSeconds)
+	assert.Equal(t, int64(300), *oci.MutableTTLSeconds)
 	assert.Contains(t, oci.Verification.Tiers, "tofu")
 	assert.Contains(t, oci.Verification.Tiers, "checksum")
 
@@ -114,11 +115,14 @@ func TestLoad_ExampleFile(t *testing.T) {
 
 	// apt must always-revalidate.
 	apt := cfg.Protocols["apt"]
-	assert.Equal(t, config.TTLAlwaysRevalidate, apt.MutableTTLSeconds)
+	require.NotNil(t, apt.MutableTTLSeconds,
+		"apt sets mutable_ttl_seconds: 0 explicitly — the sentinel must survive load as a\n\t\tnon-nil 0, not decay into 'unset'")
+	assert.Equal(t, config.TTLAlwaysRevalidate, *apt.MutableTTLSeconds)
 
 	// tarball must never-revalidate.
 	tarball := cfg.Protocols["tarball"]
-	assert.Equal(t, config.TTLNeverRevalidate, tarball.MutableTTLSeconds)
+	require.NotNil(t, tarball.MutableTTLSeconds)
+	assert.Equal(t, config.TTLNeverRevalidate, *tarball.MutableTTLSeconds)
 }
 
 // ── Sentinel parsing ──────────────────────────────────────────────────────────
@@ -224,7 +228,9 @@ storage:
 				"default_mutable_ttl_seconds")
 			assert.Equal(t, tc.wantNegTTL, cfg.Cache.NegativeTTLSeconds,
 				"negative_ttl_seconds")
-			assert.Equal(t, tc.wantProtoMTTL, cfg.Protocols["oci"].MutableTTLSeconds,
+			got := cfg.Protocols["oci"].MutableTTLSeconds
+			require.NotNil(t, got, "protocols.oci.mutable_ttl_seconds was set in YAML")
+			assert.Equal(t, tc.wantProtoMTTL, *got,
 				"protocols.oci.mutable_ttl_seconds")
 		})
 	}
@@ -246,7 +252,8 @@ func TestLoad_EnvOverride(t *testing.T) {
 		"env override SPECULA_SERVER__DATA_PLANE_ADDR must win")
 	assert.Equal(t, ":8080", cfg.Server.ControlPlaneAddr,
 		"unoveridden field must retain YAML value")
-	assert.Equal(t, int64(999), cfg.Protocols["oci"].MutableTTLSeconds,
+	require.NotNil(t, cfg.Protocols["oci"].MutableTTLSeconds)
+	assert.Equal(t, int64(999), *cfg.Protocols["oci"].MutableTTLSeconds,
 		"env override SPECULA_PROTOCOLS__OCI__MUTABLE_TTL_SECONDS must win")
 }
 
@@ -696,7 +703,7 @@ func TestValidate_ValidConfig(t *testing.T) {
 		},
 		Protocols: map[string]config.ProtocolConfig{
 			"oci": {
-				MutableTTLSeconds: 120,
+				MutableTTLSeconds: config.TTLPtr(120),
 				Upstreams: []config.UpstreamConfig{
 					{Name: "hub", BaseURL: "https://registry-1.docker.io", Priority: 1, Official: true},
 				},
@@ -706,7 +713,7 @@ func TestValidate_ValidConfig(t *testing.T) {
 				},
 			},
 			"go": {
-				MutableTTLSeconds: config.TTLNeverRevalidate,
+				MutableTTLSeconds: config.TTLPtr(config.TTLNeverRevalidate),
 				Upstreams: []config.UpstreamConfig{
 					{Name: "goproxy-cn", BaseURL: "https://goproxy.cn", Priority: 1},
 				},

@@ -155,10 +155,11 @@ func Validate(cfg *Config) error {
 		}
 
 		// Per-protocol mutable TTL: -1/0/positive are valid sentinels.
-		// Values below -1 are not meaningful.
-		if proto.MutableTTLSeconds < TTLNeverRevalidate {
+		// Values below -1 are not meaningful. nil means the protocol did not set
+		// one and inherits the global default, which has nothing to validate here.
+		if proto.MutableTTLSeconds != nil && *proto.MutableTTLSeconds < TTLNeverRevalidate {
 			add("protocols.%s.mutable_ttl_seconds: must be >= -1, got %d",
-				name, proto.MutableTTLSeconds)
+				name, *proto.MutableTTLSeconds)
 		}
 
 		// Go sumdb block (only meaningful for the "go" protocol). Policy must be

@@ -119,7 +119,7 @@ func TestValidate_CosignKeysEmpty(t *testing.T) {
 func TestValidate_MutableTTLBelowMinusOne(t *testing.T) {
 	cfg := validCfg()
 	proto := cfg.Protocols["oci"]
-	proto.MutableTTLSeconds = -2
+	proto.MutableTTLSeconds = config.TTLPtr(-2)
 	cfg.Protocols["oci"] = proto
 
 	err := config.Validate(cfg)

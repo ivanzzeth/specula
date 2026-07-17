@@ -31,6 +31,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
 )
 
@@ -245,7 +246,9 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 	}
 
 	// 3. Fetch → quarantine → verify-on-write → CAS promotion.
-	entry, err = h.fetchAndStoreImmutable(ctx, ref)
+	entry, err = h.coalescedFetch(ctx, ref, func() (*artifact.CacheEntry, error) {
+		return h.fetchAndStoreImmutable(ctx, ref)
+	})
 	if err != nil {
 		h.log.Error("apt: fetch immutable pool", "name", ref.Name, "version", ref.Version, "err", err)
 		if errors.Is(err, cache.ErrCacheMiss) || isNotFound(err) {
@@ -450,4 +453,16 @@ func (h *Handler) serveBytes(ctx context.Context, ref artifact.ArtifactRef, entr
 		return rc, entry, err
 	}
 	return h.cache.Serve(ctx, ref, 0, -1)
+}
+
+// coalescedFetch runs fn under the cold-fetch single-flight so concurrent
+// callers for the SAME request identity share one upstream round trip
+// (ARCHITECTURE §7). See coalesce.Fetch for failure and bounded-wait semantics.
+func (h *Handler) coalescedFetch(
+	ctx context.Context,
+	ref artifact.ArtifactRef,
+	fn func() (*artifact.CacheEntry, error),
+) (*artifact.CacheEntry, error) {
+	key := coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest)
+	return coalesce.Fetch(ctx, h.fetchSF, key, fn)
 }

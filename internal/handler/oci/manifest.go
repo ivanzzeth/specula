@@ -12,6 +12,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/upstream"
 )
@@ -101,7 +102,11 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageNam
 		return
 	}
 
-	newDigest, fetchErr := h.fetchAndStoreManifest(ctx, imageName, reference)
+	newDigest, fetchErr := coalesce.Fetch(ctx, h.fetchSF,
+		coalesce.FetchKey("oci", "manifest:"+imageName, reference, ""),
+		func() (string, error) {
+			return h.fetchAndStoreManifest(ctx, imageName, reference)
+		})
 	if fetchErr != nil {
 		h.log.Error("oci: fetch manifest from upstream", "image", imageName, "ref", reference, "err", fetchErr)
 		writeOCIError(w, http.StatusBadGateway, "MANIFEST_UNKNOWN", "upstream fetch failed")
