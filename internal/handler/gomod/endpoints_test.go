@@ -463,10 +463,16 @@ func TestVersionFromFile(t *testing.T) {
 	}
 }
 
-// ── Tests: fetchAndStoreImmutable upstream 404 → nil entry ───────────────────
+// ── Tests: fetchAndStoreImmutable upstream 404 → 404 (BUG 1) ─────────────────
 
-func TestFetchAndStoreImmutable_Upstream404_BadGateway(t *testing.T) {
-	// Upstream 404 → fetch error → 502
+// TestFetchAndStoreImmutable_Upstream404_Returns404 pins the CORRECTED behaviour
+// for BUG 1. This test previously asserted 502 (StatusBadGateway) and thereby
+// ENSHRINED the bug: an upstream 404 is "this module/version does not exist",
+// which the GOPROXY protocol requires be surfaced as 404/410 so the go client
+// can resolve module-path boundaries. Flattening it to 502 aborts that walk.
+// See TestGomodImmutable_* in immutable_status_test.go for the full 404/410/502
+// distinction driven through the real upstream client.
+func TestFetchAndStoreImmutable_Upstream404_Returns404(t *testing.T) {
 	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
@@ -480,7 +486,7 @@ func TestFetchAndStoreImmutable_Upstream404_BadGateway(t *testing.T) {
 	resp, err := http.Get(srv.URL + "/github.com/foo/bar/@v/v1.0.0.zip")
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 // ── Tests: large module path with escaping ────────────────────────────────────

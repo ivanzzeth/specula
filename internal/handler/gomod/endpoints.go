@@ -14,7 +14,31 @@ import (
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
+
+// goMeaningfulUpstreamStatus reports whether an upstream HTTP status carries
+// GOPROXY-protocol meaning the go client can act on, and so must be preserved
+// through to the client rather than flattened to 502:
+//
+//   - 404 Not Found / 410 Gone: the module or version does not exist. The go
+//     command relies on these to resolve module-path boundaries — for
+//     example.com/a/b/c it probes .../a/b/c, then .../a/b, then .../a; a 502
+//     aborts that walk, a 404/410 lets it try the next-shorter path.
+//   - 403 Forbidden: a definitive refusal (mirrors the sibling writeGoError
+//     vocabulary of 404/410/403).
+//
+// Every other status — and every transport failure, which never produces a
+// StatusError at all — stays 502, so a genuine upstream outage is never turned
+// into a fake "does not exist" the go client would cache.
+func goMeaningfulUpstreamStatus(code int) bool {
+	switch code {
+	case http.StatusNotFound, http.StatusGone, http.StatusForbidden:
+		return true
+	default:
+		return false
+	}
+}
 
 // staler is an optional extension of CacheManager that returns mutable entries
 // even when their TTL has expired. Used for serve-stale-on-upstream-failure.
@@ -163,6 +187,16 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 			h.serveFromCache(w, r, ref, staleEntry, ct)
 			return
 		}
+		// No stale copy to fall back on: preserve a DEFINITIVE upstream status
+		// (404/410/403) so the go client can resolve module-path boundaries via
+		// @v/list and @latest probes. A transport failure carries no StatusError
+		// and stays 502 — a real outage must not be reported as does-not-exist.
+		var se *upstream.StatusError
+		if errors.As(fetchErr, &se) && goMeaningfulUpstreamStatus(se.StatusCode) {
+			h.log.Info("gomod: upstream reports absent/forbidden", "ref", ref, "status", se.StatusCode)
+			writeGoError(w, se.StatusCode, http.StatusText(se.StatusCode))
+			return
+		}
 		h.log.Error("gomod: mutable fetch", "ref", ref, "err", fetchErr)
 		writeGoError(w, http.StatusBadGateway, "upstream fetch failed")
 		return
@@ -254,6 +288,17 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, escMod,
 		return h.fetchAndStoreImmutable(ctx, ref)
 	})
 	if err != nil {
+		// Preserve a DEFINITIVE upstream status (404/410/403) so the go client
+		// can resolve module-path boundaries instead of hard-failing. A transport
+		// failure or exhausted 5xx carries no StatusError and stays 502 (below):
+		// a real outage must not be reported as a fake "does not exist".
+		var se *upstream.StatusError
+		if errors.As(err, &se) && goMeaningfulUpstreamStatus(se.StatusCode) {
+			h.log.Info("gomod: upstream reports absent/forbidden",
+				"module", escMod, "file", file, "status", se.StatusCode)
+			writeGoError(w, se.StatusCode, http.StatusText(se.StatusCode))
+			return
+		}
 		h.log.Error("gomod: fetch immutable", "module", escMod, "file", file, "err", err)
 		writeGoError(w, http.StatusBadGateway, "upstream fetch failed")
 		return

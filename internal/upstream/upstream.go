@@ -22,10 +22,33 @@ package upstream
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 )
+
+// StatusError is returned by Fetch / Revalidate when the reason a fetch failed
+// is a DEFINITIVE, non-retryable upstream HTTP status (e.g. 404 Not Found,
+// 410 Gone, 403 Forbidden) rather than a transport failure (DNS, connection
+// refused, timeout) or an exhausted 5xx retry.
+//
+// It exists so a data-plane handler can preserve the semantic status the client
+// relies on — for GOPROXY that is the 404/410 the go command uses to resolve
+// module-path boundaries — instead of flattening every upstream error to 502.
+// A transport failure or a 5xx that exhausts retries never yields a StatusError,
+// so those keep mapping to 502: a genuine outage must not be reported as a fake
+// "does not exist" that the client would then cache.
+//
+// Recover it with errors.As; it is always wrapped (fmt.Errorf %w) by Fetch.
+type StatusError struct {
+	Upstream   string // upstream name that produced the status
+	StatusCode int    // the upstream HTTP status code
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("upstream %s: HTTP %d", e.Upstream, e.StatusCode)
+}
 
 // Upstream describes a single upstream mirror in the fallback chain.
 type Upstream struct {

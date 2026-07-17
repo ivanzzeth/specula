@@ -375,9 +375,13 @@ func (c *fallbackClient) tryFetch(
 
 		default:
 			// 4xx (other than 304 / 401 with challenge / 429): non-retryable.
+			// Return a typed StatusError so the caller can preserve the semantic
+			// status (e.g. GOPROXY 404/410 = "does not exist") rather than
+			// flattening it to 502. transient stays false: a definitive 4xx must
+			// never count toward auto-blocking (PRD §7.4).
 			_ = resp.Body.Close()
 			return nil, meta, 0, false,
-				fmt.Errorf("upstream %s: HTTP %d", up.Name, resp.StatusCode)
+				&StatusError{Upstream: up.Name, StatusCode: resp.StatusCode}
 		}
 	}
 	return nil, artifact.UpstreamMeta{}, 0, transient, lastErr
