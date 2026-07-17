@@ -8,6 +8,8 @@ export CGO_ENABLED := 0
 
 .PHONY: all ui build build-go run clean vet fmt cover \
         test test-unit test-integration test-postgres test-conformance \
+        test-trust-oracle test-trust-oracle-mutations \
+        test-groundtruth test-groundtruth-meta \
         test-realclient test-e2e test-ui test-all
 
 all: build
@@ -59,6 +61,11 @@ clean:
 #   test-conformance  the OFFICIAL OCI distribution-spec suite vs the real binary.
 #                     Our unique gate — ai-sandbox has no equivalent.  needs: network (first run)
 #   test-realclient   real pip / npm / apt-get / helm / git / docker clients.  needs: network + those tools
+#   test-trust-oracle INDEPENDENT re-derivation of the tier each artifact DESERVES, using the
+#                     ecosystems' own tooling (gpg / go sumdb / PEP 503 re-fetch). The only
+#                     dimension that does not take our own word for anything — every other
+#                     one, including the tier counter, is written by the code under test.
+#                     needs: network + gpg + go + apt-get
 #   test-ui           WebUI typecheck + production build.  needs: node + npm
 #
 # `test` = test-unit + test-integration = the pure-Go default developer loop: no docker,
@@ -123,6 +130,46 @@ test-postgres:
 test-conformance:
 	bash scripts/oci-conformance.sh
 
+## test-trust-oracle: INDEPENDENT oracle vs our honest-tier claims (needs: network + gpg + go + apt-get)
+#
+# The only dimension that does not take our own word for anything. Every other gate — and
+# both places a tier appears (`cache_entries.tier` and `specula_verification_total{tier}`) —
+# is written by our own code, so a single bug upstream of both satisfies both: cross-checking
+# them agrees row-for-row while the claim is false. We have shipped that exact class four
+# times (apt recording tofu x6 behind a "gold standard" claim; go's sumdb verifier never
+# running in the documented CN config; git recording no tier with TOFU live; every verifier
+# encoding "I skipped this" as StatusPass @ TierChecksum). Each was caught by a human poking
+# at it, which neither scales nor is something a customer can do.
+#
+# This gate re-derives the deserved tier from OUTSIDE, using each ecosystem's own reference
+# tooling (gpg(1) + the real distro keyring; the go toolchain's own sumdb verification;
+# independent PEP 503 re-fetches), and fails on disagreement. The oracle is Python that
+# shells out — it CANNOT import internal/verify, which is the point: an oracle sharing code
+# with the thing it grades is a mirror, and a mirror agrees with a lie.
+#
+# Slow and network-bound by nature, like test-conformance. Writes a machine-readable verdict
+# to results/trust-oracle.json so no one can summarise past a disagreement.
+# NOT covered, and deliberately loud about it: cosign keyed / OCI signed (no cosign CLI
+# available), helm .prov signed (the CN mirror publishes no .prov at all), npm/git/tarball.
+test-trust-oracle:
+	bash scripts/trust-oracle.sh
+
+## test-trust-oracle-mutations: prove the oracle CATCHES lies (needs: everything above + a clean tree)
+#
+# The meta-gate. `make test-trust-oracle` going green proves nothing on its own — an oracle
+# that grades nothing, or grades a fresh upstream copy instead of the bytes we stored, passes
+# identically. A check that has never been observed to fail is not evidence.
+#
+# So this injects real lies into the verify code (tier upgrade / apt under-claim / skip-as-pass),
+# rebuilds, and asserts the oracle goes RED for each. Every mutation is compiled first: one
+# that fails to build would turn the gate red for a build error and prove nothing.
+#
+# Mutates tracked files IN PLACE and restores them via git, refusing to start unless the
+# targets are clean — so it is NOT part of `test-e2e` and never runs unattended alongside
+# edits to internal/verify.
+test-trust-oracle-mutations:
+	bash scripts/trust-oracle-mutations.sh
+
 ## test-realclient: real pip/npm/apt-get/helm/git/docker clients (needs: network + those tools; docker daemon)
 #
 # Each script picks its own free ports and temp dirs, so these collide neither with each
@@ -151,6 +198,46 @@ test-e2e: test-conformance test-realclient
 # Only the -b (build-mode) form follows the project references. Do not "simplify" this back.
 test-ui:
 	cd web && npm run lint && npm run typecheck && npm run build
+
+## test-groundtruth: our COUNTERS vs reality, arbitrated by an interposer (needs: network + sqlite3 + jq)
+#
+# The dimension that stops Specula being the only witness to its own behaviour.
+#
+# Every other gate reads specula_cache_hits_total, specula_cache_bytes and
+# specula_upstream_latency_seconds — the counters incremented by the very code paths they
+# describe. A single bug therefore satisfies both the behaviour AND its own measurement, and
+# every one of those tests agrees with it. We have shipped that three times: serve-stale dead
+# across five handlers with a green suite; git bytes that existed only if a human clicked the
+# WebUI; a ?digest= pin ignored on every cache hit. Humans found all three.
+#
+# This target believes none of it. Ground truth comes from three places that share no code
+# with the counters: a recording proxy interposed between Specula and the real CN mirror
+# (the only honest answer to "did this request actually contact upstream?"), the filesystem
+# under the CAS root, and the sqlite3 CLI reading the metadata DB directly.
+#
+# Emits results/groundtruth/agreement.json: one row per claim, {claim, specula_says,
+# ground_truth_says, agree}. Read the artifact — nobody, agent or human, can summarise their
+# way past a row that says agree:false.
+#
+# EXPECTED RED at 455f11f: `cache_bytes_visible_at_startup` and
+# `single_flight_collapses_stampede` are real, reproduced defects, not gate bugs. See the
+# `detail` field of each row.
+test-groundtruth:
+	bash scripts/groundtruth-gate.sh
+
+## test-groundtruth-meta: prove the groundtruth gate actually catches lies (needs: network + go)
+#
+# A check that has never been observed to fail is not evidence.
+#
+# Injects four defects into a pristine `git archive HEAD` — a cache hit that secretly
+# refetches upstream, serve-stale failing closed (the bug we really shipped), a fabricated
+# cache_bytes, and a single-flight REPAIR as a positive control — builds each mutant, and
+# requires the gate's verdict to flip against a control run of the same claims. A mutation
+# that does not COMPILE proves nothing, so a build failure here is a hard error.
+#
+# Emits results/groundtruth/injections.json.
+test-groundtruth-meta:
+	bash scripts/groundtruth-inject.sh
 
 ## test-all: every dimension (needs: everything above — network, docker, node, clients)
 test-all: test-unit test-integration test-postgres test-ui test-conformance test-realclient
