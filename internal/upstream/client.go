@@ -154,8 +154,9 @@ func (c *fallbackClient) Fetch(
 	ropts := buildRequestOpts(opts)
 	sorted := c.chain(upstreams)
 	var (
-		lastErr error
-		tried   int
+		lastErr   error
+		statusErr *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
+		tried     int
 	)
 	for _, up := range sorted {
 		if c.blocker.isBlocked(up.Name) {
@@ -163,7 +164,7 @@ func (c *fallbackClient) Fetch(
 			continue
 		}
 		tried++
-		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, nil, ropts)
+		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, nil, ropts, c.attemptBudget(statusErr))
 		if err == nil {
 			c.noteSuccess(up.Name, latency)
 			metrics.RecordUpstreamLatency(ref.Protocol, up.Name, latency.Seconds())
@@ -176,11 +177,71 @@ func (c *fallbackClient) Fetch(
 		c.noteFailure(up.Name, err, transient)
 		c.syncBlocked(ref.Protocol, up.Name)
 		lastErr = err
+		rememberStatusErr(&statusErr, err)
 	}
 	if tried == 0 {
 		return nil, artifact.UpstreamMeta{}, errors.New("upstream: all upstreams are blocked")
 	}
-	return nil, artifact.UpstreamMeta{}, fmt.Errorf("upstream: all upstreams failed: %w", lastErr)
+	return nil, artifact.UpstreamMeta{}, resolveFetchError(statusErr, lastErr)
+}
+
+// attemptBudget returns how many HTTP attempts a not-yet-tried upstream deserves.
+//
+// Normally that is c.maxAttempts (initial try + retries), because a transient
+// failure on the ONLY path to an artifact is worth recovering. But once an
+// EARLIER upstream has already given a definitive answer (statusErr != nil —
+// e.g. goproxy.cn said 404 "does not exist"), a later upstream is worth exactly
+// ONE attempt: enough to catch a clean 200 if it actually has the artifact, but
+// no retries. Retrying a later upstream's transient failure would only multiply
+// a dead origin's latency — the CN case where proxy.golang.org is unreachable
+// and hangs the whole chain ~30 s (3 × ~10 s GFW resets) — with no new
+// information, since we already hold an authoritative fallback. Auto-block still
+// learns the origin is dead from these single failures and then skips it.
+//
+// This never suppresses a real 200: an upstream that HAS the artifact and
+// answers on its first attempt still wins outright (served > definitive-not-found).
+func (c *fallbackClient) attemptBudget(statusErr *StatusError) int {
+	if statusErr != nil {
+		return 1
+	}
+	return c.maxAttempts
+}
+
+// rememberStatusErr records the FIRST definitive upstream status (*StatusError)
+// seen while iterating the chain. A later upstream's transport failure must never
+// erase this authoritative answer, so once set it is never overwritten.
+func rememberStatusErr(dst **StatusError, err error) {
+	if *dst != nil {
+		return
+	}
+	var se *StatusError
+	if errors.As(err, &se) {
+		*dst = se
+	}
+}
+
+// resolveFetchError picks the error a fully-failed chain returns, encoding the
+// precedence "served > definitive-not-found > transport-unknown":
+//
+//   - A 200 from any upstream already returned before this is reached, so it is
+//     never in play here (served wins outright).
+//   - A definitive upstream status (4xx: 404/410/403/…) is an AUTHORITATIVE answer
+//     — "this artifact does not exist / is refused" — and must win over any later
+//     upstream's transport failure, which only means "I don't know". Returning it
+//     lets the gomod handler preserve the 404/410 the go client needs for its
+//     module-path-boundary walk (PRD §G5, §7.4) instead of flattening to 502.
+//   - A pure transport failure (DNS / timeout / connection refused) with no
+//     definitive answer anywhere in the chain stays a plain wrapped error, which
+//     carries NO StatusError and so keeps mapping to 502: a genuine outage must
+//     never be reported as a fake "does not exist" the client would cache.
+//
+// The StatusError is wrapped (fmt.Errorf %w) so errors.As recovers it while the
+// message stays consistent with the transport case.
+func resolveFetchError(statusErr *StatusError, lastErr error) error {
+	if statusErr != nil {
+		return fmt.Errorf("upstream: all upstreams failed: %w", statusErr)
+	}
+	return fmt.Errorf("upstream: all upstreams failed: %w", lastErr)
 }
 
 // Revalidate performs a conditional GET using prev.ETag (If-None-Match) and/or
@@ -200,8 +261,9 @@ func (c *fallbackClient) Revalidate(
 	ropts := buildRequestOpts(opts)
 	sorted := c.chain(upstreams)
 	var (
-		lastErr error
-		tried   int
+		lastErr   error
+		statusErr *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
+		tried     int
 	)
 	for _, up := range sorted {
 		if c.blocker.isBlocked(up.Name) {
@@ -209,7 +271,7 @@ func (c *fallbackClient) Revalidate(
 			continue
 		}
 		tried++
-		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, &prev, ropts)
+		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, &prev, ropts, c.attemptBudget(statusErr))
 		if err == nil {
 			c.noteSuccess(up.Name, latency)
 			// A 304 is observed here too: it is a real upstream round trip and
@@ -228,16 +290,19 @@ func (c *fallbackClient) Revalidate(
 		c.noteFailure(up.Name, err, transient)
 		c.syncBlocked(ref.Protocol, up.Name)
 		lastErr = err
+		rememberStatusErr(&statusErr, err)
 	}
 	if tried == 0 {
 		return nil, artifact.UpstreamMeta{}, false,
 			errors.New("upstream: all upstreams are blocked")
 	}
-	return nil, artifact.UpstreamMeta{}, false,
-		fmt.Errorf("upstream: all upstreams failed: %w", lastErr)
+	return nil, artifact.UpstreamMeta{}, false, resolveFetchError(statusErr, lastErr)
 }
 
-// tryFetch performs up to c.maxAttempts GET requests against a single upstream.
+// tryFetch performs up to maxAttempts GET requests against a single upstream.
+// maxAttempts is chosen by the caller (see attemptBudget): the full retry budget
+// for an upstream that may be the only path to the artifact, or 1 when an earlier
+// upstream already gave a definitive answer and this one need only be probed once.
 //
 // prev, when non-nil, adds conditional GET headers (If-None-Match /
 // If-Modified-Since). Transient errors (5xx, 429, network errors) trigger a
@@ -262,6 +327,7 @@ func (c *fallbackClient) tryFetch(
 	up Upstream,
 	prev *artifact.UpstreamMeta,
 	opts requestOpts,
+	maxAttempts int,
 ) (io.ReadCloser, artifact.UpstreamMeta, time.Duration, bool, error) {
 	rawURL := buildURL(up.BaseURL, ref)
 	var (
@@ -280,7 +346,7 @@ func (c *fallbackClient) tryFetch(
 		}
 	}
 
-	for attempt := 0; attempt < c.maxAttempts; attempt++ {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			wait := c.backoffBase * (1 << uint(attempt-1))
 			if wait > 2*time.Second {
