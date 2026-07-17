@@ -347,15 +347,129 @@ protocols:
 
 ## 7. Metrics (Prometheus)
 
-| Metric | Labels |
-|---|---|
-| `specula_requests_total` | `protocol, method, status` |
-| `specula_cache_hits_total` / `_misses_total` | `protocol` |
-| `specula_cache_bytes` | `protocol`（total = `sum()`）【新】 |
-| `specula_cache_objects` | `protocol`【新】 |
-| `specula_upstream_latency_seconds` | `protocol, upstream` |
-| `specula_verification_total` | `protocol, check, tier, result`（tier=signed/consensus/tofu/checksum）【改】 |
-| `specula_upstream_blocked` | `protocol, upstream`（auto-block 状态）【新】 |
+暴露在控制面 `/metrics`。全部在 `internal/metrics` 的包初始化时注册到进程默认
+registry —— **注册不得依赖于构造某个对象或某次请求**（`specula_cache_bytes{protocol="git"}`
+曾经只有人打开 WebUI 才出现，见 7600a0e）。
+
+| Metric | Type | Labels |
+|---|---|---|
+| `specula_requests_total` | counter | `protocol, method, status` |
+| `specula_cache_hits_total` / `_misses_total` | counter | `protocol` |
+| `specula_cache_bytes` | gauge | `protocol`（total = `sum()`）【新】 |
+| `specula_cache_objects` | gauge | `protocol`【新】 |
+| `specula_upstream_latency_seconds` | histogram | `protocol, upstream` |
+| `specula_verification_total` | counter | `protocol, check, tier, result`（tier=signed/consensus/tofu/checksum）【改】 |
+| `specula_upstream_blocked` | **gauge** | `protocol, upstream`（auto-block 状态）【新】 |
+
+### 7.1 标签基数 (cardinality)
+
+`protocol` 有界（8）、`method`/`status` 有界、`upstream` 由 config 限定、`check` 由已注册
+verifier 集合限定、`tier`/`result` 各为固定枚举。
+
+**绝不**用作标签：repo / package name / module path / image name / tag / digest / URL / path。
+这些由请求方（含攻击者）控制且无界——一次 typosquat 扫描就能为每个包名生成一条新时间序列并
+压垮 Prometheus。按包粒度的问题属于日志与 Admin API，不属于标签。
+
+### 7.2 hit / miss 的定义（二层缓存下）
+
+判据是**响应体字节的来源**：
+
+- **hit** —— 响应体**未从上游取 body** 即产生。
+- **miss** —— 响应体**必须从上游取 body**。
+
+三个 ARCHITECTURE §3 引出的歧义情形，按此判据裁定：
+
+| 情形 | 判定 | 理由 |
+|---|---|---|
+| mutable 重验返回 304 | **hit** | 与上游通了话，但上游没发 body；服务的字节来自缓存 |
+| 上游失败 serve-stale（fix H1） | **hit** | body 来自缓存；上游故障由 `upstream_blocked` 与 latency 缺失观测反映 |
+| meta 命中但 blob 缺失 → 回源（fix M1） | **miss** | 元数据行存在但字节不存在，仍需回源；算 hit 等于统计账本而非缓存 |
+
+**此定义的边界（必须明说）**：`hit` **不**等于"没碰上游"。304 重验是 hit，却仍花掉一次
+完整 CN 往返（实测 0.25s ~ 5.7s）。95% 的 hit ratio 只意味着 95% 的请求省下了 **body**
+传输，不意味着 95% 的请求没碰上游。"到底多少次碰了上游"由
+`specula_upstream_latency_seconds` 的 `_count` 回答（304 也观测）。两个指标合起来才诚实。
+
+从不查缓存的请求（`/v2/` ping、坏路径 404、方法不允许）**两个计数器都不动**，只计入
+`requests_total`。故 hit/miss 的分母是"查过缓存的请求数"——这是该比值唯一有意义的分母。
+
+计数绑定在**请求**上，不在 `cache.Lookup` 上：handler 每请求会多次 Lookup，在那里计数会让
+分母变成"lookup 次数"，得到一个没人问过的量。
+
+### 7.3 `specula_upstream_latency_seconds`
+
+测量的是 **time-to-response-headers（上游响应及时性）**，**不是 body 传输时间**——body 是流式
+透传给下游客户端的，其耗时反映的是客户端链路速度而非镜像速度。
+
+因此**不可**将其读作"这个镜像有多慢"：镜像可以 250ms 就回 header，然后以 27 kB/s 传 body
+（aliyun 实测），一个 50MB 的 .deb 要传半小时，而本指标仍报 0.25s。它只回答一个问题：
+**上游多久开始响应**。
+
+Bucket 依据实测 CN TTFB 选取（非 `prometheus.DefBuckets`）：实测呈双峰——warm 簇 0.24–0.81s、
+stall 簇 5.0–5.7s。DefBuckets 在此有害：它把 5 个 bucket 花在 100ms 以下（跨境往返不可能这么快）、
+1s 与 2.5s 之间没有任何边界、且止于 10s 而 upstream client 超时是 30s（10–30s 的请求会全部落进
+`+Inf`，与挂死无法区分）。取值见 `internal/metrics.cnLatencyBuckets`。
+
+### 7.4 `specula_upstream_blocked` 是 gauge
+
+它是**状态**（PRD 原文即"auto-block 状态"），有升有降 ⇒ gauge。名称不带 `_total` 是**正确**的
+（Prometheus 将 `_total` 保留给 counter），故沿用原名。
+
+含义精确为：*该 upstream 已连续 5 次**瞬时(transient)**失败，正处于 30s 的拒绝重试窗口内*。
+它**不**等于"该 upstream 不可达"。`internal/upstream/client.go` 的失败分类决定了它：
+
+| 失败 | 分类 | 是否计入 auto-block |
+|---|---|---|
+| connection refused | 网络错误 | ✅ transient |
+| DNS 失败 | 网络错误 | ✅ transient |
+| TCP/TLS 超时 | 网络错误 | ✅ transient |
+| HTTP 5xx、429 | | ✅ transient |
+| HTTP 451、403、404 | 4xx | ❌ **永不触发** |
+
+**CN 场景（G5）的结论**：GFW 式干扰通常表现为连接超时/重置，属 transient，**会**把该
+gauge 打到 1。但 HTTP 451（法律封锁）是格式良好的 4xx——client 立刻换下一个 upstream，
+失败streak 永不递增，故一个永远回 451 的 upstream 会**永远报 blocked=0**。
+所以 `blocked=0` **不**代表健康，也可能代表"正在以一种我们故意不重试的方式失败"。
+
+### 7.5 `specula_verification_total` —— 让 G2 可被独立验证
+
+这是让**诚实分级信任模型（G2）可观测**的指标。没有它，operator 只能听我们自称验了什么。
+
+- `tier` —— **必须**是 verify chain 实际达成的档（`artifact.Result.Tier`），
+  **绝不**从 config 断言，**绝不**出现 G2 四档以外的第五个值。
+  给一个仅通过 checksum 的 artifact 打上 `tier="signed"`，是本代码库能犯的最严重的错误。
+- `check` —— 单个 verifier 的 `Name()`（checksum / tofu / sumdb / gpg / helm-prov /
+  git-signed / consensus / cosign），或保留值 **`chain`** 表示整条链的聚合裁决。
+  `check="chain"` 的 `tier` 就是 `cache.Store` 写入 `CacheEntry.Tier` 的那个值——
+  指标与 DB 是同一个数的两种呈现，故可互相交叉核对，二者不一致即为真实信号。
+- `result` —— `pass` / `warn` / `fail`。
+- **被跳过(skip)的 check 不产生任何 series**。自门控退出的 verifier 没有达成任何档；
+  为它记 `tier="checksum", result="pass"`（这正是 `StatusSkip` 出现之前
+  `artifact.Result` 对 skip 的取值）等于在 /metrics 上宣称 gpg 检查通过了我们服务过的
+  每一个 npm 包。**缺席**就是本指标表达"这项检查没在这里跑过"的方式。
+
+### 7.6 注册 ≠ 出现在 /metrics
+
+一个已注册但没有任何子 series 的 `*Vec` **不会**向 `Gather()` 贡献任何 metric family，
+因此根本不出现在 `/metrics` 上。二者的桥梁是**预初始化**标签组合，而这仅在标签集
+**有界且无需流量即可知**时才可能：
+
+| Metric | 预初始化 | 无流量时可见 |
+|---|---|---|
+| `cache_hits/misses_total{protocol}` | 8 个 protocol，init() 时 | ✅ 真实的 0 |
+| `upstream_blocked{protocol,upstream}` | 由 config 声明（`PreInitUpstream`） | ✅ 真实的 0 |
+| `requests_total{protocol,method,status}` | ❌ status 不可预知 | 首次请求后 |
+| `verification_total{...,tier,result}` | ❌ 预初始化会捏造从未发生的组合 | 首次验证后 |
+
+后两者的**缺席是正确且诚实的**：它表示"尚未发生"，而非"坏了"。为它们预初始化等于捏造
+从未出现过的组合，与本节要根除的是同一类谎言。
+
+> **已知缺口（未解决，不得当作已解决）**：`verify.Chain` 在**没有任何 verifier**时返回
+> `TierChecksum` + pass，即在一次哈希都没比过的情况下声称 checksum 档。该 Result 会被
+> `cache.Store` 写进 `CacheEntry.Tier`。此路径在生产不可达（`cmd/specula` 必然注册
+> ChecksumVerifier + TofuVerifier，空 chain 是 operator 无法构造的退化配置），且已从
+> `verification_total` 中排除（不记 series），但**这个声称本身仍是不诚实的**。
+> 诚实的修法需要 G2 增加"什么都没验"的词汇，属规格问题，不在本次以静默代码改动了结。
 
 ---
 

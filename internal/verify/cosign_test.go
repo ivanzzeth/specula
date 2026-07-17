@@ -164,7 +164,7 @@ func TestCosignVerifier_Interface(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Self-gating: skipped paths must return StatusPass without crashing
+// Self-gating: skipped paths must return StatusSkip without crashing
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestCosignVerifier_SelfGate(t *testing.T) {
@@ -210,7 +210,7 @@ func TestCosignVerifier_SelfGate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			res, err := v.Verify(ctx, tc.ref, tc.art)
 			require.NoError(t, err, "self-gate path must never error")
-			assert.Equal(t, artifact.StatusPass, res.Status, "self-gate must return StatusPass")
+			assert.Equal(t, artifact.StatusSkip, res.Status, "self-gate must return StatusSkip")
 			// The tier reported on a skip is TierChecksum (downgrade from TierSigned),
 			// signalling that no signature was checked rather than that one passed.
 			assert.Equal(t, artifact.TierChecksum, res.Tier, "self-gate must report TierChecksum (no sig checked)")

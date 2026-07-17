@@ -13,8 +13,8 @@ import (
 //
 // Lowest tier — NEVER a standalone supply-chain control (DESIGN-REVIEW C1).
 // When no reference digest is available (ref.Digest is empty, e.g. a mutable
-// tag path), the verifier confirms that a digest was computed but cannot
-// validate it against a known-good value, returning StatusPass with a note.
+// tag path), there is nothing to compare the streaming digest against, so the
+// verifier self-gates out and returns StatusSkip with a note.
 type ChecksumVerifier struct{}
 
 // NewChecksumVerifier constructs a ChecksumVerifier.
@@ -40,11 +40,12 @@ func (v *ChecksumVerifier) Verify(_ context.Context, ref artifact.ArtifactRef, a
 
 	if ref.Digest == "" {
 		// No reference digest is available (e.g. mutable-ref path where the
-		// caller has not yet resolved the tag to a digest). Transport integrity
-		// is confirmed (digest was computed) but we cannot validate against a
-		// known-good value.
+		// caller has not yet resolved the tag to a digest). A digest was
+		// computed, but with nothing known-good to compare it against this
+		// verifier has formed no opinion about the artifact — that is a skip,
+		// not a pass.
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: fmt.Sprintf("checksum: transport digest %s (no reference to compare)", art.Digest),
 		}, nil

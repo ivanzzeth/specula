@@ -59,6 +59,25 @@ const (
 	StatusWarn
 	// StatusFail means the artifact must not be promoted or served.
 	StatusFail
+	// StatusSkip means the verifier DID NOT RUN for this ref — it self-gated
+	// out because the artifact is not its business (wrong protocol, a mutable
+	// ref, no resolved digest, a signature attachment rather than the artifact).
+	//
+	// Skip is not a weak pass. Before this variant existed every self-gate
+	// returned StatusPass at TierChecksum, which made "the gpg verifier examined
+	// this .deb and it was fine" and "the gpg verifier has nothing to do with
+	// this npm tarball" the same value. That conflation is invisible while the
+	// only consumer is the Chain — which aggregates by MAX(tier), where a
+	// checksum-tier pass is the identity element and changes nothing — but it
+	// becomes an active lie the moment anything reports per-verifier outcomes:
+	// specula_verification_total would have claimed that the gpg check passed on
+	// every npm package Specula ever served (PRD §G2 — never claim a check you
+	// did not earn).
+	//
+	// Chain treats StatusSkip exactly as it treated the old no-op pass: it does
+	// not fail, does not warn, and does not advance the tier. The difference is
+	// that it is now sayable.
+	StatusSkip
 )
 
 // String returns the lowercase canonical name of the status.
@@ -70,6 +89,8 @@ func (s Status) String() string {
 		return "warn"
 	case StatusFail:
 		return "fail"
+	case StatusSkip:
+		return "skip"
 	default:
 		return "unknown"
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/metrics"
 )
 
 // serveBlob handles GET/HEAD /v2/<name>/blobs/<digest>.
@@ -76,6 +77,13 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 		return
 	}
 
+	if entry != nil {
+		// CAS hit: the body comes from cache, no upstream body transfer. This
+		// includes hosted repos, whose blobs are authoritative local content and
+		// are likewise served without any upstream fetch.
+		metrics.MarkHit(ctx)
+	}
+
 	if entry == nil {
 		if hostedRepo {
 			// Hosted repos are authoritative local content: a CAS miss means the
@@ -106,6 +114,8 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
 			return
 		}
+		// Cache miss: the blob body was fetched from an upstream and promoted.
+		metrics.MarkMiss(ctx)
 	}
 
 	size := entry.Size

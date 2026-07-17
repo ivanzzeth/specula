@@ -47,7 +47,7 @@ import (
 //
 // # Self-gating
 //
-// Verify is a no-op StatusPass for any ref whose Protocol is not "helm" or
+// Verify returns StatusSkip for any ref whose Protocol is not "helm" or
 // whose Version does not end with ".tgz" (i.e. .prov files and index.yaml
 // are skipped — they are not the artifact being integrity-checked here).
 type HelmProvVerifier struct {
@@ -80,7 +80,7 @@ func (v *HelmProvVerifier) Tier() artifact.Tier { return artifact.TierSigned }
 
 // Verify checks the .prov clear-signed GPG provenance for a quarantined chart.
 //
-// Self-gating rules (returns StatusPass/TierChecksum):
+// Self-gating rules (returns StatusSkip — the verifier did not run):
 //   - ref.Protocol != "helm"
 //   - ref.Mutable == true  (index.yaml, not a chart)
 //   - ref.Version does not end with ".tgz"  (e.g. the .prov file itself)
@@ -100,7 +100,7 @@ func (v *HelmProvVerifier) Verify(_ context.Context, ref artifact.ArtifactRef, a
 	// Self-gate 1: non-helm protocol.
 	if ref.Protocol != "helm" {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "helmprov: skipped (not a helm artifact)",
 		}, nil
@@ -108,7 +108,7 @@ func (v *HelmProvVerifier) Verify(_ context.Context, ref artifact.ArtifactRef, a
 	// Self-gate 2: mutable refs (index.yaml).
 	if ref.Mutable {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "helmprov: skipped (mutable ref — index.yaml, not a chart)",
 		}, nil
@@ -116,7 +116,7 @@ func (v *HelmProvVerifier) Verify(_ context.Context, ref artifact.ArtifactRef, a
 	// Self-gate 3: only process .tgz files, not .prov or other extensions.
 	if !strings.HasSuffix(ref.Version, ".tgz") {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "helmprov: skipped (not a .tgz chart artifact)",
 		}, nil

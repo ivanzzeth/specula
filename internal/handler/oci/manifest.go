@@ -12,6 +12,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
@@ -66,8 +67,15 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageNam
 	// Step 2: try to serve from the verified CAS.
 	if digest != "" {
 		if h.tryServeManifestFromCache(w, r, imageName, digest) {
+			// CAS hit: the body comes from cache, no upstream body transfer.
+			// Marked here rather than inside tryServeManifestFromCache, which is
+			// also the renderer for the post-fetch (miss) path below.
+			metrics.MarkHit(ctx)
 			return
 		}
+		// Meta hit but blob missing (M1): the tag resolved to a digest but the
+		// bytes are not in the CAS, so they must be refetched → a miss, marked
+		// on the fetch path below.
 	}
 
 	// Cache miss path.
@@ -99,6 +107,11 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageNam
 		writeOCIError(w, http.StatusBadGateway, "MANIFEST_UNKNOWN", "upstream fetch failed")
 		return
 	}
+
+	// Cache miss: the manifest body was fetched from an upstream and promoted.
+	// This also covers the meta-hit-but-blob-missing refetch (M1), where the
+	// Step 2 tryServe above returned false and marked nothing.
+	metrics.MarkMiss(ctx)
 
 	if !h.tryServeManifestFromCache(w, r, imageName, newDigest) {
 		writeOCIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "manifest stored but not serveable")

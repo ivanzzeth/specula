@@ -27,7 +27,7 @@ import (
 //
 // # Self-gating
 //
-// Verify is a no-op StatusPass for any ref whose Protocol is not "git".
+// Verify returns StatusSkip for any ref whose Protocol is not "git".
 //
 // # Implementation status (contract skeleton)
 //
@@ -65,14 +65,14 @@ func (v *GitSignedVerifier) Tier() artifact.Tier { return artifact.TierSigned }
 
 // Verify checks the signature on the tag/commit referenced by ref.
 //
-// Skipped (StatusPass at TierChecksum) for any non-git ref. For git refs the
+// Skipped (StatusSkip) for any non-git ref. For git refs the
 // verify-tag/verify-commit invocation is not yet implemented; Verify returns
 // errNotImplemented so the Chain fails closed rather than attesting an
 // unreached tier.
 func (v *GitSignedVerifier) Verify(_ context.Context, ref artifact.ArtifactRef, _ *artifact.Artifact) (artifact.Result, error) {
 	if ref.Protocol != "git" {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "gitsigned: skipped (not a git artifact)",
 		}, nil

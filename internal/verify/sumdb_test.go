@@ -213,7 +213,7 @@ func TestSumDBVerifier_SkipNonGomod(t *testing.T) {
 
 	res, err := v.Verify(ctx, ref, art)
 	require.NoError(t, err)
-	assert.Equal(t, artifact.StatusPass, res.Status)
+	assert.Equal(t, artifact.StatusSkip, res.Status)
 	assert.Contains(t, res.Message, "skipped")
 }
 
@@ -225,7 +225,7 @@ func TestSumDBVerifier_SkipMutable(t *testing.T) {
 
 	res, err := v.Verify(ctx, ref, art)
 	require.NoError(t, err)
-	assert.Equal(t, artifact.StatusPass, res.Status)
+	assert.Equal(t, artifact.StatusSkip, res.Status)
 	assert.Contains(t, res.Message, "skipped")
 }
 
@@ -237,7 +237,7 @@ func TestSumDBVerifier_SkipInfoFile(t *testing.T) {
 
 	res, err := v.Verify(ctx, ref, art)
 	require.NoError(t, err)
-	assert.Equal(t, artifact.StatusPass, res.Status)
+	assert.Equal(t, artifact.StatusSkip, res.Status)
 	assert.Contains(t, res.Message, ".info")
 }
 
@@ -253,7 +253,7 @@ func TestSumDBVerifier_SkipPrivateModule(t *testing.T) {
 
 	res, err := v.Verify(ctx, ref, art)
 	require.NoError(t, err)
-	assert.Equal(t, artifact.StatusPass, res.Status)
+	assert.Equal(t, artifact.StatusSkip, res.Status)
 	assert.Contains(t, res.Message, "private")
 }
 

@@ -45,6 +45,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/handler/pypi"
 	"github.com/ivanzzeth/specula/internal/handler/registry"
 	tarballhandler "github.com/ivanzzeth/specula/internal/handler/tarball"
+	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/org"
 	"github.com/ivanzzeth/specula/internal/registryauthz"
 	"github.com/ivanzzeth/specula/internal/registrytoken"
@@ -448,14 +449,14 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	}
 	if ok {
 		opts = append(opts,
-			oci.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("oci")), toUpstreams(pc.Upstreams)),
+			oci.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("oci")), upstreamsFor("oci", pc.Upstreams)),
 			oci.WithMutableTTL(mutableTTL(pc, cfg)),
 		)
 	}
 
 	if !registryEnabled {
 		// Pull-through-only: no hosted-first seam, no write path, no auth gate.
-		mux.Handle("/v2/", oci.NewHandler(cm, opts...))
+		mux.Handle("/v2/", metrics.Middleware("oci", oci.NewHandler(cm, opts...)))
 		log.Info("specula: mounted OCI handler (pull-through only)", "path", "/v2/", "configured", ok)
 		return
 	}
@@ -480,7 +481,7 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	// Bearer challenge gate. The realm is computed per-request from the Host so a
 	// single binary advertises a correct same-origin /token URL.
 	challenge := tokenSvc.ChallengeFunc(registryRealm)
-	mux.Handle("/v2/", challenge(writeHandler))
+	mux.Handle("/v2/", metrics.Middleware("oci", challenge(writeHandler)))
 	log.Info("specula: mounted writable registry", "path", "/v2/", "configured", ok, "auth", "registry-token")
 }
 
@@ -559,7 +560,17 @@ func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager
 	sumdbEnabled := false
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, gomod.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime(goProtocolKey)), toUpstreams(pc.Upstreams)))
+			// The metrics protocol label MUST be gomod.Protocol ("gomod"), not
+			// goProtocolKey ("go"). The config keys this block "go", but the
+			// on-the-wire ArtifactRef.Protocol — which is what the upstream client
+			// labels specula_upstream_latency_seconds and specula_upstream_blocked
+			// with — is "gomod". Pre-initialising under "go" would mint a phantom
+			// {protocol="go"} series that reads 0 for ever while any real block
+			// appeared under {protocol="gomod"}: an operator watching the phantom
+			// would see a permanently healthy upstream. Caught by the real-traffic
+			// acceptance run, which showed {protocol="go"} alongside gomod's
+			// hit/miss series.
+			opts = append(opts, gomod.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime(goProtocolKey)), upstreamsFor(gomod.Protocol, pc.Upstreams)))
 		}
 		opts = append(opts, gomod.WithMutableTTL(mutableTTL(pc, cfg)))
 
@@ -581,7 +592,7 @@ func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager
 		}
 	}
 
-	mux.Handle(goMountPrefix+"/", gomod.NewHandler(cm, opts...))
+	mux.Handle(goMountPrefix+"/", metrics.Middleware("gomod", gomod.NewHandler(cm, opts...)))
 	log.Info("specula: mounted Go module proxy",
 		"path", goMountPrefix+"/", "configured", ok, "sumdb_passthrough", sumdbEnabled)
 }
@@ -645,7 +656,7 @@ func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, pypi.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("pypi")), toUpstreams(pc.Upstreams)))
+			opts = append(opts, pypi.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("pypi")), upstreamsFor("pypi", pc.Upstreams)))
 		}
 		opts = append(opts, pypi.WithMutableTTL(mutableTTL(pc, cfg)))
 		if dc := pc.Verification.DependencyConfusion; dc != nil && dc.PrivateUpstream != "" {
@@ -658,7 +669,7 @@ func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 				"private_names", len(dc.PrivateNames), "on_private_down", onPrivateDownOrDefault(dc.OnPrivateDown))
 		}
 	}
-	mux.Handle(pypiPrefix+"/", pypi.NewHandler(cm, opts...))
+	mux.Handle(pypiPrefix+"/", metrics.Middleware("pypi", pypi.NewHandler(cm, opts...)))
 	log.Info("specula: mounted PyPI handler", "path", pypiPrefix+"/", "configured", ok)
 }
 
@@ -675,7 +686,7 @@ func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, npm.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("npm")), toUpstreams(pc.Upstreams)))
+			opts = append(opts, npm.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("npm")), upstreamsFor("npm", pc.Upstreams)))
 		}
 		opts = append(opts, npm.WithMutableTTL(mutableTTL(pc, cfg)))
 		if dc := pc.Verification.DependencyConfusion; dc != nil && dc.PrivateUpstream != "" {
@@ -690,7 +701,7 @@ func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 				"on_private_down", onPrivateDownOrDefault(dc.OnPrivateDown))
 		}
 	}
-	mux.Handle(npmPrefix+"/", npm.NewHandler(cm, opts...))
+	mux.Handle(npmPrefix+"/", metrics.Middleware("npm", npm.NewHandler(cm, opts...)))
 	log.Info("specula: mounted npm handler", "path", npmPrefix+"/", "configured", ok)
 }
 
@@ -707,14 +718,14 @@ func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, apthandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("apt")), toUpstreams(pc.Upstreams)))
+			opts = append(opts, apthandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("apt")), upstreamsFor("apt", pc.Upstreams)))
 		}
 		opts = append(opts, apthandler.WithMutableTTL(mutableTTL(pc, cfg)))
 	}
 	if gpgV != nil {
 		opts = append(opts, apthandler.WithGPGVerifier(gpgV))
 	}
-	mux.Handle(aptPrefix+"/", apthandler.NewHandler(cm, opts...))
+	mux.Handle(aptPrefix+"/", metrics.Middleware("apt", apthandler.NewHandler(cm, opts...)))
 	log.Info("specula: mounted APT handler",
 		"path", aptPrefix+"/", "configured", ok, "signed", gpgV != nil)
 }
@@ -732,14 +743,14 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, helmhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("helm")), toUpstreams(pc.Upstreams)))
+			opts = append(opts, helmhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("helm")), upstreamsFor("helm", pc.Upstreams)))
 		}
 		opts = append(opts, helmhandler.WithMutableTTL(mutableTTL(pc, cfg)))
 	}
 	if provV != nil {
 		opts = append(opts, helmhandler.WithProvenanceVerifier(provV))
 	}
-	mux.Handle(helmPrefix+"/", helmhandler.NewHandler(cm, opts...))
+	mux.Handle(helmPrefix+"/", metrics.Middleware("helm", helmhandler.NewHandler(cm, opts...)))
 	log.Info("specula: mounted Helm handler",
 		"path", helmPrefix+"/", "configured", ok, "signed", provV != nil)
 }
@@ -758,12 +769,12 @@ func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager,
 	hosts := []string{}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, tarballhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("tarball")), toUpstreams(pc.Upstreams)))
+			opts = append(opts, tarballhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("tarball")), upstreamsFor("tarball", pc.Upstreams)))
 		}
 		hosts = upstreamHosts(pc.Upstreams)
 		opts = append(opts, tarballhandler.WithAllowedHosts(hosts))
 	}
-	mux.Handle(tarballPrefix+"/", tarballhandler.NewHandler(cm, opts...))
+	mux.Handle(tarballPrefix+"/", metrics.Middleware("tarball", tarballhandler.NewHandler(cm, opts...)))
 	log.Info("specula: mounted tarball handler",
 		"path", tarballPrefix+"/", "configured", ok, "allowed_hosts", len(hosts))
 }
@@ -797,7 +808,7 @@ func mountGit(mux *http.ServeMux, cfg *config.Config, metaStore metastore.Metada
 	if signedV != nil {
 		opts = append(opts, githandler.WithSignedRefsVerifier(signedV))
 	}
-	mux.Handle(gitPrefix+"/", githandler.NewHandler(opts...))
+	mux.Handle(gitPrefix+"/", metrics.Middleware("git", githandler.NewHandler(opts...)))
 	log.Info("specula: mounted git handler",
 		"path", gitPrefix+"/", "configured", ok, "signed", signedV != nil)
 }
@@ -1141,6 +1152,22 @@ func toUpstreams(in []config.UpstreamConfig) []upstream.Upstream {
 			Priority: u.Priority,
 			Official: u.Official,
 		})
+	}
+	return out
+}
+
+// upstreamsFor converts a protocol's configured upstreams AND declares each one
+// to the metrics layer, so specula_upstream_blocked{protocol,upstream} reads a
+// real 0 from the very first scrape of a fresh headless process.
+//
+// Without this the gauge would spring into existence only once an upstream had
+// already failed, making "absent" and "healthy" indistinguishable at exactly the
+// moment an operator is looking. Declaring the configured set is safe precisely
+// because it is bounded and known: it comes from config, not from traffic.
+func upstreamsFor(protocol string, in []config.UpstreamConfig) []upstream.Upstream {
+	out := toUpstreams(in)
+	for _, u := range out {
+		metrics.PreInitUpstream(protocol, u.Name)
 	}
 	return out
 }

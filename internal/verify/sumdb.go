@@ -108,7 +108,7 @@ type SumDBConfig struct {
 //
 // # Self-gating
 //
-// Verify is a no-op StatusPass for any ref that is not an IMMUTABLE gomod
+// Verify returns StatusSkip for any ref that is not an IMMUTABLE gomod
 // artifact (wrong protocol, mutable list/@latest, or a private module). This
 // lets a single global verification Chain include the sumdb verifier without it
 // acting on other protocols.
@@ -168,14 +168,15 @@ func (v *SumDBVerifier) IsPrivate(modulePath string) bool {
 
 // Verify checks the immutable Go module artifact against the checksum database.
 //
-// Returns StatusPass (at TierChecksum) for skipped cases (wrong protocol,
-// mutable, private, .info). Returns StatusPass (TierSigned) on success.
-// Returns StatusFail or StatusWarn (per Policy) on any verification failure.
+// Returns StatusSkip for self-gated cases (wrong protocol, mutable, private,
+// .info) — the verifier did not run. Returns StatusPass (TierSigned) on
+// success. Returns StatusFail or StatusWarn (per Policy) on any verification
+// failure.
 func (v *SumDBVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	// Self-gate: only immutable Go module artifacts.
 	if ref.Protocol != protocolGo || ref.Mutable {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "sumdb: skipped (not an immutable go module artifact)",
 		}, nil
@@ -185,7 +186,7 @@ func (v *SumDBVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, ar
 	canonical, err := module.UnescapePath(moduleFromName(ref.Name))
 	if err != nil {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "sumdb: skipped (invalid escaped module path: " + err.Error() + ")",
 		}, nil
@@ -194,7 +195,7 @@ func (v *SumDBVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, ar
 	// Private modules: never queried against the public sumdb.
 	if v.private.IsPrivate(canonical) {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "sumdb: skipped (private module, not forwarded to public sumdb)",
 		}, nil
@@ -204,7 +205,7 @@ func (v *SumDBVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, ar
 	version, ext, ok := sumdbFileVersionExt(ref.Version)
 	if !ok {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "sumdb: skipped (unrecognised file component: " + ref.Version + ")",
 		}, nil
@@ -213,7 +214,7 @@ func (v *SumDBVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, ar
 	// .info files have no sumdb entry (they carry timestamps, not content hashes).
 	if ext == sumdbExtInfo {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "sumdb: skipped (.info files are not covered by the checksum database)",
 		}, nil

@@ -72,7 +72,7 @@ type ConsensusConfig struct {
 //
 // # Self-gating
 //
-// Verify returns a no-op StatusPass (TierChecksum) when it has nothing to do:
+// Verify returns StatusSkip when it has nothing to do:
 //   - a mutable ref (tag/index/ref) whose digest is not yet resolved, or
 //   - the artifact carries no computed digest.
 //
@@ -115,7 +115,7 @@ type mirrorFetchResult struct {
 // the optional origin check) are issued in parallel; results are aggregated
 // after all goroutines complete.
 //
-//   - Skipped (StatusPass, TierChecksum) for mutable/undigested refs.
+//   - Skipped (StatusSkip) for mutable/undigested refs.
 //   - Fail-closed (error) when no digest fetcher is wired.
 //   - StatusFail when the official source disagrees, or fewer than Quorum
 //     independent mirrors agree with the artifact digest.
@@ -125,7 +125,7 @@ func (v *ConsensusVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef
 	// Self-gate: consensus only applies to a resolved, immutable digest.
 	if ref.Mutable || art.Digest == "" {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "consensus: skipped (no resolved digest to cross-check)",
 		}, nil

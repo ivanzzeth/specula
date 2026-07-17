@@ -35,7 +35,7 @@ func tofuKey(ref artifact.ArtifactRef) string {
 // force-push, history rewrite, and version rewrite attacks (DESIGN-REVIEW §5).
 //
 // Mutable refs (tags, indexes, git refs whose digest legitimately changes over
-// time) are skipped with StatusPass so the mutable tier is not incorrectly
+// time) are skipped with StatusSkip so the mutable tier is not incorrectly
 // pinned.
 type TofuVerifier struct {
 	store TofuStore
@@ -54,14 +54,14 @@ func (v *TofuVerifier) Tier() artifact.Tier { return artifact.TierTofu }
 
 // Verify implements TOFU pinning for immutable artifact versions.
 //
-//   - Mutable ref → StatusPass (skipped; digest legitimately changes).
+//   - Mutable ref → StatusSkip (not pinned; digest legitimately changes).
 //   - First sight  → pin digest, return StatusWarn (first-lock notification).
 //   - Same digest  → StatusPass (confirmed).
 //   - Changed digest → StatusFail with tamper-alert message (fail-closed).
 func (v *TofuVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	if ref.Mutable {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierTofu,
 			Message: "tofu: skipped for mutable ref",
 		}, nil

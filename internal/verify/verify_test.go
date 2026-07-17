@@ -149,10 +149,10 @@ func TestChecksumVerifier_Verify(t *testing.T) {
 			msgContains: "mismatch",
 		},
 		{
-			name:        "ref digest empty (mutable tag path): pass with note",
+			name:        "ref digest empty (mutable tag path): skip with note",
 			ref:         makeRef("oci", "nginx", "latest", "", true),
 			art:         makeArt(goodDigest),
-			wantStatus:  artifact.StatusPass,
+			wantStatus:  artifact.StatusSkip,
 			wantTier:    artifact.TierChecksum,
 			msgContains: "no reference",
 		},
@@ -173,10 +173,10 @@ func TestChecksumVerifier_Verify(t *testing.T) {
 			msgContains: "empty",
 		},
 		{
-			name:        "ref empty and art has non-sha256 digest: pass (no algo check)",
+			name:        "ref empty and art has non-sha256 digest: skip (nothing to compare)",
 			ref:         makeRef("gomod", "example.com/pkg", "v1.0.0", "", false),
 			art:         makeArt("h1:abcdefgh"),
-			wantStatus:  artifact.StatusPass,
+			wantStatus:  artifact.StatusSkip,
 			wantTier:    artifact.TierChecksum,
 			msgContains: "no reference",
 		},
@@ -237,10 +237,10 @@ func TestTofuVerifier_Verify(t *testing.T) {
 		msgContains string
 	}{
 		{
-			name:        "mutable ref is skipped with pass",
+			name:        "mutable ref is skipped",
 			ref:         makeRef("oci", "nginx", "latest", "", true),
 			art:         makeArt(digest1),
-			wantStatus:  artifact.StatusPass,
+			wantStatus:  artifact.StatusSkip,
 			wantTier:    artifact.TierTofu,
 			msgContains: "skipped",
 		},

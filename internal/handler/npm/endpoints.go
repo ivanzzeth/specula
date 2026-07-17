@@ -14,6 +14,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/upstream"
 	"github.com/ivanzzeth/specula/internal/verify"
 )
@@ -160,6 +161,8 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		return
 	}
 	if entry != nil {
+		// Fresh cache hit: the body comes from cache, no upstream body transfer.
+		metrics.MarkHit(ctx)
 		h.serveFromCache(w, r, ref, entry, ct)
 		return
 	}
@@ -174,6 +177,8 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	// 2. Upstream required for revalidation or fresh fetch.
 	if h.upstreamClt == nil || len(ups) == 0 {
 		if staleEntry != nil {
+			// Serve-stale with no upstream at all: the body came from cache.
+			metrics.MarkHit(ctx)
 			h.log.Warn("npm: no upstream; serving stale packument", "ref", ref)
 			h.serveFromCache(w, r, ref, staleEntry, ct)
 			return
@@ -188,6 +193,9 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		body, umeta, notModified, revalErr := h.upstreamClt.Revalidate(ctx, ref, prevMeta, ups)
 		if revalErr == nil {
 			if notModified {
+				// 304: the upstream sent no body; the bytes we serve came from
+				// cache. A hit under the bytes-origin definition.
+				metrics.MarkHit(ctx)
 				h.extendMutableTTL(ctx, ref, umeta)
 				h.serveFromCache(w, r, ref, staleEntry, ct)
 				return
@@ -195,6 +203,8 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 			// 200: new body — store and serve.
 			defer body.Close()
 			if newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta); storeErr == nil && newEntry != nil {
+				// Revalidation returned a NEW body from the upstream.
+				metrics.MarkMiss(ctx)
 				h.serveFromCache(w, r, ref, newEntry, ct)
 				return
 			}
@@ -208,6 +218,8 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		if h.isPrivatePkg(ref.Name) {
 			// Private upstream failed — guard decides action (never public).
 			if h.privateDownServeStale() && staleEntry != nil {
+				// Serve-stale on upstream failure (H1): body came from cache.
+				metrics.MarkHit(ctx)
 				h.log.Warn("npm: private upstream failed; serving stale packument",
 					"ref", ref, "err", fetchErr)
 				h.serveFromCache(w, r, ref, staleEntry, ct)
@@ -219,6 +231,8 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		}
 		// Non-private: serve stale if available, else 502.
 		if staleEntry != nil {
+			// Serve-stale on upstream failure (H1): body came from cache.
+			metrics.MarkHit(ctx)
 			h.log.Warn("npm: upstream failed; serving stale packument", "ref", ref, "err", fetchErr)
 			h.serveFromCache(w, r, ref, staleEntry, ct)
 			return
@@ -235,6 +249,8 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		writeError(w, http.StatusBadGateway, "failed to cache upstream response")
 		return
 	}
+	// Cache miss: the body was fetched from an upstream and stored.
+	metrics.MarkMiss(ctx)
 	h.serveFromCache(w, r, ref, newEntry, ct)
 }
 
@@ -256,6 +272,8 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 		return
 	}
 	if entry != nil {
+		// CAS hit: the body comes from cache, no upstream body transfer.
+		metrics.MarkHit(ctx)
 		h.serveTarballFromCache(w, r, ref, entry)
 		return
 	}
@@ -286,6 +304,8 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 		return
 	}
 
+	// Cache miss: the tarball body was fetched from an upstream and promoted.
+	metrics.MarkMiss(ctx)
 	h.serveTarballFromCache(w, r, ref, entry)
 }
 

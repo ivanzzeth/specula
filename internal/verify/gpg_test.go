@@ -176,7 +176,7 @@ func TestGPGVerifier_NonAptProtocol_Skipped(t *testing.T) {
 			art := &artifact.Artifact{Path: "/dev/null", Digest: "sha256:abc"}
 			res, err := v.Verify(context.Background(), ref, art)
 			require.NoError(t, err)
-			assert.Equal(t, artifact.StatusPass, res.Status)
+			assert.Equal(t, artifact.StatusSkip, res.Status)
 			assert.Equal(t, artifact.TierChecksum, res.Tier, "non-apt must not claim TierSigned")
 		})
 	}
@@ -586,7 +586,7 @@ func TestGPGVerifier_OtherDistsFiles_PassThrough(t *testing.T) {
 			art := &artifact.Artifact{Path: "/dev/null", Digest: "sha256:abc"}
 			res, verErr := v.Verify(context.Background(), ref, art)
 			require.NoError(t, verErr)
-			assert.Equal(t, artifact.StatusPass, res.Status, "%s must pass through", version)
+			assert.Equal(t, artifact.StatusSkip, res.Status, "%s must be skipped, not passed", version)
 			assert.Equal(t, artifact.TierChecksum, res.Tier)
 		})
 	}

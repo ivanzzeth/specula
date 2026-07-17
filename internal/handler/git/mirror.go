@@ -152,7 +152,14 @@ func (m *mirrorStore) syncContext(ctx context.Context) (context.Context, context
 // call returns immediately (cache hit). A path that exists but is NOT a usable
 // mirror — a corpse from a killed clone, or a full --mirror clone from before
 // the refspec fix — is removed and re-cloned.
-func (m *mirrorStore) EnsureSynced(ctx context.Context, ref repoRef, upstreamURL string) error {
+//
+// contactedUpstream reports whether this call ran a clone or a fetch against the
+// upstream, and is what lets the caller record an honest cache outcome: false
+// means the mirror was already present and the response is built entirely from
+// disk (a hit), true means objects were requested from the upstream (a miss).
+// It is reported for failed syncs too, since those still cost an upstream round
+// trip and fall through to a passthrough whose body comes from the upstream.
+func (m *mirrorStore) EnsureSynced(ctx context.Context, ref repoRef, upstreamURL string) (contactedUpstream bool, err error) {
 	key := ref.mirrorRelPath()
 	l := m.lockForKey(key)
 	l.Lock()
@@ -165,24 +172,24 @@ func (m *mirrorStore) EnsureSynced(ctx context.Context, ref repoRef, upstreamURL
 		last := m.lastSync[key]
 		m.mu.Unlock()
 		if !last.IsZero() && time.Since(last) < m.staleAfter {
-			return nil // fresh mirror — serve from disk
+			return false, nil // fresh mirror — serve from disk, no upstream contact
 		}
-		return m.fetch(ctx, path, key)
+		return true, m.fetch(ctx, path, key)
 	}
 
 	// Anything else at the path is not a mirror, whatever os.Stat says about it.
 	if _, err := os.Stat(path); err == nil {
 		if rmErr := os.RemoveAll(path); rmErr != nil {
-			return fmt.Errorf("git mirror: remove unusable mirror %s: %w", path, rmErr)
+			return false, fmt.Errorf("git mirror: remove unusable mirror %s: %w", path, rmErr)
 		}
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("git mirror: stat %s: %w", path, err)
+		return false, fmt.Errorf("git mirror: stat %s: %w", path, err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("git mirror: mkdirall %s: %w", filepath.Dir(path), err)
+		return false, fmt.Errorf("git mirror: mkdirall %s: %w", filepath.Dir(path), err)
 	}
-	return m.clone(ctx, upstreamURL, path, key)
+	return true, m.clone(ctx, upstreamURL, path, key)
 }
 
 // clone builds a complete bare mirror in a staging directory and moves it into

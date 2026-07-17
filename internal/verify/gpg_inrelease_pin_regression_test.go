@@ -174,7 +174,8 @@ func TestGPGVerifier_InReleasePinnedFile_DigestMismatch_Fail(t *testing.T) {
 
 // TestGPGVerifier_FileNotInInRelease_StaysAtTierChecksum verifies that after
 // InRelease is verified, files NOT listed in its SHA256 section (e.g., Release.gpg)
-// still pass through at TierChecksum — the existing behaviour is preserved.
+// are skipped at TierChecksum — the GPG chain says nothing about them, so the
+// verifier declines rather than claiming a pass it did not earn.
 func TestGPGVerifier_FileNotInInRelease_StaysAtTierChecksum(t *testing.T) {
 	key := newAptTestKey(t)
 	v, err := NewGPGVerifier(key.keyFile)
@@ -194,20 +195,21 @@ func TestGPGVerifier_FileNotInInRelease_StaysAtTierChecksum(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, artifact.StatusPass, res1.Status)
 
-	// Release.gpg is NOT listed in InRelease SHA256 → must stay TierChecksum PASS.
+	// Release.gpg is NOT listed in InRelease SHA256 → must stay TierChecksum SKIP.
 	res2, err := v.Verify(ctx, artifact.ArtifactRef{
 		Protocol: "apt", Name: "ubuntu", Version: "noble/Release.gpg", Mutable: true,
 	}, &artifact.Artifact{Path: "/dev/null", Digest: "sha256:abc"})
 	require.NoError(t, err)
-	assert.Equal(t, artifact.StatusPass, res2.Status,
-		"unlisted dists file must still pass through")
+	assert.Equal(t, artifact.StatusSkip, res2.Status,
+		"unlisted dists file must be skipped, not passed")
 	assert.Equal(t, artifact.TierChecksum, res2.Tier,
 		"dists file not in InRelease SHA256 must stay at TierChecksum")
 }
 
 // TestGPGVerifier_InReleaseNotYetSeen_DefaultCaseStaysAtTierChecksum verifies that
 // with a fresh verifier (no InRelease verified yet), ALL files in the default case
-// still return TierChecksum PASS — the existing pass-through is fully preserved.
+// are skipped at TierChecksum — with no signed root to check against, the verifier
+// has formed no opinion, and the pipeline is still not blocked.
 // This also confirms the existing TestGPGVerifier_OtherDistsFiles_PassThrough test
 // still holds after the fix.
 func TestGPGVerifier_InReleaseNotYetSeen_DefaultCaseStaysAtTierChecksum(t *testing.T) {
@@ -229,7 +231,7 @@ func TestGPGVerifier_InReleaseNotYetSeen_DefaultCaseStaysAtTierChecksum(t *testi
 				Protocol: "apt", Name: "ubuntu", Version: version, Mutable: true,
 			}, &artifact.Artifact{Path: "/dev/null", Digest: "sha256:abc"})
 			require.NoError(t, verErr)
-			assert.Equal(t, artifact.StatusPass, res.Status)
+			assert.Equal(t, artifact.StatusSkip, res.Status)
 			assert.Equal(t, artifact.TierChecksum, res.Tier,
 				"without prior InRelease verification, %q must stay at TierChecksum", version)
 		})

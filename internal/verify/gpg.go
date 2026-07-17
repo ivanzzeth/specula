@@ -39,7 +39,7 @@ import (
 //
 // # Self-gating
 //
-// Verify is a no-op StatusPass for any ref whose Protocol is not "apt": a single
+// Verify returns StatusSkip for any ref whose Protocol is not "apt": a single
 // global verification Chain may include this verifier without it acting on other
 // protocols.
 //
@@ -149,7 +149,7 @@ func (v *GPGVerifier) Tier() artifact.Tier { return artifact.TierSigned }
 
 // Verify walks the apt GPG signature chain for the quarantined artifact.
 //
-// Skipped (StatusPass at TierChecksum) for any non-apt ref. For apt refs:
+// Skipped (StatusSkip) for any non-apt ref. For apt refs:
 //   - Mutable dists/ path ending in "InRelease": verifies the PGP clear-signed
 //     message against the local keyring, then caches the SHA256 sums for
 //     subsequent Packages verifications.
@@ -157,12 +157,13 @@ func (v *GPGVerifier) Tier() artifact.Tier { return artifact.TierSigned }
 //     InRelease chain state, then caches .deb SHA256s for pool verification.
 //   - Immutable pool/ .deb: verifies the artifact's SHA256 against the Packages
 //     chain state, returning TierSigned on success.
-//   - Other dists/ files (Release, Release.gpg, Sources, ...): pass-through at
-//     TierChecksum (SHA256 handled by ChecksumVerifier if ref.Digest is set).
+//   - Other dists/ files (Release, Release.gpg, Sources, ...): skipped when the
+//     GPG chain has nothing to say about them (SHA256 handled by
+//     ChecksumVerifier if ref.Digest is set).
 func (v *GPGVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	if ref.Protocol != "apt" {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "gpg: skipped (not an apt artifact)",
 		}, nil
@@ -513,18 +514,22 @@ func (v *GPGVerifier) verifyPackages(ctx context.Context, ref artifact.ArtifactR
 //   - suite and relPath are derived from ref.Version the same way verifyPackages
 //     does: "noble/main/i18n/Translation-en" → suite="noble", relPath="main/i18n/Translation-en".
 //   - If InRelease has not yet been GPG-verified for this suite (suiteSHA256s
-//     has no entry), returns TierChecksum PASS — the pipeline is not blocked.
-//   - If InRelease was verified but the file is not listed, returns TierChecksum
-//     PASS (some dists files such as Release.gpg are never in SHA256).
+//     has no entry), returns StatusSkip — there is no signed statement to check
+//     the file against, so the chain has formed no opinion and the pipeline is
+//     not blocked.
+//   - If InRelease was verified but the file is not listed, returns StatusSkip
+//     (some dists files such as Release.gpg are never in SHA256, so they are not
+//     this verifier's business).
 //   - If listed and SHA256 matches, returns TierSigned PASS.
 //   - If listed but SHA256 mismatches, returns TierSigned FAIL (tamper detected).
 func (v *GPGVerifier) verifyInReleasePin(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	version := ref.Version
 	idx := strings.IndexByte(version, '/')
 	if idx < 0 {
-		// No suite component in the path — cannot derive a cache key.
+		// No suite component in the path — cannot derive a cache key, so the
+		// GPG chain cannot be consulted at all for this file.
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: fmt.Sprintf("gpg: dists file %q has no suite component — pass-through at TierChecksum", version),
 		}, nil
@@ -540,7 +545,7 @@ func (v *GPGVerifier) verifyInReleasePin(ctx context.Context, ref artifact.Artif
 		// pipeline. It cannot upgrade anything either — TierChecksum is what an
 		// unverifiable file already gets.
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: fmt.Sprintf("gpg: dists file %q not GPG-chain verifiable (pin store unavailable: %v)", version, err),
 		}, nil
@@ -549,7 +554,7 @@ func (v *GPGVerifier) verifyInReleasePin(ctx context.Context, ref artifact.Artif
 	if len(sums) == 0 {
 		// InRelease not yet GPG-verified for this suite — cannot chain-verify.
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: fmt.Sprintf("gpg: dists file %q not GPG-chain verifiable (InRelease not yet verified, suite=%q)", version, suite),
 		}, nil
@@ -557,9 +562,10 @@ func (v *GPGVerifier) verifyInReleasePin(ctx context.Context, ref artifact.Artif
 
 	expectedHex, listed := sums[relPath]
 	if !listed {
-		// File is not in the InRelease SHA256 section (e.g. Release.gpg).
+		// File is not in the InRelease SHA256 section (e.g. Release.gpg): the
+		// signed index says nothing about it, so it is not ours to judge.
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: fmt.Sprintf("gpg: dists file %q not listed in InRelease SHA256 (suite=%q) — pass-through at TierChecksum", version, suite),
 		}, nil

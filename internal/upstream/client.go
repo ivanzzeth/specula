@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/metrics"
 )
 
 const (
@@ -117,6 +118,20 @@ func (c *fallbackClient) noteFailure(name string, err error, transient bool) {
 	}
 }
 
+// syncBlocked republishes the auto-block gauge for one upstream.
+//
+// It is driven from the fetch path rather than from blockTracker because the
+// tracker is keyed by upstream name alone and has no idea which protocol it is
+// serving, whereas specula_upstream_blocked is labelled {protocol,upstream}.
+// ref.Protocol is in scope here and is authoritative.
+//
+// isBlocked is the right source: it is the same predicate the fetch loop obeys,
+// and it performs the lazy auto-unblock, so the gauge can never report a block
+// that the fetch path would no longer honour.
+func (c *fallbackClient) syncBlocked(protocol, name string) {
+	metrics.SetUpstreamBlocked(protocol, name, c.blocker.isBlocked(name))
+}
+
 // Fetch tries upstreams in ascending Priority order and returns the first
 // successful streaming response.
 //
@@ -144,18 +159,22 @@ func (c *fallbackClient) Fetch(
 	)
 	for _, up := range sorted {
 		if c.blocker.isBlocked(up.Name) {
+			c.syncBlocked(ref.Protocol, up.Name)
 			continue
 		}
 		tried++
 		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, nil, ropts)
 		if err == nil {
 			c.noteSuccess(up.Name, latency)
+			metrics.RecordUpstreamLatency(ref.Protocol, up.Name, latency.Seconds())
+			c.syncBlocked(ref.Protocol, up.Name)
 			return body, meta, nil
 		}
 		if isContextError(err) {
 			return nil, artifact.UpstreamMeta{}, err
 		}
 		c.noteFailure(up.Name, err, transient)
+		c.syncBlocked(ref.Protocol, up.Name)
 		lastErr = err
 	}
 	if tried == 0 {
@@ -186,12 +205,18 @@ func (c *fallbackClient) Revalidate(
 	)
 	for _, up := range sorted {
 		if c.blocker.isBlocked(up.Name) {
+			c.syncBlocked(ref.Protocol, up.Name)
 			continue
 		}
 		tried++
 		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, &prev, ropts)
 		if err == nil {
 			c.noteSuccess(up.Name, latency)
+			// A 304 is observed here too: it is a real upstream round trip and
+			// is precisely the traffic a cache "hit" can hide (see
+			// metrics/cacheoutcome.go), so it must be visible in the histogram.
+			metrics.RecordUpstreamLatency(ref.Protocol, up.Name, latency.Seconds())
+			c.syncBlocked(ref.Protocol, up.Name)
 			if meta.StatusCode == http.StatusNotModified {
 				return nil, meta, true, nil
 			}
@@ -201,6 +226,7 @@ func (c *fallbackClient) Revalidate(
 			return nil, artifact.UpstreamMeta{}, false, err
 		}
 		c.noteFailure(up.Name, err, transient)
+		c.syncBlocked(ref.Protocol, up.Name)
 		lastErr = err
 	}
 	if tried == 0 {

@@ -71,7 +71,7 @@ type SignatureFetcher interface {
 //
 // # Self-gating
 //
-// Verify is a no-op StatusPass for any ref whose Protocol is not "oci", and for
+// Verify returns StatusSkip for any ref whose Protocol is not "oci", and for
 // mutable/undigested refs (cosign signs the image manifest by digest).
 //
 // # Injection
@@ -124,7 +124,7 @@ func (v *CosignVerifier) Tier() artifact.Tier { return artifact.TierSigned }
 // Verify checks the OCI image's attached cosign signature(s) against the
 // configured keys.
 //
-//   - Skipped (StatusPass, TierChecksum) for non-oci or mutable/undigested refs.
+//   - Skipped (StatusSkip) for non-oci or mutable/undigested refs.
 //   - Fail-closed (error) when no SignatureFetcher is wired.
 //   - StatusFail when the image is unsigned or no signature verifies against any
 //     configured key.
@@ -133,7 +133,7 @@ func (v *CosignVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, a
 	// Self-gate: only immutable, digest-resolved OCI artifacts.
 	if ref.Protocol != protocolOCI || ref.Mutable || art.Digest == "" {
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "cosign: skipped (not a resolved oci image)",
 		}, nil

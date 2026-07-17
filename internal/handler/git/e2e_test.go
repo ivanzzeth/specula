@@ -314,8 +314,9 @@ func TestRealClient_ForcePushRaisesNonFastForwardAlert(t *testing.T) {
 	gitCmd(t, f.work, "push", "--quiet", "--force", f.bare, "master")
 
 	h := f.proxy.Config.Handler.(*Handler)
-	require.NoError(t, h.mirror.EnsureSynced(context.Background(), ref,
-		ref.upstreamURLWithScheme("http")))
+	_, syncErr := h.mirror.EnsureSynced(context.Background(), ref,
+		ref.upstreamURLWithScheme("http"))
+	require.NoError(t, syncErr)
 
 	alerts := updateTOFUPins(context.Background(), f.meta, f.mirrorDir, ref, nil)
 

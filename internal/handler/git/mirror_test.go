@@ -96,7 +96,8 @@ func TestEnsureSynced_DoesNotMirrorForgePullRefs(t *testing.T) {
 	root := t.TempDir()
 	m := newMirrorStore(root, time.Minute, time.Minute)
 
-	require.NoError(t, m.EnsureSynced(context.Background(), testRef(), up))
+	_, err := m.EnsureSynced(context.Background(), testRef(), up)
+	require.NoError(t, err)
 
 	refs := mirrorRefs(t, m.mirrorPath(testRef()))
 
@@ -128,7 +129,8 @@ func TestEnsureSynced_FetchPrunesDeletedBranches(t *testing.T) {
 	m := newMirrorStore(root, 0, time.Minute) // staleAfter=0 → always refetch
 	ref := testRef()
 
-	require.NoError(t, m.EnsureSynced(context.Background(), ref, up))
+	_, err := m.EnsureSynced(context.Background(), ref, up)
+	require.NoError(t, err)
 	require.Contains(t, mirrorRefs(t, m.mirrorPath(ref)), "refs/heads/test")
 
 	// Upstream: delete a branch, add a new one and a new tag.
@@ -136,7 +138,8 @@ func TestEnsureSynced_FetchPrunesDeletedBranches(t *testing.T) {
 	gitCmd(t, up, "branch", "feature")
 	gitCmd(t, up, "tag", "v2.0.0")
 
-	require.NoError(t, m.EnsureSynced(context.Background(), ref, up))
+	_, err = m.EnsureSynced(context.Background(), ref, up)
+	require.NoError(t, err)
 
 	refs := mirrorRefs(t, m.mirrorPath(ref))
 	assert.NotContains(t, refs, "refs/heads/test", "deleted branch must be pruned")
@@ -179,7 +182,8 @@ func TestEnsureSynced_RecoversFromKilledCloneCorpse(t *testing.T) {
 	makeCorpse(t, m.mirrorPath(ref))
 	require.Empty(t, mirrorRefs(t, m.mirrorPath(ref)), "corpse must start with no refs")
 
-	require.NoError(t, m.EnsureSynced(context.Background(), ref, up))
+	_, err := m.EnsureSynced(context.Background(), ref, up)
+	require.NoError(t, err)
 
 	refs := mirrorRefs(t, m.mirrorPath(ref))
 	assert.Contains(t, refs, "refs/heads/master",
@@ -206,7 +210,8 @@ func TestEnsureSynced_SurvivesRequestCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // the client gave up before we got to the clone
 
-	require.NoError(t, m.EnsureSynced(ctx, ref, up),
+	_, err := m.EnsureSynced(ctx, ref, up)
+	require.NoError(t, err,
 		"a client hang-up must not abort a clone into shared cache state")
 
 	assert.Contains(t, mirrorRefs(t, m.mirrorPath(ref)), "refs/heads/master",
@@ -221,7 +226,7 @@ func TestEnsureSynced_FailedCloneLeavesNoDirectory(t *testing.T) {
 	m := newMirrorStore(root, time.Minute, 30*time.Second)
 	ref := testRef()
 
-	err := m.EnsureSynced(context.Background(), ref,
+	_, err := m.EnsureSynced(context.Background(), ref,
 		filepath.Join(t.TempDir(), "no-such-upstream-repo.git"))
 	require.Error(t, err, "cloning a nonexistent upstream must fail")
 
@@ -230,7 +235,8 @@ func TestEnsureSynced_FailedCloneLeavesNoDirectory(t *testing.T) {
 
 	// And the failure must not be sticky: a later good sync recovers.
 	up := newUpstreamRepo(t, 1)
-	require.NoError(t, m.EnsureSynced(context.Background(), ref, up))
+	_, err = m.EnsureSynced(context.Background(), ref, up)
+	require.NoError(t, err)
 	assert.Contains(t, mirrorRefs(t, m.mirrorPath(ref)), "refs/heads/master")
 }
 
@@ -251,7 +257,7 @@ func TestEnsureSynced_ConcurrentColdClonesAreAtomic(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			errs[i] = m.EnsureSynced(context.Background(), ref, up)
+			_, errs[i] = m.EnsureSynced(context.Background(), ref, up)
 		}(i)
 	}
 

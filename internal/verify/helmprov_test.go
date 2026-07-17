@@ -205,7 +205,7 @@ func TestHelmProvVerifier_SelfGate(t *testing.T) {
 			art := makeArt("sha256:abc")
 			res, err := v.Verify(ctx, tc.ref, art)
 			require.NoError(t, err, "self-gate must not error")
-			assert.Equal(t, artifact.StatusPass, res.Status, "self-gate must pass through")
+			assert.Equal(t, artifact.StatusSkip, res.Status, "self-gate must skip, not pass")
 			assert.Equal(t, artifact.TierChecksum, res.Tier, "self-gate must not attest TierSigned")
 			assert.Contains(t, res.Message, "skipped")
 		})

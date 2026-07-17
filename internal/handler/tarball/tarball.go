@@ -65,6 +65,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
 )
@@ -291,6 +292,8 @@ func (h *Handler) serveTarball(w http.ResponseWriter, r *http.Request, host, key
 		return
 	}
 	if entry != nil {
+		// CAS hit: the body comes from cache, no upstream body transfer.
+		metrics.MarkHit(ctx)
 		h.serveFromCache(w, r, ref, entry)
 		return
 	}
@@ -319,6 +322,8 @@ func (h *Handler) serveTarball(w http.ResponseWriter, r *http.Request, host, key
 		return
 	}
 
+	// Cache miss: the body was fetched from the upstream URL and promoted to CAS.
+	metrics.MarkMiss(ctx)
 	h.serveFromCache(w, r, ref, entry)
 }
 

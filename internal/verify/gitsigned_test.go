@@ -96,7 +96,7 @@ func TestGitSignedVerifier_NonGitProtocol_Skipped(t *testing.T) {
 
 			res, err := v.Verify(ctx, ref, art)
 			require.NoError(t, err, "self-gate for %s must not error", proto)
-			assert.Equal(t, artifact.StatusPass, res.Status, "non-git protocol must pass through")
+			assert.Equal(t, artifact.StatusSkip, res.Status, "non-git protocol must be skipped, not passed")
 			assert.Equal(t, artifact.TierChecksum, res.Tier, "non-git must not claim TierSigned")
 			assert.Contains(t, res.Message, "skipped")
 		})

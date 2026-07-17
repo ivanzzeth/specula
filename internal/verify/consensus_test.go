@@ -109,7 +109,7 @@ func TestConsensusVerifier_MutableRef_Skipped(t *testing.T) {
 	res, err := v.Verify(context.Background(), mutableRef(), artWith(goodDigest))
 
 	require.NoError(t, err)
-	assert.Equal(t, artifact.StatusPass, res.Status)
+	assert.Equal(t, artifact.StatusSkip, res.Status)
 	assert.Equal(t, artifact.TierChecksum, res.Tier, "must self-gate at TierChecksum, not TierConsensus")
 	assert.Contains(t, res.Message, "skipped")
 }
@@ -119,7 +119,7 @@ func TestConsensusVerifier_EmptyArtDigest_Skipped(t *testing.T) {
 	res, err := v.Verify(context.Background(), immutableRef(goodDigest), artWith(""))
 
 	require.NoError(t, err)
-	assert.Equal(t, artifact.StatusPass, res.Status)
+	assert.Equal(t, artifact.StatusSkip, res.Status)
 	assert.Equal(t, artifact.TierChecksum, res.Tier)
 	assert.Contains(t, res.Message, "skipped")
 }

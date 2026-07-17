@@ -52,6 +52,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
 	"github.com/ivanzzeth/specula/internal/verify"
@@ -389,13 +390,30 @@ func (h *Handler) serveMirror(w http.ResponseWriter, r *http.Request, ref repoRe
 	}
 
 	// 2. Sync the mirror.
+	//
+	// This is git's cache-outcome decision: unlike the CAS-backed handlers, git's
+	// byte cache is the bare mirror on disk, so the honest hit/miss axis is
+	// whether the packfile git http-backend is about to build came from a mirror
+	// that was already here (no upstream contact — a hit) or from one this
+	// request had to clone/fetch (a miss). Marked from r.Context(), not ctx: ctx
+	// is the timeout-bounded derivative, and the metrics scope rides on both, but
+	// the request context is the one the middleware installed.
 	upURL := ref.upstreamURLWithScheme(h.upstreamScheme)
-	if err := h.mirror.EnsureSynced(ctx, ref, upURL); err != nil {
+	contactedUpstream, err := h.mirror.EnsureSynced(ctx, ref, upURL)
+	if err != nil {
+		// The passthrough below reverse-proxies the body from the upstream, and
+		// the sync that just failed had already reached for it: a miss either way.
+		metrics.MarkMiss(r.Context())
 		h.log.Warn("git: mirror sync failed",
 			slog.String("repo", ref.mirrorRelPath()),
 			slog.Any("err", err))
 		h.passthrough(w, r, ref, "sync-fail")
 		return
+	}
+	if contactedUpstream {
+		metrics.MarkMiss(r.Context())
+	} else {
+		metrics.MarkHit(r.Context())
 	}
 
 	// 3. Update TOFU ref→SHA pins (best-effort; non-fatal on error).
