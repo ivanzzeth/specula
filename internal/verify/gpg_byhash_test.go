@@ -33,8 +33,16 @@ import (
 	"github.com/ivanzzeth/specula/internal/artifact"
 )
 
-// aptByHashFixture builds a GPG-verified InRelease pinning a Packages.xz index
-// at its canonical path, and returns the verifier plus the index's bytes/digest.
+// aptByHashFixture builds a GPG-verified InRelease pinning an UNCOMPRESSED
+// Packages index at its canonical path, and returns the verifier plus the
+// index's bytes/digest.
+//
+// The compression axis is deliberately held constant here so these tests isolate
+// by-hash RESOLUTION. Real mirrors serve .xz, and that combination — by-hash +
+// xz, which is what every real `apt-get update` actually drives — is covered by
+// TestGPGVerifier_XzPackages_ChainVerifiesAndPinsPool in gpg_decompress_test.go.
+// (This comment previously claimed the fixture pinned "Packages.xz"; it never
+// did, and no test exercised .xz at all until that one was added.)
 type aptByHashFixture struct {
 	v            *GPGVerifier
 	indexPath    string

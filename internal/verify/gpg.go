@@ -609,6 +609,16 @@ func loadKeyring(path string) (openpgp.EntityList, error) {
 // Unrecognised extensions are returned unchanged, which keeps an uncompressed
 // index working and lets the RFC2822 parser produce the error for genuine junk.
 func decompressIndex(relPath string, data []byte) ([]byte, error) {
+	return decompressIndexLimit(relPath, data, maxIndexPlaintextBytes)
+}
+
+// decompressIndexLimit is decompressIndex with an injectable plaintext cap.
+// The cap is a parameter rather than a bare reference to maxIndexPlaintextBytes
+// so the bound can be PROVEN by a test instead of asserted by a comment:
+// exercising the real 512 MB constant would mean allocating 512 MB per test.
+// TestDecompressIndex_LimitIs512MB pins the production value separately, so the
+// constant and the enforcement are both covered.
+func decompressIndexLimit(relPath string, data []byte, limit int64) ([]byte, error) {
 	var r io.Reader
 	switch {
 	case strings.HasSuffix(relPath, ".gz"):
@@ -633,13 +643,19 @@ func decompressIndex(relPath string, data []byte) ([]byte, error) {
 	// Bounded: a decompressed Packages index is tens of MB (noble/main is ~50 MB);
 	// the cap stops a decompression bomb from an untrusted mirror turning into an
 	// OOM. The bytes are digest-verified but the mirror still chose their content.
-	plain, err := io.ReadAll(io.LimitReader(r, maxIndexPlaintextBytes))
+	//
+	// Read limit+1: reading exactly `limit` cannot distinguish a stream that ends
+	// there from one that was truncated by the LimitReader, so the extra byte is
+	// what makes "exceeds" mean exceeds. The former code read `limit` and rejected
+	// at `len >= limit`, i.e. it refused an index of exactly the cap while its
+	// error said the index had exceeded it.
+	plain, err := io.ReadAll(io.LimitReader(r, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(plain)) >= maxIndexPlaintextBytes {
+	if int64(len(plain)) > limit {
 		return nil, fmt.Errorf("decompressed index exceeds %d bytes — refusing (possible decompression bomb)",
-			maxIndexPlaintextBytes)
+			limit)
 	}
 	return plain, nil
 }
