@@ -490,22 +490,183 @@ class PyPIOracle:
 # notice Specula recording either more OR less than it earned.
 
 class HelmOracle:
-    def __init__(self, base: str):
+    """Grades a helm chart's deserved tier.
+
+    Two modes, chosen by whether the operator gave us a keyring:
+
+      * NO keyring (the CN-mirror reality, and the original behaviour): probe the
+        upstream for a .prov. If none exists, `tofu` is the honest CEILING and
+        claiming more is a lie. This proves the ABSENCE of a stronger anchor and
+        is what the standing trust-oracle gate exercises (mirror.azure.cn serves
+        no .prov at all).
+
+      * WITH a keyring AND a .prov (the lab where we generated a real
+        helm-signed chart): INDEPENDENTLY verify the .prov with gpg(1) against the
+        out-of-band keyring — never our openpgp code — and confirm the sha256 the
+        signed .prov commits to equals the sha256 of the chart bytes SPECULA
+        STORED. Only then is `signed` deserved. This grades the bytes on disk, not
+        a fresh copy, and the trust anchor (the keyring) is out-of-band.
+    """
+
+    def __init__(self, base: str, keyring: str = "", prov_dir: str = ""):
         self.base = base.rstrip("/")
+        self.keyring = keyring
+        # prov_dir: a local directory that may hold <chart>.tgz.prov (the lab's
+        # upstream). When set we read the .prov from there instead of the network,
+        # so the oracle works fully offline against a local registry/repo.
+        self.prov_dir = prov_dir
+
+    def _prov_bytes(self, chart_file: str) -> tuple[bytes | None, str]:
+        if self.prov_dir:
+            p = os.path.join(self.prov_dir, chart_file + ".prov")
+            if os.path.exists(p):
+                return open(p, "rb").read(), p
+            return None, p
+        url = f"{self.base}/{chart_file}.prov"
+        return http_get(url), url
+
+    def _gpg_verify_prov(self, prov_bytes: bytes) -> tuple[bool, str, str]:
+        """gpg --decrypt the clear-signed .prov against the out-of-band keyring.
+        Returns (ok, verified_plaintext, signer). Uses --decrypt so we only ever
+        parse plaintext gpg VOUCHES FOR (same discipline as AptOracle)."""
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "chart.prov")
+            out = os.path.join(td, "plain")
+            open(src, "wb").write(prov_bytes)
+            proc = subprocess.run(
+                ["gpg", "--batch", "--no-default-keyring", "--keyring", self.keyring,
+                 "--status-fd", "1", "--output", out, "--decrypt", src],
+                capture_output=True, text=True,
+            )
+            status = proc.stdout
+            good = "[GNUPG:] GOODSIG" in status and "[GNUPG:] VALIDSIG" in status
+            bad = "[GNUPG:] BADSIG" in status or "[GNUPG:] ERRSIG" in status
+            if proc.returncode != 0 or not good or bad:
+                return False, "", ""
+            signer = ""
+            m = re.search(r"\[GNUPG:\] GOODSIG \w+ (.+)", status)
+            if m:
+                signer = m.group(1).strip()
+            with open(out, "r", encoding="utf-8", errors="replace") as f:
+                return True, f.read(), signer
+
+    @staticmethod
+    def _digest_from_prov(plaintext: str, chart_file: str) -> Optional[str]:
+        """Extract the sha256 the .prov `files:` block commits to for chart_file.
+        Parsed ONLY from gpg-verified plaintext (never the raw signed file)."""
+        in_files = False
+        for raw in plaintext.splitlines():
+            line = raw.rstrip("\r")
+            if line.strip() == "files:":
+                in_files = True
+                continue
+            if not in_files:
+                continue
+            if line and not line[0].isspace():
+                break
+            entry = line.strip()
+            if ": " not in entry:
+                continue
+            name, digest = entry.split(": ", 1)
+            if name.strip() == chart_file and digest.strip().startswith("sha256:"):
+                return digest.strip().split(":", 1)[1]
+        return None
 
     def tier_for(self, chart_file: str, cas_file: str) -> tuple[str, list, str]:
-        prov_url = f"{self.base}/{chart_file}.prov"
-        code = http_status(prov_url)
-        if code == 200:
-            return "unknown", [
-                f"{prov_url} EXISTS (HTTP 200) — a .prov anchor is available",
-                "oracle cannot grade it: no helm keyring configured for this repo",
-            ], "helm .prov probe (UNGRADED — see report)"
-        return "tofu", [
-            f"{prov_url} -> HTTP {code}: upstream publishes NO .prov signature",
-            "no keyring anchor can exist for this chart => tofu is the honest ceiling",
-            f"stored bytes: {sha256_file(cas_file)[:16]}…",
-        ], "helm .prov probe (absent => tofu is the ceiling)"
+        # Absence probe path (no keyring configured): tofu is the ceiling.
+        if not self.keyring:
+            prov_url = f"{self.base}/{chart_file}.prov"
+            code = http_status(prov_url)
+            if code == 200:
+                return "unknown", [
+                    f"{prov_url} EXISTS (HTTP 200) — a .prov anchor is available",
+                    "oracle cannot grade it: no helm keyring configured for this repo",
+                ], "helm .prov probe (UNGRADED — see report)"
+            return "tofu", [
+                f"{prov_url} -> HTTP {code}: upstream publishes NO .prov signature",
+                "no keyring anchor can exist for this chart => tofu is the honest ceiling",
+                f"stored bytes: {sha256_file(cas_file)[:16]}…",
+            ], "helm .prov probe (absent => tofu is the ceiling)"
+
+        # Keyring configured: independently grade the .prov signature.
+        prov_bytes, prov_src = self._prov_bytes(chart_file)
+        if not prov_bytes:
+            return "tofu", [
+                f"no .prov available at {prov_src} — nothing to verify",
+                "absent .prov => tofu is the honest ceiling",
+            ], "helm .prov gpg(1) (absent => tofu)"
+        ok, plain, signer = self._gpg_verify_prov(prov_bytes)
+        if not ok:
+            return "tofu", [
+                f".prov at {prov_src} did NOT verify under {self.keyring}",
+                "gpg(1) rejected the signature => not signed; tofu is the ceiling",
+            ], "helm .prov gpg(1) (signature REJECTED)"
+        prov_digest = self._digest_from_prov(plain, chart_file)
+        actual = sha256_file(cas_file)
+        if prov_digest is None:
+            return "tofu", [
+                "gpg(1) accepted the .prov but it commits to no sha256 for this chart",
+            ], "helm .prov gpg(1) (no digest binding)"
+        if prov_digest != actual:
+            return "checksum", [
+                f"gpg-verified .prov commits to sha256 {prov_digest[:16]}…",
+                f"but the chart SPECULA STORED hashes to {actual[:16]}… — BINDING BROKEN",
+            ], "helm .prov gpg(1) (digest mismatch)"
+        return "signed", [
+            f"gpg(1) GOODSIG+VALIDSIG from {signer}",
+            f"keyring={self.keyring} (out-of-band)",
+            f"signed .prov digest {prov_digest[:16]}… == stored chart {actual[:16]}…",
+        ], "helm .prov gpg(1) clear-signature + digest binding"
+
+
+class CosignOracle:
+    """Independently grades an OCI artifact's deserved tier using the REAL cosign
+    CLI — never Specula's verify code.
+
+    For each oci row Specula recorded, we run `cosign verify --key <pub>
+    --insecure-ignore-tlog` against the UPSTREAM registry at the digest Specula
+    stored. cosign fetches the sha256-<hex>.sig companion tag and checks the
+    signature against the out-of-band public key:
+
+      * verifies      => the artifact really is signed => deserved tier `signed`.
+      * does not      => it is NOT cosign-signed (a config/layer blob, or an
+                         unsigned manifest) => the honest ceiling under an
+                         [signed, tofu] policy is `tofu` (first-fetch pin).
+
+    This is a TWO-SIDED check: it catches Specula recording `signed` for something
+    cosign cannot verify (over-claim) AND recording less than `signed` for the
+    manifest cosign CAN verify (under-claim). The public key is the out-of-band
+    anchor a lying mirror or a lying Specula cannot forge.
+    """
+
+    def __init__(self, cosign_bin: str, registry: str, pubkey: str,
+                 unsigned_ceiling: str = "tofu"):
+        self.cosign = cosign_bin
+        self.registry = registry.rstrip("/")
+        self.pubkey = pubkey
+        self.unsigned_ceiling = unsigned_ceiling
+
+    def tier_for(self, name: str, digest: str) -> tuple[str, list, str]:
+        ref = f"{self.registry}/{name}@{digest}"
+        proc = subprocess.run(
+            [self.cosign, "verify", "--key", self.pubkey,
+             "--insecure-ignore-tlog=true", "--allow-http-registry=true",
+             "--allow-insecure-registry=true", ref],
+            capture_output=True, text=True,
+        )
+        if proc.returncode == 0:
+            return "signed", [
+                f"cosign verify --key {os.path.basename(self.pubkey)} ACCEPTED {ref}",
+                "keyed verification, transparency log ignored (CN-offline mode)",
+                "public key is the out-of-band anchor a mirror cannot forge",
+            ], "cosign verify --key (real cosign CLI)"
+        tail = (proc.stderr or proc.stdout).strip().splitlines()
+        last = tail[-1] if tail else "no output"
+        return self.unsigned_ceiling, [
+            f"cosign verify --key REJECTED {ref} (exit {proc.returncode})",
+            f"  cosign: {last[:100]}",
+            f"not cosign-signed => {self.unsigned_ceiling} is the honest ceiling",
+        ], "cosign verify --key (real cosign CLI; not signed)"
 
 
 # ───────────────────────────────── driver ─────────────────────────────────────
@@ -522,6 +683,21 @@ def main() -> int:
                     help="name=base_url (repeatable)")
     ap.add_argument("--pypi-quorum", type=int, default=2)
     ap.add_argument("--helm-base", default="https://mirror.azure.cn/kubernetes/charts")
+    # Optional signed-tier grading (lab harness). When unset the oracle behaves
+    # exactly as before: oci rows are UNGRADED and helm uses the .prov absence
+    # probe. This keeps the standing CN-mirror gate backward compatible.
+    ap.add_argument("--helm-keyring", default="",
+                    help="out-of-band GPG keyring to grade helm .prov signatures")
+    ap.add_argument("--helm-prov-dir", default="",
+                    help="local dir holding <chart>.tgz.prov (lab upstream)")
+    ap.add_argument("--cosign-bin", default="",
+                    help="path to the real cosign CLI for grading oci `signed`")
+    ap.add_argument("--oci-registry", default="",
+                    help="upstream OCI registry host that holds the signed images")
+    ap.add_argument("--cosign-key", default="",
+                    help="out-of-band cosign PUBLIC key (PEM) to grade oci `signed`")
+    ap.add_argument("--oci-unsigned-ceiling", default="tofu",
+                    help="deserved tier for a non-cosign-signed oci artifact (matches config)")
     ap.add_argument("--out", required=True, help="where to write the JSON verdict table")
     args = ap.parse_args()
 
@@ -548,7 +724,11 @@ def main() -> int:
             n, u = spec.split("=", 1)
             mirrors.append((n, u))
     pypi = PyPIOracle(mirrors, args.pypi_quorum)
-    helm = HelmOracle(args.helm_base)
+    helm = HelmOracle(args.helm_base, keyring=args.helm_keyring, prov_dir=args.helm_prov_dir)
+    cosign = None
+    if args.cosign_bin and args.oci_registry and args.cosign_key:
+        cosign = CosignOracle(args.cosign_bin, args.oci_registry, args.cosign_key,
+                              unsigned_ceiling=args.oci_unsigned_ceiling)
 
     # Bootstrap the apt chain: verify InRelease first so its pins are available to
     # every other apt row. Order matters — the chain is a chain.
@@ -591,6 +771,15 @@ def main() -> int:
                 t, ev, method = pypi.tier_for(project, os.path.basename(version), p)
         elif protocol == "helm":
             t, ev, method = helm.tier_for(os.path.basename(version), p)
+        elif protocol == "oci":
+            if cosign is None:
+                ungraded.append(Verdict(protocol, artifact_id, claimed, "n/a", True,
+                                        "no cosign key/registry configured",
+                                        note="oci NOT graded (no --cosign-key/--oci-registry)"))
+                continue
+            # The oci digest is the CAS key; name is the repository. cosign checks
+            # the signature attached to that digest on the upstream registry.
+            t, ev, method = cosign.tier_for(name, digest)
         else:
             ungraded.append(Verdict(protocol, artifact_id, claimed, "n/a", True,
                                     "no oracle implemented",
@@ -613,7 +802,10 @@ def main() -> int:
             "apt": "gpg(1) + /usr/share/keyrings/ubuntu-archive-keyring.gpg",
             "gomod": f"go toolchain sumdb verification vs {args.go_sumdb}",
             "pypi": f"independent PEP 503 re-fetch, quorum={args.pypi_quorum}",
-            "helm": "upstream .prov probe (absence of anchor)",
+            "helm": ("gpg(1) .prov clear-signature + digest binding"
+                     if args.helm_keyring else "upstream .prov probe (absence of anchor)"),
+            "oci": ("cosign verify --key (real cosign CLI)"
+                    if cosign is not None else "UNGRADED (no cosign key/registry)"),
         },
         "graded": len(verdicts),
         "agree": len(verdicts) - len(disagreements),

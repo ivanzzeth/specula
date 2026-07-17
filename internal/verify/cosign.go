@@ -6,6 +6,7 @@ import (
 	"crypto"
 	"encoding/base64"
 	"fmt"
+	"strings"
 
 	"github.com/sigstore/sigstore/pkg/signature"
 
@@ -14,6 +15,29 @@ import (
 
 // protocolOCI is the ArtifactRef.Protocol value for OCI images.
 const protocolOCI = "oci"
+
+// ociManifestMediaTypes is the set of media types cosign actually signs: an
+// image manifest or a manifest list / image index. cosign signs the manifest by
+// digest — NEVER the config or layer blobs beneath it — so only artifacts with
+// one of these upstream-reported content types are eligible for cosign
+// verification. Everything else (layers, config, octet-stream blobs) is skipped.
+var ociManifestMediaTypes = map[string]struct{}{
+	"application/vnd.oci.image.manifest.v1+json":                {},
+	"application/vnd.docker.distribution.manifest.v2+json":      {},
+	"application/vnd.oci.image.index.v1+json":                   {},
+	"application/vnd.docker.distribution.manifest.list.v2+json": {},
+}
+
+// isOCIManifestMediaType reports whether ct (a Content-Type value, possibly with
+// parameters like "; charset=utf-8") is an OCI/docker image manifest or index.
+func isOCIManifestMediaType(ct string) bool {
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	ct = strings.TrimSpace(ct)
+	_, ok := ociManifestMediaTypes[ct]
+	return ok
+}
 
 // CosignConfig is the runtime configuration for keyed cosign verification with
 // the transparency log DISABLED (DESIGN-REVIEW §1.1 — the CN-offline cosign
@@ -136,6 +160,24 @@ func (v *CosignVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, a
 			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: "cosign: skipped (not a resolved oci image)",
+		}, nil
+	}
+
+	// Manifest gate: cosign signs the image MANIFEST by digest, not its config
+	// or layer blobs. In the pull-through path every blob arrives here as its own
+	// immutable, digest-resolved oci artifact; without this gate cosign would
+	// demand a `.sig` companion tag for each layer digest, find none, and
+	// fail-close the whole pull on the first layer — making the `signed` tier
+	// unusable for any real multi-blob image. Restrict to manifest/index media
+	// types (registries serve blobs as application/octet-stream). An EMPTY
+	// content type is treated as "run": real registries always label blob
+	// responses, so an empty type never denotes a layer in production, and unit
+	// tests that omit it still exercise the verification core.
+	if ct := art.Meta.ContentType; ct != "" && !isOCIManifestMediaType(ct) {
+		return artifact.Result{
+			Status:  artifact.StatusSkip,
+			Tier:    artifact.TierChecksum,
+			Message: fmt.Sprintf("cosign: skipped (not an image manifest: content-type %q)", ct),
 		}, nil
 	}
 

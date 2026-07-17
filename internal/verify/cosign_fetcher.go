@@ -2,8 +2,10 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 )
@@ -95,8 +98,17 @@ func (f *OCISignatureFetcher) FetchSignatures(ctx context.Context, ref artifact.
 		opts := append([]remote.Option{remote.WithContext(ctx)}, f.remoteOpts...)
 		img, err := remote.Image(tagRef, opts...)
 		if err != nil {
-			// Most commonly a 404: no signature on this registry. Remember the
-			// error but keep trying the other registries.
+			// A 404 (MANIFEST_UNKNOWN / NAME_UNKNOWN) is a CLEAN NEGATIVE: this
+			// registry simply has no signature companion tag for the digest —
+			// i.e. "unsigned here", not a transport failure. It must NOT be
+			// remembered as lastErr, or an image that is genuinely unsigned on
+			// every mirror surfaces as a registry-unreachable error instead of
+			// the honest "no signature attached" (see the empty,nil contract
+			// below and the docstring). Only NON-404 errors are real transport
+			// failures worth surfacing.
+			if isNotFound(err) {
+				continue
+			}
 			lastErr = err
 			continue
 		}
@@ -111,11 +123,32 @@ func (f *OCISignatureFetcher) FetchSignatures(ctx context.Context, ref artifact.
 	}
 	// No registry produced signatures. Treat "not found everywhere" as unsigned
 	// (empty, nil) so the verifier reports the honest "no signature" failure;
-	// surface a transport error only when we never got a clean negative.
+	// surface a transport error only when we never got a clean negative (i.e. at
+	// least one registry failed for a reason OTHER than a 404).
 	if lastErr != nil {
 		return nil, lastErr
 	}
 	return nil, nil
+}
+
+// isNotFound reports whether err is a registry "not found" response — an HTTP
+// 404 or the OCI MANIFEST_UNKNOWN / NAME_UNKNOWN error codes. Such a response
+// means the signature companion tag does not exist (the image is unsigned on
+// this registry), which is a clean negative rather than a transport failure.
+func isNotFound(err error) bool {
+	var terr *transport.Error
+	if !errors.As(err, &terr) {
+		return false
+	}
+	if terr.StatusCode == http.StatusNotFound {
+		return true
+	}
+	for _, e := range terr.Errors {
+		if e.Code == transport.ManifestUnknownErrorCode || e.Code == transport.NameUnknownErrorCode {
+			return true
+		}
+	}
+	return false
 }
 
 // signaturesFromImage extracts the cosign signatures from a resolved signature
