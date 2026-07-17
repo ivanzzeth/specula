@@ -1096,8 +1096,15 @@ func (p *protocolScopedVerifier) Tier() artifact.Tier { return p.inner.Tier() }
 
 func (p *protocolScopedVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	if ref.Protocol != p.protocol {
+		// StatusSkip, not StatusPass: this verifier did not run. Reporting a
+		// pass here would manufacture presence in specula_verification_total —
+		// consensus configured for pypi alone would be counted as having run
+		// and passed on every apt, gomod and helm artifact Specula ever served,
+		// in the very metric PRD §7 offers the operator as their independent
+		// check on our trust claims. verify.go's contract: absence means
+		// "did not run".
 		return artifact.Result{
-			Status:  artifact.StatusPass,
+			Status:  artifact.StatusSkip,
 			Tier:    artifact.TierChecksum,
 			Message: fmt.Sprintf("%s: skipped (protocol %q out of scope)", p.inner.Name(), ref.Protocol),
 		}, nil
