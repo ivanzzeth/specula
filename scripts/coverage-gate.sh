@@ -119,7 +119,22 @@ awk -v module="$MODULE" '
 ' "$PROFILE" | sort > "$TMP/cov.txt"
 
 # Authoritative package list from the toolchain, so zero-test packages cannot hide.
-go list ./... 2>/dev/null | sed "s|^$MODULE/||; s|^$MODULE\$|.|" | sort > "$TMP/pkgs.txt"
+#
+# node_modules is filtered out, and this is NOT an exclusion in the EXCLUDE_PKGS sense —
+# it is a correction to the DERIVATION of the list. `go list ./...` does not skip
+# node_modules, so once anyone runs `make ui` (or `make build`, which depends on it) an
+# npm install drops third-party Go source into web/node_modules — today
+# web/node_modules/flatted/golang/pkg/flatted, a Go port shipped inside a JS package. That
+# directory is gitignored and untracked: it is not Specula source, no Specula test will
+# ever cover it, and its presence depends on whether npm has run on the machine. Gating it
+# makes the gate fail for a non-problem and, worse, makes the result depend on build order.
+#
+# The anti-gaming property above is preserved in full: it exists so that a SPECULA package
+# with zero test files cannot hide from the gate. Vendored JS dependencies were never in
+# that set. Every path under the module that we actually author is still enumerated.
+go list ./... 2>/dev/null \
+  | grep -v '/node_modules/' \
+  | sed "s|^$MODULE/||; s|^$MODULE\$|.|" | sort > "$TMP/pkgs.txt"
 
 pct_of() { awk -v p="$1" '$1==p{print $2; found=1} END{if(!found) print "MISSING"}' "$TMP/cov.txt"; }
 

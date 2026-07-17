@@ -88,6 +88,11 @@ const envTestDSN = "SPECULA_TEST_POSTGRES_DSN"
 // newTestStore opens a PostgresStore against the DSN in SPECULA_TEST_POSTGRES_DSN.
 // Skips the test if the env var is not set.
 // The store is closed and all rows deleted via t.Cleanup.
+//
+// Isolation contract: every table is truncated BEFORE the test body runs and
+// AGAIN in t.Cleanup.  This means nine tests that each create users cannot
+// accumulate rows visible to TestPostgresUserStore_ListUsers — the isolation
+// is package-wide, not a per-assertion band-aid.
 func newTestStore(t *testing.T) *PostgresStore {
 	t.Helper()
 	dsn := os.Getenv(envTestDSN)
@@ -101,10 +106,22 @@ func newTestStore(t *testing.T) *PostgresStore {
 
 	require.NoError(t, ApplySchema(ctx, store.pool), "apply schema")
 
+	// truncateAll wipes every table the integration tests touch.  Called once
+	// before the test body (pre-test isolation) and once in t.Cleanup
+	// (post-test tidiness even on failure / panic).
+	truncateAll := func(c context.Context) {
+		store.pool.Exec(c, "DELETE FROM users")           //nolint:errcheck
+		store.pool.Exec(c, "DELETE FROM mutable_entries") //nolint:errcheck
+		store.pool.Exec(c, "DELETE FROM cache_entries")   //nolint:errcheck
+	}
+
+	// Pre-test isolation: start with a clean slate regardless of leftover rows
+	// from a prior run that crashed before its own t.Cleanup executed.
+	truncateAll(ctx)
+
 	t.Cleanup(func() {
-		ctx := context.Background()
-		store.pool.Exec(ctx, "DELETE FROM mutable_entries") //nolint:errcheck
-		store.pool.Exec(ctx, "DELETE FROM cache_entries")   //nolint:errcheck
+		c := context.Background()
+		truncateAll(c)
 		store.Close()
 	})
 

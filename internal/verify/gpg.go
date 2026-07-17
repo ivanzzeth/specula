@@ -184,6 +184,20 @@ func (v *GPGVerifier) verifyInRelease(ref artifact.ArtifactRef, art *artifact.Ar
 		}, fmt.Errorf("gpg: read InRelease: %w", err)
 	}
 
+	// Guard: the pault.ag/go/debian/control library silently parses plain
+	// RFC2822 content as unsigned when there are no PGP headers — it does
+	// NOT return an error for missing signatures. We must explicitly reject
+	// unsigned InRelease files; accepting them would let an attacker inject
+	// arbitrary SHA256 sums without possessing the distro private key.
+	// (DESIGN-REVIEW §1.1: the signing chain MUST start at a GPG-signed root.)
+	if !bytes.HasPrefix(data, []byte("-----BEGIN PGP SIGNED MESSAGE-----")) {
+		return artifact.Result{
+			Status:  artifact.StatusFail,
+			Tier:    artifact.TierSigned,
+			Message: "gpg: InRelease is not a PGP clear-signed document — unsigned InRelease rejected (DESIGN-REVIEW §1.1)",
+		}, nil
+	}
+
 	// NewParagraphReader detects the "-----BEGIN PGP " header, verifies the
 	// clear-signed GPG signature against v.keyring, and positions the reader
 	// on the signed plaintext. An error means the signature is invalid or
