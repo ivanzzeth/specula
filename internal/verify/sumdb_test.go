@@ -502,16 +502,26 @@ func TestSumDBVerifier_AntiRollback(t *testing.T) {
 	// WriteConfig anti-rollback logic directly by constructing a bad signed head.
 	t.Run("direct anti-rollback via WriteConfig", func(t *testing.T) {
 		// Build specOps pointing at the real httpSrv but with a pre-seeded store
-		// that records the CURRENT (large) tree size.
+		// that records a realistic production-scale high-water mark.
+		//
+		// The high-water is seeded at production scale (rather than at this test
+		// sumdb's toy `stored`, which is a handful of entries) because the policy
+		// is now scale-dependent: a regression within defaultRollbackToleranceEntries
+		// is classified as CDN edge lag and tolerated, not as an attack (BUG D —
+		// sum.golang.google.cn serves /latest with max-age=300 and legitimately
+		// returns older heads). This subtest owns the ATTACK case, so it must roll
+		// back beyond that window; the lag/boundary/strict cases are covered in
+		// sumdb_rollback_test.go.
+		const highWater = int64(57546088) // live-observed tree size
 		rollbackStore := newMemTreeSizeStore()
-		require.NoError(t, rollbackStore.SetTreeSize(context.Background(), db.name, stored))
+		require.NoError(t, rollbackStore.SetTreeSize(context.Background(), db.name, highWater))
 
 		ops, err := newSpecOps(db.vkeyText, db.httpSrv.URL, rollbackStore, nil)
 		require.NoError(t, err)
 
-		// Simulate the client calling WriteConfig with a SMALLER tree head.
-		// Build a fake signed note with N < stored.
-		smallN := stored - 1
+		// Simulate the client calling WriteConfig with a tree head rolled back far
+		// beyond any plausible CDN lag.
+		smallN := highWater - defaultRollbackToleranceEntries - 1
 		signer, err := note.NewSigner(db.signerKey)
 		require.NoError(t, err)
 		smallHead, err := buildSignedHead(t, db.name, smallN, signer)
@@ -607,6 +617,13 @@ func TestSpecOps_WriteConfig_AntiRollback(t *testing.T) {
 	store := newMemTreeSizeStore()
 	ops, err := newSpecOps(vkey, "https://localhost", store, &http.Client{})
 	require.NoError(t, err)
+
+	// Strict mode (zero tolerance): this test exercises the ratchet MECHANICS at
+	// toy tree sizes (10 → 20 → 5), where the production CDN-edge-lag tolerance
+	// (defaultRollbackToleranceEntries, BUG D) would swallow every regression.
+	// The lag/boundary/tolerance policy itself is covered by sumdb_rollback_test.go
+	// at real observed tree sizes.
+	ops.rollbackTolerance = 0
 
 	buildHead := func(n int64) []byte {
 		h := tlog.Hash{} // fake hash; sufficient for parsing

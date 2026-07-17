@@ -20,14 +20,18 @@ import (
 // GONOSUMDB glob) is rejected with 403 and NEVER forwarded to the public sumdb
 // (Athens NoSumPatterns). GOSUMDB is never disabled.
 //
-// This is the contract skeleton: the private-module 403 guard is implemented;
-// the actual upstream proxying returns 501 until the verifier/passthrough agent
-// wires it (streaming reverse-proxy to upstreamURL).
+// URL convention (BUG A): the sumdb name in "/sumdb/{name}/..." is a routing
+// token of the module proxy protocol, NOT necessarily part of the upstream's URL
+// space. Resolution is delegated to verify.SumDBEndpoint — the SAME resolver the
+// sumdb verifier uses — so a direct sumdb host (sum.golang.google.cn) and a
+// GOPROXY "/sumdb" base (goproxy.cn/sumdb) both work, and the two callers cannot
+// disagree about the convention.
 type SumDBHandler struct {
-	upstreamURL string                // sumdb passthrough base (no trailing slash)
-	private     verify.PrivateMatcher // GONOSUMDB private-module matcher
-	client      *http.Client          // upstream HTTP client (nil = http.DefaultClient)
-	log         *slog.Logger
+	endpoint verify.SumDBEndpoint  // upstream URL resolver (direct or proxy shape)
+	name     string                // sumdb name this passthrough will serve
+	private  verify.PrivateMatcher // GONOSUMDB private-module matcher
+	client   *http.Client          // upstream HTTP client (nil = http.DefaultClient)
+	log      *slog.Logger
 }
 
 // SumDBOption configures a SumDBHandler.
@@ -49,16 +53,36 @@ func WithSumDBLogger(l *slog.Logger) SumDBOption {
 	return func(s *SumDBHandler) { s.log = l }
 }
 
+// WithSumDBName sets the checksum-database name this passthrough serves — the
+// name in the configured verifier key. Requests for any other database are
+// refused rather than misrouted to an upstream that does not host it.
+// Defaults to verify.DefaultSumDBName ("sum.golang.org").
+func WithSumDBName(name string) SumDBOption {
+	return func(s *SumDBHandler) {
+		if name = strings.TrimSpace(name); name != "" {
+			s.name = name
+		}
+	}
+}
+
 // NewSumDBHandler constructs a sumdb passthrough sub-handler targeting
 // upstreamURL (e.g. "https://sum.golang.google.cn" or "https://goproxy.cn/sumdb").
+// An unparseable upstreamURL is retained as a direct-style base; upstream
+// requests then fail closed with 502 rather than panicking at construction.
 func NewSumDBHandler(upstreamURL string, opts ...SumDBOption) *SumDBHandler {
+	endpoint, err := verify.ParseSumDBEndpoint(upstreamURL)
 	s := &SumDBHandler{
-		upstreamURL: strings.TrimRight(upstreamURL, "/"),
-		client:      http.DefaultClient,
-		log:         slog.Default(),
+		endpoint: endpoint,
+		name:     verify.DefaultSumDBName,
+		client:   http.DefaultClient,
+		log:      slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if err != nil {
+		s.log.Error("sumdb passthrough: bad upstream url — passthrough will fail closed",
+			"url", upstreamURL, "err", err)
 	}
 	return s
 }
@@ -111,10 +135,36 @@ func (s *SumDBHandler) serve(w http.ResponseWriter, r *http.Request, sub string)
 		}
 	}
 
+	// Split "{name}/{endpoint...}". The name identifies WHICH checksum database
+	// the go client wants; it is not necessarily part of the upstream's own URL
+	// space (see verify.SumDBEndpoint).
+	name, elem, ok := splitSumDBName(sub)
+	if !ok {
+		writeGoError(w, http.StatusNotFound, "missing sumdb endpoint after name")
+		return
+	}
+	if name != s.name {
+		// Refuse rather than misroute to an upstream that does not host this db.
+		writeGoError(w, http.StatusNotFound,
+			"sumdb "+name+" not served by this proxy (configured: "+s.name+")")
+		return
+	}
+
+	// "/supported" is a MODULE PROXY endpoint, answered by the proxy about
+	// itself: per the module proxy protocol, GOPROXY/sumdb/<db>/supported returns
+	// 200 iff this proxy will proxy for <db>. It is not a checksum-database
+	// endpoint — a direct sumdb host (sum.golang.google.cn) 404s it — so
+	// forwarding it made the go client conclude passthrough was unsupported and
+	// go direct to sum.golang.org, which is blocked in CN (BUG A).
+	if elem == "/supported" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	// Streaming reverse-proxy to the upstream sumdb.
 	// The go client verifies the signed responses (tree head, inclusion/consistency
 	// proofs) itself; we are transparent intermediaries.
-	targetURL := s.upstreamURL + "/" + sub
+	targetURL := s.endpoint.URL(name, elem)
 
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, targetURL, nil)
 	if err != nil {
@@ -149,6 +199,22 @@ func (s *SumDBHandler) serve(w http.ResponseWriter, r *http.Request, sub string)
 	if r.Method != http.MethodHead {
 		_, _ = io.Copy(w, resp.Body)
 	}
+}
+
+// splitSumDBName splits a sumdb sub-path "{name}/{endpoint...}" into the
+// database name and the database-relative endpoint path (with leading slash),
+// e.g. "sum.golang.org/lookup/rsc.io/quote@v1.5.2" →
+// ("sum.golang.org", "/lookup/rsc.io/quote@v1.5.2", true).
+//
+// The name is the first path segment: sumdb names are hosts (no slash), and the
+// module proxy protocol's endpoints all begin with a fixed element
+// (supported / latest / lookup / tile).
+func splitSumDBName(sub string) (name, elem string, ok bool) {
+	i := strings.IndexByte(sub, '/')
+	if i <= 0 || i == len(sub)-1 {
+		return "", "", false
+	}
+	return sub[:i], sub[i:], true
 }
 
 // moduleFromLookup extracts the escaped module path from a sumdb sub-path of the

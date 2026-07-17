@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -18,12 +19,29 @@ import (
 	"github.com/ivanzzeth/specula/internal/verify"
 )
 
-// ── fakeUpstreamSumDB — minimal fake sumdb upstream ──────────────────────────
-
+// ── fakeSumDBUpstream — fake DIRECT sumdb upstream ───────────────────────────
+//
+// Models sum.golang.google.cn: the checksum database served at its host ROOT.
+// `responses` is keyed by the DATABASE-RELATIVE endpoint path ("/lookup/...",
+// "/latest", "/tile/..."), which is the only URL space a direct sumdb has.
+//
+// This double used to key on the raw r.URL.Path with no notion of a wire shape,
+// so it answered whatever path the handler happened to build and every URL
+// convention "passed" — that false green is what let BUG A ship (the passthrough
+// requested /<name>/lookup/... which 404s on every real direct sumdb).
 func fakeSumDBUpstream(t *testing.T, responses map[string]string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, ok := responses[r.URL.Path]
+		// A direct sumdb only ever serves these three endpoint families.
+		p := r.URL.Path
+		if !strings.HasPrefix(p, "/lookup/") && !strings.HasPrefix(p, "/tile/") && p != "/latest" {
+			t.Errorf("fakeSumDBUpstream (direct sumdb, models sum.golang.google.cn): "+
+				"got request for %q, which no real direct sumdb serves — "+
+				"expected /lookup/..., /tile/... or /latest", p)
+			http.NotFound(w, r)
+			return
+		}
+		body, ok := responses[p]
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -73,8 +91,9 @@ func TestModuleFromLookup_EmptyModuleBeforeAt(t *testing.T) {
 
 func TestSumDBHandlerServeHTTP_ProxiesRequest(t *testing.T) {
 	fakeResp := "github.com/foo/bar@v1.0.0\nhash: h1:abc...\n"
-	// When SumDBHandler.ServeHTTP receives /sumdb/lookup/…, it strips /sumdb
-	// and constructs targetURL as upstreamURL+"/lookup/…".
+	// ServeHTTP receives /sumdb/{name}/lookup/…, strips "/sumdb", then resolves
+	// against a DIRECT upstream: the {name} routing token is dropped and the
+	// database-relative "/lookup/…" is requested.
 	upSrv := fakeSumDBUpstream(t, map[string]string{
 		"/lookup/github.com/foo/bar@v1.0.0": fakeResp,
 	})
@@ -84,7 +103,7 @@ func TestSumDBHandlerServeHTTP_ProxiesRequest(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/sumdb/lookup/github.com/foo/bar@v1.0.0")
+	resp, err := http.Get(srv.URL + "/sumdb/sum.golang.org/lookup/github.com/foo/bar@v1.0.0")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -150,11 +169,10 @@ func TestSumDBServe_PrivateModule_403(t *testing.T) {
 
 func TestSumDBServe_PublicModule_Proxied(t *testing.T) {
 	fakeResp := "github.com/foo/bar@v1.0.0\nh1:abc...\n"
-	// When routed via gomod handler, the gomod handler strips /sumdb, so
-	// serve() receives "/sum.golang.org/lookup/…" and targetURL becomes
-	// upstreamURL+"/sum.golang.org/lookup/…".
+	// Routed via the gomod handler, serve() receives "/sum.golang.org/lookup/…".
+	// Against a DIRECT upstream the name is dropped: "/lookup/…".
 	upSrv := fakeSumDBUpstream(t, map[string]string{
-		"/sum.golang.org/lookup/github.com/foo/bar@v1.0.0": fakeResp,
+		"/lookup/github.com/foo/bar@v1.0.0": fakeResp,
 	})
 
 	matcher := verify.NewPrivateMatcher([]string{"git.corp.example.com/*"})
@@ -188,9 +206,9 @@ func TestSumDBServe_UpstreamError_502(t *testing.T) {
 
 func TestSumDBServe_HEAD_NoBody(t *testing.T) {
 	fakeResp := "hash-data\n"
-	// Via gomod handler: targetURL = upSrv.URL + "/sum.golang.org/latest"
+	// Via gomod handler against a DIRECT upstream: targetURL = upSrv.URL + "/latest"
 	upSrv := fakeSumDBUpstream(t, map[string]string{
-		"/sum.golang.org/latest": fakeResp,
+		"/latest": fakeResp,
 	})
 
 	h := NewSumDBHandler(upSrv.URL)
@@ -240,7 +258,8 @@ func TestWithSumDBOptions(t *testing.T) {
 		WithSumDBPrivateMatcher(verify.NewPrivateMatcher(nil)),
 	)
 	assert.NotNil(t, h)
-	assert.Equal(t, upSrv.URL, h.upstreamURL)
+	assert.Equal(t, upSrv.URL, h.endpoint.Base())
+	assert.False(t, h.endpoint.IsProxyStyle(), "httptest root URL is a direct sumdb base")
 }
 
 // ── Tests: gomod handler /sumdb route when sumdb is not configured ────────────

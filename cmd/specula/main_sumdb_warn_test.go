@@ -32,8 +32,17 @@ func TestBuildGoSumDBVerifier_AbsentSumDB_LogsWarn(t *testing.T) {
 					{Name: "goproxy", BaseURL: "https://proxy.golang.org", Priority: 1, Official: true},
 				},
 				// SumDB is nil — operator configured upstreams but forgot sumdb.
-				// In the live bug the sumdb block was misplaced under "verification:"
-				// and silently discarded, producing exactly this state.
+				//
+				// A misplaced sumdb block (nested under "verification:") no longer
+				// reaches this state: the loader runs koanf/mapstructure with
+				// ErrorUnused, so config.Load HARD-FAILS with
+				//   'protocols[go].verification' has invalid keys: sumdb
+				// (pinned by config.TestLoad_UnknownKey_SumDBMisplacedUnderVerification).
+				// It is not silently discarded.
+				//
+				// The warn-on-absent behaviour asserted below is still required for
+				// the case this literal models: sumdb legitimately omitted, which
+				// caps go at tofu — silently, unless we say so at startup.
 			},
 		},
 	}
