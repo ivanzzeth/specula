@@ -6,11 +6,13 @@ import (
 	"compress/bzip2"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
-	"sync"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ulikunitz/xz"
@@ -43,12 +45,19 @@ import (
 //
 // # Chain state
 //
-// The verifier keeps an in-memory chain state that is populated as artifacts flow
-// through the verify-on-write pipeline in request order:
+// Chain state is populated as artifacts flow through the verify-on-write pipeline
+// in request order:
 //
-//  1. InRelease is verified (GPG signature) → SHA256s of Packages files are cached.
-//  2. Packages is verified (SHA256 from InRelease) → SHA256s of .deb files are cached.
+//  1. InRelease is verified (GPG signature) → SHA256s of Packages files are pinned.
+//  2. Packages is verified (SHA256 from InRelease) → SHA256s of .deb files are pinned.
 //  3. .deb is verified (SHA256 from Packages) → TierSigned PASS returned.
+//
+// Those pins live in an AptPinStore, NOT in this process's heap. They are
+// required chain state — a pool .deb without its pin can only fail closed — so
+// per PRD §G3 ("Specula 实例无状态") they must live in the shared metadata DB:
+// the replica that serves `apt-get update` is routinely not the replica that
+// serves the `.deb`, and a restart must not break a client whose apt list is
+// still valid. See AptPinStore for what is pinned, keyed by what, and why.
 //
 // Failing to find prerequisite data (InRelease not yet verified, Packages not yet
 // verified) causes a fail-closed StatusFail so no artifact is promoted without a
@@ -59,25 +68,34 @@ type GPGVerifier struct {
 	// keyringPath is retained for diagnostics/messages.
 	keyringPath string
 
-	// mu guards the in-memory chain state below.
-	mu sync.RWMutex
+	// pins is the source of truth for the chain's pinned hashes.
+	pins AptPinStore
 
-	// suiteSHA256s maps cache key ("repo:suite") → (relative-to-suite-path → sha256hex).
-	// Populated when an InRelease file is successfully GPG-verified.
-	// Example key: ":noble" for a root-mounted Ubuntu noble repo.
-	// Example inner key: "main/binary-amd64/Packages" → "abc123…"
-	suiteSHA256s map[string]map[string]string
+	// scope identifies the trust anchor (this keyring) that vouches for every
+	// pin this verifier writes or reads. See keyringScope.
+	scope string
+}
 
-	// poolSHA256s maps pool path ("pool/component/dir/file.deb") → sha256hex.
-	// Populated when a Packages file is successfully SHA256-verified against InRelease.
-	// All repo Packages share the same flat namespace since pool paths are globally unique.
-	poolSHA256s map[string]string
+// GPGOption configures a GPGVerifier.
+type GPGOption func(*GPGVerifier)
+
+// WithAptPinStore backs the verifier's chain state with store.
+//
+// Without it the verifier falls back to a process-local in-memory store, which
+// is correct for a single instance but violates PRD §G3 the moment there is a
+// second replica or a restart. cmd/specula always wires the metadata store.
+func WithAptPinStore(store AptPinStore) GPGOption {
+	return func(v *GPGVerifier) {
+		if store != nil {
+			v.pins = store
+		}
+	}
 }
 
 // NewGPGVerifier loads the GPG keyring at keyringPath (armored or binary) and
 // returns a verifier anchored on those keys. An empty path or an unreadable /
 // unparseable keyring is a fatal wiring error (fail-fast, never silently trust).
-func NewGPGVerifier(keyringPath string) (*GPGVerifier, error) {
+func NewGPGVerifier(keyringPath string, opts ...GPGOption) (*GPGVerifier, error) {
 	if keyringPath == "" {
 		return nil, fmt.Errorf("gpg: keyring path is required for apt signed verification")
 	}
@@ -88,12 +106,39 @@ func NewGPGVerifier(keyringPath string) (*GPGVerifier, error) {
 	if len(el) == 0 {
 		return nil, fmt.Errorf("gpg: keyring %q contains no keys", keyringPath)
 	}
-	return &GPGVerifier{
-		keyring:      el,
-		keyringPath:  keyringPath,
-		suiteSHA256s: make(map[string]map[string]string),
-		poolSHA256s:  make(map[string]string),
-	}, nil
+	v := &GPGVerifier{
+		keyring:     el,
+		keyringPath: keyringPath,
+		pins:        NewMemAptPinStore(),
+		scope:       keyringScope(el),
+	}
+	for _, opt := range opts {
+		opt(v)
+	}
+	return v, nil
+}
+
+// keyringScope derives a stable identifier for the trust anchor: a SHA256 over
+// this keyring's primary-key fingerprints, sorted so key order in the file
+// cannot change the result.
+//
+// This is the namespace every pin is written under. A pin asserts "the holder of
+// THESE keys signed an InRelease committing path P to hash H"; scoping by the
+// anchor is what stops pins made under one keyring from being read by a verifier
+// anchored on another — the "one repo's InRelease vouches for another's bytes"
+// trust bug. It is stable across restarts and identical on every replica (both
+// load the same keyring file), which is what lets the chain span them.
+func keyringScope(el openpgp.EntityList) string {
+	fps := make([]string, 0, len(el))
+	for _, e := range el {
+		if e.PrimaryKey == nil {
+			continue
+		}
+		fps = append(fps, hex.EncodeToString(e.PrimaryKey.Fingerprint))
+	}
+	sort.Strings(fps)
+	sum := sha256.Sum256([]byte(strings.Join(fps, ",")))
+	return hex.EncodeToString(sum[:])
 }
 
 // Compile-time assertion that GPGVerifier satisfies Verifier.
@@ -124,9 +169,9 @@ func (v *GPGVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, art 
 	}
 
 	if ref.Mutable {
-		return v.verifyDists(ref, art)
+		return v.verifyDists(ctx, ref, art)
 	}
-	return v.verifyPool(ref, art)
+	return v.verifyPool(ctx, ref, art)
 }
 
 // --------------------------------------------------------------------------
@@ -134,17 +179,17 @@ func (v *GPGVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, art 
 // --------------------------------------------------------------------------
 
 // verifyDists routes mutable dists/ artifacts by file type.
-func (v *GPGVerifier) verifyDists(ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
+func (v *GPGVerifier) verifyDists(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	// Acquire-By-Hash: rewrite a content-addressed index request back to the
 	// canonical path InRelease pins, then route normally (see resolveByHashRef).
-	ref = v.resolveByHashRef(ref)
+	ref = v.resolveByHashRef(ctx, ref)
 	version := ref.Version
 
 	switch {
 	case strings.HasSuffix(version, "InRelease"):
-		return v.verifyInRelease(ref, art)
+		return v.verifyInRelease(ctx, ref, art)
 	case isPackagesFile(version):
-		return v.verifyPackages(ref, art)
+		return v.verifyPackages(ctx, ref, art)
 	default:
 		// Release.gpg, Translation-*, Contents-*, DEP11 cnf, etc.: these files
 		// are listed in the InRelease SHA256 section. If InRelease has been
@@ -152,7 +197,7 @@ func (v *GPGVerifier) verifyDists(ref artifact.ArtifactRef, art *artifact.Artifa
 		// pinned value and return TierSigned. If InRelease has not yet been
 		// seen (or the file is not listed), fall through at TierChecksum so the
 		// pipeline is not blocked (ChecksumVerifier + TofuVerifier still apply).
-		return v.verifyInReleasePin(ref, art)
+		return v.verifyInReleasePin(ctx, ref, art)
 	}
 }
 
@@ -185,7 +230,7 @@ const byHashSHA256Marker = "/by-hash/SHA256/"
 // An unresolvable by-hash path (hash not pinned, or a non-SHA256 by-hash variant
 // such as by-hash/MD5Sum) is returned unchanged: it then falls through to the
 // TierChecksum pass-through, which is the safe direction.
-func (v *GPGVerifier) resolveByHashRef(ref artifact.ArtifactRef) artifact.ArtifactRef {
+func (v *GPGVerifier) resolveByHashRef(ctx context.Context, ref artifact.ArtifactRef) artifact.ArtifactRef {
 	idx := strings.IndexByte(ref.Version, '/')
 	if idx < 0 {
 		return ref
@@ -197,24 +242,24 @@ func (v *GPGVerifier) resolveByHashRef(ref artifact.ArtifactRef) artifact.Artifa
 		return ref
 	}
 	dir := relPath[:i]
-	hex := relPath[i+len(byHashSHA256Marker):]
-	if dir == "" || hex == "" || strings.Contains(hex, "/") {
+	hexSum := relPath[i+len(byHashSHA256Marker):]
+	if dir == "" || hexSum == "" || strings.Contains(hexSum, "/") {
 		return ref
 	}
 
-	v.mu.RLock()
-	sums := v.suiteSHA256s[ref.Name+":"+suite]
-	v.mu.RUnlock()
-	if sums == nil {
-		// InRelease not GPG-verified for this suite yet — nothing to resolve
-		// against. Never guess.
+	sums, err := v.pins.IndexPins(ctx, v.scope, ref.Name, suite)
+	if err != nil || len(sums) == 0 {
+		// InRelease not GPG-verified for this suite yet (or the store is
+		// unreachable) — nothing to resolve against. Never guess: an
+		// unresolved ref falls through to the TierChecksum pass-through, which
+		// is the safe direction.
 		return ref
 	}
 
 	for canonical, pinnedHex := range sums {
 		// Directory must match: a hash pinned for one component/architecture
 		// must not authorise an index served from another path.
-		if pinnedHex == hex && pathDir(canonical) == dir {
+		if pinnedHex == hexSum && pathDir(canonical) == dir {
 			ref.Version = suite + "/" + canonical
 			return ref
 		}
@@ -258,7 +303,7 @@ func isPackagesFile(version string) bool {
 // ProtonMail/go-crypto under the hood — the same stack we use for helmprov.
 // This replaces the former hand-rolled bufio.Scanner parse of the SHA256
 // section with a spec-correct control-file parser.
-func (v *GPGVerifier) verifyInRelease(ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
+func (v *GPGVerifier) verifyInRelease(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	data, err := os.ReadFile(art.Path)
 	if err != nil {
 		return artifact.Result{
@@ -318,9 +363,24 @@ func (v *GPGVerifier) verifyInRelease(ref artifact.ArtifactRef, art *artifact.Ar
 	}
 	cacheKey := ref.Name + ":" + suite
 
-	v.mu.Lock()
-	v.suiteSHA256s[cacheKey] = sha256s
-	v.mu.Unlock()
+	// Replace, not merge: this InRelease is now the suite's signed root, so its
+	// pin set is the whole truth for the suite. A path the previous InRelease
+	// listed and this one does not must stop being servable at `signed` —
+	// keeping it would let a superseded signed index be served forever, which is
+	// the index-rollback vector PRD §G2 assigns to anti-rollback.
+	//
+	// Pool pins established under the PREVIOUS InRelease are deliberately NOT
+	// touched here: see verifyPool.
+	if err := v.pins.ReplaceIndexPins(ctx, v.scope, ref.Name, suite, sha256s); err != nil {
+		// Fail closed. Silently continuing on an unwritable pin store would
+		// PASS this InRelease and then 502 every .deb behind it, and on another
+		// replica would look like a chain that had never been established.
+		return artifact.Result{
+			Status:  artifact.StatusFail,
+			Tier:    artifact.TierSigned,
+			Message: fmt.Sprintf("gpg: InRelease GPG signature verified but pins could not be persisted (suite=%q): %v", suite, err),
+		}, fmt.Errorf("gpg: persist InRelease pins: %w", err)
+	}
 
 	return artifact.Result{
 		Status:  artifact.StatusPass,
@@ -332,7 +392,7 @@ func (v *GPGVerifier) verifyInRelease(ref artifact.ArtifactRef, art *artifact.Ar
 // verifyPackages verifies the quarantine SHA256 of a Packages file against the
 // SHA256 pinned in the InRelease chain state. On success, it parses the Packages
 // content to populate the poolSHA256s cache for subsequent .deb verifications.
-func (v *GPGVerifier) verifyPackages(ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
+func (v *GPGVerifier) verifyPackages(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	// Derive suite and relative path from the dists version string.
 	// Example: ref.Version = "noble/main/binary-amd64/Packages"
 	//          → suite = "noble", relPath = "main/binary-amd64/Packages"
@@ -348,12 +408,16 @@ func (v *GPGVerifier) verifyPackages(ref artifact.ArtifactRef, art *artifact.Art
 	relPath := ref.Version[idx+1:]
 	cacheKey := ref.Name + ":" + suite
 
-	// Look up expected SHA256 from InRelease chain state.
-	v.mu.RLock()
-	sums, ok := v.suiteSHA256s[cacheKey]
-	v.mu.RUnlock()
-
-	if !ok {
+	// Look up expected SHA256 from the InRelease chain state.
+	sums, err := v.pins.IndexPins(ctx, v.scope, ref.Name, suite)
+	if err != nil {
+		return artifact.Result{
+			Status:  artifact.StatusFail,
+			Tier:    artifact.TierSigned,
+			Message: fmt.Sprintf("gpg: cannot read InRelease pins for suite %q (key=%q): %v", suite, cacheKey, err),
+		}, fmt.Errorf("gpg: read InRelease pins: %w", err)
+	}
+	if len(sums) == 0 {
 		return artifact.Result{
 			Status:  artifact.StatusFail,
 			Tier:    artifact.TierSigned,
@@ -422,12 +486,18 @@ func (v *GPGVerifier) verifyPackages(ref artifact.ArtifactRef, art *artifact.Art
 		}
 	}
 
-	// Merge into the shared pool SHA256s map.
-	v.mu.Lock()
-	for poolPath, h := range poolHashes {
-		v.poolSHA256s[poolPath] = h
+	// Persist the pool pins this signed index establishes. Scoped to the trust
+	// anchor and this repository prefix so no other repo's InRelease can be made
+	// to vouch for these bytes.
+	if err := v.pins.PutPoolPins(ctx, v.scope, ref.Name, poolHashes); err != nil {
+		// Fail closed: PASSing here would promote the index while every .deb it
+		// pins would 502, and on a restart the chain would look untraversed.
+		return artifact.Result{
+			Status:  artifact.StatusFail,
+			Tier:    artifact.TierSigned,
+			Message: fmt.Sprintf("gpg: Packages %q chain-verified but pool pins could not be persisted: %v", relPath, err),
+		}, fmt.Errorf("gpg: persist pool pins: %w", err)
 	}
-	v.mu.Unlock()
 
 	return artifact.Result{
 		Status:  artifact.StatusPass,
@@ -448,7 +518,7 @@ func (v *GPGVerifier) verifyPackages(ref artifact.ArtifactRef, art *artifact.Art
 //     PASS (some dists files such as Release.gpg are never in SHA256).
 //   - If listed and SHA256 matches, returns TierSigned PASS.
 //   - If listed but SHA256 mismatches, returns TierSigned FAIL (tamper detected).
-func (v *GPGVerifier) verifyInReleasePin(ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
+func (v *GPGVerifier) verifyInReleasePin(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	version := ref.Version
 	idx := strings.IndexByte(version, '/')
 	if idx < 0 {
@@ -461,13 +531,22 @@ func (v *GPGVerifier) verifyInReleasePin(ref artifact.ArtifactRef, art *artifact
 	}
 	suite := version[:idx]
 	relPath := version[idx+1:]
-	cacheKey := ref.Name + ":" + suite
 
-	v.mu.RLock()
-	sums, hasInRelease := v.suiteSHA256s[cacheKey]
-	v.mu.RUnlock()
+	sums, err := v.pins.IndexPins(ctx, v.scope, ref.Name, suite)
+	if err != nil {
+		// Pass-through at TierChecksum, matching the "InRelease not yet
+		// verified" branch below: these files (Translation-*, Contents-*, cnf)
+		// are not on the .deb trust path, so a store hiccup must not block the
+		// pipeline. It cannot upgrade anything either — TierChecksum is what an
+		// unverifiable file already gets.
+		return artifact.Result{
+			Status:  artifact.StatusPass,
+			Tier:    artifact.TierChecksum,
+			Message: fmt.Sprintf("gpg: dists file %q not GPG-chain verifiable (pin store unavailable: %v)", version, err),
+		}, nil
+	}
 
-	if !hasInRelease {
+	if len(sums) == 0 {
 		// InRelease not yet GPG-verified for this suite — cannot chain-verify.
 		return artifact.Result{
 			Status:  artifact.StatusPass,
@@ -507,18 +586,51 @@ func (v *GPGVerifier) verifyInReleasePin(ref artifact.ArtifactRef, art *artifact
 // pool/ verification
 // --------------------------------------------------------------------------
 
-// verifyPool verifies a pool .deb artifact's SHA256 against the sha256 stored in
-// the Packages index (which was itself verified against InRelease). All three
-// links must have been traversed in order for a PASS to be returned.
-func (v *GPGVerifier) verifyPool(ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
+// verifyPool verifies a pool .deb artifact's SHA256 against the sha256 pinned by
+// a Packages index that was itself verified against a signed InRelease. All three
+// links must have been traversed — on ANY instance, at ANY time — for a PASS.
+//
+// # Why a pin outlives the InRelease that produced it
+//
+// The pin is read from the store, so it survives both a restart and a hop to
+// another replica (PRD §G3). It is NOT invalidated when a newer InRelease
+// supersedes the one whose Packages established it, and that is deliberate:
+//
+//   - A pool object is immutable-tier (ARCHITECTURE §3/§6). Its path embeds the
+//     package version and architecture, so "pool/main/z/zsh/zsh_5.9-6ubuntu2_all.deb"
+//     denotes exactly one immutable byte sequence for the life of the repository.
+//   - The pin is a cryptographic statement by the distro key: "the content at
+//     path P is hash H". A later InRelease does not RETRACT that statement. A
+//     path dropping out of the newest index means the package left the suite
+//     (superseded, removed) — not that its bytes were ever wrong.
+//   - apt depends on exactly this. A client whose Packages list is still valid
+//     legitimately requests pool paths the newest index no longer lists; that is
+//     the restart scenario in this bug report. Expiring pool pins on InRelease
+//     rotation would reintroduce the 502 it fixes.
+//   - Serving an old-but-genuinely-signed .deb is a staleness/rollback concern,
+//     and PRD §G2 assigns rollback defence to monotonic signed index state, not
+//     to this pin store. The client already chose which .deb it wants from ITS
+//     index; Specula's job here is solely to prove the bytes match what the
+//     distro signed. A retained pin proves precisely that.
+//
+// If the repository ever re-pins the same pool path to a different hash, the
+// newest signed statement overwrites the old (see PutPoolPins) and stale cached
+// bytes then fail closed on the mismatch below.
+func (v *GPGVerifier) verifyPool(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	// Pool path is "pool/<name>/<version>" matching the "Filename:" field in Packages.
 	poolPath := "pool/" + ref.Name + "/" + ref.Version
 
-	v.mu.RLock()
-	expectedHex, ok := v.poolSHA256s[poolPath]
-	v.mu.RUnlock()
+	expectedHex, err := v.pins.PoolPin(ctx, v.scope, poolPath)
+	if err != nil {
+		// Fail closed: an unreadable or ambiguous pin is not permission to serve.
+		return artifact.Result{
+			Status:  artifact.StatusFail,
+			Tier:    artifact.TierSigned,
+			Message: fmt.Sprintf("gpg: pool file %q — cannot resolve a trustworthy pin: %v", poolPath, err),
+		}, nil
+	}
 
-	if !ok {
+	if expectedHex == "" {
 		return artifact.Result{
 			Status:  artifact.StatusFail,
 			Tier:    artifact.TierSigned,

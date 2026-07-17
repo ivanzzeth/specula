@@ -51,6 +51,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/repo"
 	"github.com/ivanzzeth/specula/internal/settings"
 	"github.com/ivanzzeth/specula/internal/stats"
+	"github.com/ivanzzeth/specula/internal/store/aptpins"
 	blobstore "github.com/ivanzzeth/specula/internal/store/blob"
 	"github.com/ivanzzeth/specula/internal/store/local"
 	metastore "github.com/ivanzzeth/specula/internal/store/meta"
@@ -152,7 +153,7 @@ func run() error {
 	// sumdb verifier), so a single shared chain carries all of them without one
 	// protocol's verifier acting on another's artifacts. A missing/unreadable
 	// keyring downgrades that protocol's ceiling to tofu and warns — never crashes.
-	gpgV := buildGPGVerifier(cfg, log)           // apt  → signed (GPG keyring)
+	gpgV := buildGPGVerifier(cfg, mtDB, log)     // apt  → signed (GPG keyring + persisted pins)
 	helmProvV := buildHelmProvVerifier(cfg, log) // helm → signed (.prov GPG)
 	gitSignedV := buildGitSignedVerifier(cfg, log)
 
@@ -804,22 +805,60 @@ func mountGit(mux *http.ServeMux, cfg *config.Config, metaStore metastore.Metada
 // buildGPGVerifier constructs the apt InRelease→Packages→.deb GPG chain verifier
 // from the "apt" protocol's verification.gpg.keyring path. Returns nil (and warns)
 // when the keyring is unset or unreadable so apt downgrades to tofu without crashing.
-func buildGPGVerifier(cfg *config.Config, log *slog.Logger) *verify.GPGVerifier {
+//
+// db is the shared metadata database handle (the same one the multi-tenant and
+// settings stores use). The chain's pinned hashes are persisted there rather than
+// held in this process's heap: they are required chain state, so per PRD §G3 the
+// replica that serves `apt-get update` must be able to hand them to whichever
+// replica serves the `.deb`, and they must survive a restart. Without this, apt —
+// the PRD's end-to-end gold standard — 502s in exactly the HA topology §G3
+// specifies.
+//
+// A pin store is REQUIRED, not optional: if it cannot be built, this returns nil
+// so apt visibly falls back to tofu, rather than silently reverting to a
+// heap-local chain that works on one replica and fails on the next.
+func buildGPGVerifier(cfg *config.Config, db *sql.DB, log *slog.Logger) *verify.GPGVerifier {
 	pc, ok := cfg.Protocols["apt"]
 	if !ok || pc.Verification.GPG == nil || strings.TrimSpace(pc.Verification.GPG.Keyring) == "" {
 		log.Warn("specula: apt GPG keyring not configured — apt tops out at tofu tier")
 		return nil
 	}
+
+	pins, err := buildAptPinStore(cfg, db)
+	if err != nil {
+		log.Warn("specula: apt GPG verifier disabled (no pin store) — downgrading apt to tofu",
+			"err", err)
+		return nil
+	}
+
 	keyring := pc.Verification.GPG.Keyring
-	v, err := verify.NewGPGVerifier(keyring)
+	v, err := verify.NewGPGVerifier(keyring, verify.WithAptPinStore(pins))
 	if err != nil {
 		log.Warn("specula: apt GPG verifier disabled (keyring load failed) — downgrading apt to tofu",
 			"keyring", keyring, "err", err)
 		return nil
 	}
 	log.Info("specula: apt GPG signed verification enabled",
-		"keyring", keyring, "policy", policyOrWarn(pc.Verification.GPG.Policy))
+		"keyring", keyring, "policy", policyOrWarn(pc.Verification.GPG.Policy),
+		"pins", cfg.Storage.Meta.Driver)
 	return v
+}
+
+// buildAptPinStore binds the apt trust-chain pin store to the configured metadata
+// database. The tables are created by the 0006/006 apt pins migration, which both
+// drivers apply at open time.
+func buildAptPinStore(cfg *config.Config, db *sql.DB) (verify.AptPinStore, error) {
+	if db == nil {
+		return nil, fmt.Errorf("apt pins: no metadata database handle")
+	}
+	switch cfg.Storage.Meta.Driver {
+	case "sqlite":
+		return aptpins.New(db, aptpins.SQLite), nil
+	case "postgres":
+		return aptpins.New(db, aptpins.Postgres), nil
+	default:
+		return nil, fmt.Errorf("apt pins: unknown meta driver %q", cfg.Storage.Meta.Driver)
+	}
 }
 
 // buildHelmProvVerifier constructs the Helm .prov detached-GPG verifier from the
