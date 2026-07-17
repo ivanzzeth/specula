@@ -91,6 +91,12 @@ func (e *errServeCacheManager) Serve(_ context.Context, _ artifact.ArtifactRef, 
 	return nil, nil, e.serveErr
 }
 
+// ServeEntry mirrors the Serve injection: serveFromCache reaches the cache via
+// ServeEntry whenever it holds an entry.
+func (e *errServeCacheManager) ServeEntry(_ context.Context, _ *artifact.CacheEntry, _, _ int64) (io.ReadCloser, error) {
+	return nil, e.serveErr
+}
+
 // ── nilRCNpmCacheManager — Serve returns (nil, nil, nil) ─────────────────────
 
 type nilRCNpmCacheManager struct {
@@ -99,6 +105,11 @@ type nilRCNpmCacheManager struct {
 
 func (n *nilRCNpmCacheManager) Serve(_ context.Context, _ artifact.ArtifactRef, _, _ int64) (io.ReadCloser, *artifact.CacheEntry, error) {
 	return nil, nil, nil
+}
+
+// ServeEntry mirrors the nil-reader injection on the path serveFromCache uses.
+func (n *nilRCNpmCacheManager) ServeEntry(_ context.Context, _ *artifact.CacheEntry, _, _ int64) (io.ReadCloser, error) {
+	return nil, nil
 }
 
 // ── lookupErrNpmCacheManager — Lookup returns error ──────────────────────────

@@ -18,18 +18,20 @@
 //   - ARCHITECTURE.md §3 serve-stale-on-upstream-failure: stale dists/ content
 //     is served when the upstream is unreachable.
 //
-// # Known production bug (documented here for regression tracking)
+// # Fidelity requirement for aptTestCache (previously a live production bug)
 //
-// BUG: The stale-serve path for mutable entries is broken in the production
-// CacheManager. serveFromCache calls h.cache.Serve which internally calls
-// Lookup (without allowStale=true). For stale mutable entries Lookup returns
-// nil, so Serve returns ErrCacheMiss, and a 404 is written instead of the
-// stale content. This test verifies the DESIGNED behaviour using a test double
-// whose Serve returns stale data; the bug only manifests with the production
-// cache.manager.
-// Violates: DESIGN-REVIEW §H1 (serve-stale-on-upstream-failure) and
-// ARCHITECTURE.md §3 (mutable tier: 上游失败 serve-stale).
-// Fix needed: add ServeStale or accept a hint CacheEntry to skip re-lookup.
+// serveFromCache used to discard the entry it was handed and re-resolve the ref
+// through cache.Serve, which re-runs Lookup (no allowStale) and therefore
+// returned ErrCacheMiss → 404 for exactly the stale entries the serve-stale path
+// had just chosen to serve. The bug survived because this file's test double
+// implemented Serve to fall back to staleEntries — something the production
+// manager cannot do — so the stale tests passed against broken production code.
+//
+// aptTestCache.Serve therefore now mirrors manager.Serve exactly: fresh entries
+// only, no stale fallback. Stale bytes are reachable solely via ServeEntry
+// (cache.EntryServer), which is how the handler now serves an entry it holds.
+// Keep it that way: a fake that serves stale from Serve makes these tests green
+// against a 404-ing production build.
 package apt
 
 import (
@@ -131,21 +133,19 @@ func (c *aptTestCache) Store(_ context.Context, ref artifact.ArtifactRef, art *a
 	return entry, nil
 }
 
-// Serve looks up the entry by cacheKey. Falls back to staleEntries so that
-// the stale-serve path can return content even when Lookup returns nil.
-// (In the production manager.Serve, re-running Lookup would return nil for stale
-// mutable entries, causing ErrCacheMiss — see the package-level BUG comment.)
+// Serve mirrors production manager.Serve: it re-runs the FRESH Lookup and
+// serves only what that returns. It deliberately does NOT fall back to
+// staleEntries — the real manager cannot do so, because manager.Serve calls
+// Lookup (no allowStale), which returns nil for a stale mutable entry. A fake
+// that served stale here would report a passing serve-stale path that 404s in
+// production. Stale bytes are reachable only via ServeEntry.
 func (c *aptTestCache) Serve(_ context.Context, ref artifact.ArtifactRef, offset, length int64) (io.ReadCloser, *artifact.CacheEntry, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	k := c.cacheKey(ref)
-	entry, ok := c.entries[k]
+	entry, ok := c.entries[c.cacheKey(ref)]
 	if !ok {
-		entry, ok = c.staleEntries[k]
-		if !ok {
-			return nil, nil, cache.ErrCacheMiss
-		}
+		return nil, nil, cache.ErrCacheMiss
 	}
 	data, ok := c.blobs[entry.Digest]
 	if !ok {
@@ -744,15 +744,12 @@ func TestServeHTTP_VerifyError_Returns502_PoolFile(t *testing.T) {
 		"verify-on-write FAIL must return 502, never serve the artifact (fix C2)")
 }
 
-// TestServeHTTP_Dists_StaleServed_WhenUpstreamFails verifies that the designed
+// TestServeHTTP_Dists_StaleServed_WhenUpstreamFails verifies that the
 // stale-serve path returns cached dists/ content when the upstream is
-// unreachable.
+// unreachable (DESIGN-REVIEW §2 H1, ARCHITECTURE.md §3).
 //
-// NOTE — PRODUCTION BUG: This test uses a test double whose Serve can read
-// stale entries. With the production cache.manager.Serve, this path is broken:
-// Serve re-runs Lookup (without allowStale=true) which returns nil for stale
-// mutable entries, causing ErrCacheMiss → 404 instead of stale content.
-// See the package-level BUG comment for details.
+// This asserts real behaviour: aptTestCache.Serve is freshness-gated exactly
+// like manager.Serve, so the stale bytes can only arrive via ServeEntry.
 func TestServeHTTP_Dists_StaleServed_WhenUpstreamFails(t *testing.T) {
 	const staleInRelease = "Origin: Test\nSuite: focal\n# stale content\n"
 	ref := distsRef("", "focal/InRelease")
@@ -918,3 +915,35 @@ func TestIsNotFound(t *testing.T) {
 	assert.False(t, isNotFound(nil))
 	assert.False(t, isNotFound(errors.New("connection refused")))
 }
+
+// ServeEntry mirrors manager.ServeEntry: it serves the bytes of the entry the
+// caller already holds, with no lookup and therefore no freshness gate. This is
+// the ONLY way stale bytes can reach the response — Serve cannot produce them.
+func (c *aptTestCache) ServeEntry(_ context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error) {
+	if entry == nil {
+		return nil, cache.ErrCacheMiss
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	data, ok := c.blobs[entry.Digest]
+	if !ok {
+		return nil, cache.ErrCacheMiss
+	}
+	total := int64(len(data))
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := total
+	if length >= 0 && start+length < end {
+		end = start + length
+	}
+	return io.NopCloser(bytes.NewReader(data[start:end])), nil
+}
+
+// entryServer satisfied — the handler opts in via a type assertion.
+var _ entryServer = (*aptTestCache)(nil)

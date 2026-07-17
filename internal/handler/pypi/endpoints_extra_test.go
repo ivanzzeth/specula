@@ -87,6 +87,12 @@ func (e *errPypiServeCacheManager) Serve(_ context.Context, _ artifact.ArtifactR
 	return nil, nil, e.serveErr
 }
 
+// ServeEntry mirrors the Serve injection: serveFromCache reaches the cache via
+// ServeEntry whenever it holds an entry.
+func (e *errPypiServeCacheManager) ServeEntry(_ context.Context, _ *artifact.CacheEntry, _, _ int64) (io.ReadCloser, error) {
+	return nil, e.serveErr
+}
+
 // ── nilRCPypiCacheManager — Serve returns (nil, nil, nil) ─────────────────────
 
 type nilRCPypiCacheManager struct {
@@ -95,6 +101,11 @@ type nilRCPypiCacheManager struct {
 
 func (n *nilRCPypiCacheManager) Serve(_ context.Context, _ artifact.ArtifactRef, _, _ int64) (io.ReadCloser, *artifact.CacheEntry, error) {
 	return nil, nil, nil
+}
+
+// ServeEntry mirrors the nil-reader injection on the path serveFromCache uses.
+func (n *nilRCPypiCacheManager) ServeEntry(_ context.Context, _ *artifact.CacheEntry, _, _ int64) (io.ReadCloser, error) {
+	return nil, nil
 }
 
 // ── lookupErrPypiCacheManager — Lookup returns error ─────────────────────────
@@ -598,4 +609,59 @@ func TestPypiServeHTTP_BadPackagePath_404(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+// ── Tests: serve-stale-on-upstream-failure (DESIGN-REVIEW §2 H1) ─────────────
+//
+// The mutable tier must serve a TTL-expired simple index rather than fail when
+// the upstream is unreachable, so `pip install` survives a PyPI outage
+// (PRD §G5; devpi behaves the same way).
+
+func TestPypiServeMutable_UpstreamDown_StaleServed(t *testing.T) {
+	cm := newPypiTestCache()
+	staleIndex := []byte(`<!DOCTYPE html><html><body><a href="flask-2.0.tar.gz">flask-2.0.tar.gz</a></body></html>`)
+	cm.seedStale(artifact.ArtifactRef{
+		Protocol: Protocol, Name: "flask", Version: indexVersion, Mutable: true,
+	}, staleIndex)
+
+	h := NewHandler(cm,
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{
+			{Name: "pypi", BaseURL: "http://127.0.0.1:0"}, // nothing listening
+		}),
+		WithMutableTTL(300),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/simple/flask/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"stale simple index MUST be served when upstream is down (DESIGN-REVIEW §2 H1)")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, staleIndex, body, "the stale bytes themselves must be served")
+}
+
+func TestPypiServeMutable_NoUpstreamConfigured_StaleServed(t *testing.T) {
+	cm := newPypiTestCache()
+	staleIndex := []byte(`<!DOCTYPE html><html><body><a href="requests-2.0.tar.gz">requests-2.0.tar.gz</a></body></html>`)
+	cm.seedStale(artifact.ArtifactRef{
+		Protocol: Protocol, Name: "requests", Version: indexVersion, Mutable: true,
+	}, staleIndex)
+
+	h := NewHandler(cm, WithMutableTTL(300)) // no upstream wired
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/simple/requests/")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"stale simple index MUST be served when no upstream is configured")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, staleIndex, body)
 }

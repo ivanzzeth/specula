@@ -101,6 +101,15 @@ func (e *errCacheManager) Serve(_ context.Context, ref artifact.ArtifactRef, _, 
 	return e.gomodTestCache.Serve(context.Background(), ref, 0, -1)
 }
 
+// ServeEntry mirrors the Serve injection: serveFromCache reaches the cache via
+// ServeEntry whenever it holds an entry.
+func (e *errCacheManager) ServeEntry(ctx context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error) {
+	if e.serveErr != nil {
+		return nil, e.serveErr
+	}
+	return e.gomodTestCache.ServeEntry(ctx, entry, offset, length)
+}
+
 // ── nil-rc cache manager — Serve returns (nil, nil, nil) ─────────────────────
 
 type nilRCCacheManager struct {
@@ -109,6 +118,11 @@ type nilRCCacheManager struct {
 
 func (n *nilRCCacheManager) Serve(_ context.Context, _ artifact.ArtifactRef, _, _ int64) (io.ReadCloser, *artifact.CacheEntry, error) {
 	return nil, nil, nil
+}
+
+// ServeEntry mirrors the nil-reader injection on the path serveFromCache uses.
+func (n *nilRCCacheManager) ServeEntry(_ context.Context, _ *artifact.CacheEntry, _, _ int64) (io.ReadCloser, error) {
+	return nil, nil
 }
 
 // ── lookup-error cache manager ────────────────────────────────────────────────
@@ -499,4 +513,57 @@ func TestFetchBodyAndStore_QuarantineDir(t *testing.T) {
 	// The quarantine file should be removed after Store.
 	fis, _ := os.ReadDir(tmp)
 	assert.Empty(t, fis, "quarantine file must be cleaned up after Store")
+}
+
+// ── Tests: serve-stale-on-upstream-failure (DESIGN-REVIEW §2 H1) ─────────────
+//
+// The mutable tier (@v/list, @latest) must serve TTL-expired content rather than
+// fail when the upstream GOPROXY is unreachable, so `go mod download` survives a
+// proxy outage (PRD §G5).
+
+func TestServeMutable_UpstreamFetchFail_StaleServed(t *testing.T) {
+	cm := newGomodTestCache()
+	staleList := []byte("v1.0.0\nv1.1.0\n")
+	cm.seedStale(listRef("github.com/foo/bar"), staleList)
+
+	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer failSrv.Close()
+
+	h := NewHandler(cm,
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{{Name: "fail", BaseURL: failSrv.URL}}),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/github.com/foo/bar/@v/list")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"stale @v/list MUST be served when upstream is down (DESIGN-REVIEW §2 H1)")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, staleList, body, "the stale bytes themselves must be served")
+}
+
+func TestServeMutable_NoUpstreamConfigured_StaleServed(t *testing.T) {
+	cm := newGomodTestCache()
+	staleList := []byte("v2.0.0\n")
+	cm.seedStale(listRef("github.com/baz/qux"), staleList)
+
+	h := NewHandler(cm) // no upstream wired
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/github.com/baz/qux/@v/list")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"stale @v/list MUST be served when no upstream is configured")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, staleList, body)
 }

@@ -118,17 +118,18 @@ func (c *helmTestCache) Store(_ context.Context, ref artifact.ArtifactRef, art *
 	return entry, nil
 }
 
+// Serve mirrors production manager.Serve: it re-runs the FRESH Lookup and
+// serves only what that returns. It deliberately does NOT fall back to
+// staleEntries — the real manager cannot, because manager.Serve calls Lookup
+// (no allowStale), which returns nil for a stale mutable entry. Stale bytes are
+// reachable only via ServeEntry.
 func (c *helmTestCache) Serve(_ context.Context, ref artifact.ArtifactRef, offset, length int64) (io.ReadCloser, *artifact.CacheEntry, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	k := c.cacheKey(ref)
-	entry, ok := c.entries[k]
+	entry, ok := c.entries[c.cacheKey(ref)]
 	if !ok {
-		entry, ok = c.staleEntries[k]
-		if !ok {
-			return nil, nil, cache.ErrCacheMiss
-		}
+		return nil, nil, cache.ErrCacheMiss
 	}
 	data, ok := c.blobs[entry.Digest]
 	if !ok {
@@ -1657,3 +1658,35 @@ func TestServeHTTP_Chart_Fetch404FromUpstream_Returns404(t *testing.T) {
 	assert.NotContains(t, string(body), "tgz content",
 		"error response must not contain chart data")
 }
+
+// ServeEntry mirrors manager.ServeEntry: it serves the bytes of the entry the
+// caller already holds, with no lookup and therefore no freshness gate. This is
+// the ONLY way stale bytes can reach the response — Serve cannot produce them.
+func (c *helmTestCache) ServeEntry(_ context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error) {
+	if entry == nil {
+		return nil, cache.ErrCacheMiss
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	data, ok := c.blobs[entry.Digest]
+	if !ok {
+		return nil, cache.ErrCacheMiss
+	}
+	total := int64(len(data))
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := total
+	if length >= 0 && start+length < end {
+		end = start + length
+	}
+	return io.NopCloser(bytes.NewReader(data[start:end])), nil
+}
+
+// entryServer satisfied — the handler opts in via a type assertion.
+var _ entryServer = (*helmTestCache)(nil)

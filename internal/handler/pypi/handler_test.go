@@ -26,17 +26,22 @@ import (
 // MetadataStore's composite primary key so lookups and stores are symmetric.
 
 type pypiTestCache struct {
-	mu      sync.Mutex
-	entries map[string]*artifact.CacheEntry
-	blobs   map[string][]byte
+	mu           sync.Mutex
+	entries      map[string]*artifact.CacheEntry // key → fresh CacheEntry
+	staleEntries map[string]*artifact.CacheEntry // key → TTL-expired CacheEntry
+	blobs        map[string][]byte
 }
 
 var _ cache.CacheManager = (*pypiTestCache)(nil)
 
+// staler satisfied — the handler opts in via a type assertion.
+var _ staler = (*pypiTestCache)(nil)
+
 func newPypiTestCache() *pypiTestCache {
 	return &pypiTestCache{
-		entries: make(map[string]*artifact.CacheEntry),
-		blobs:   make(map[string][]byte),
+		entries:      make(map[string]*artifact.CacheEntry),
+		staleEntries: make(map[string]*artifact.CacheEntry),
+		blobs:        make(map[string][]byte),
 	}
 }
 
@@ -72,6 +77,22 @@ func (c *pypiTestCache) Store(_ context.Context, ref artifact.ArtifactRef, art *
 	return entry, nil
 }
 
+// LookupStale mirrors manager.LookupStale: it returns TTL-expired entries too.
+func (c *pypiTestCache) LookupStale(_ context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := c.key(ref)
+	if e, ok := c.staleEntries[k]; ok {
+		return e, nil
+	}
+	return c.entries[k], nil
+}
+
+// Serve mirrors production manager.Serve: it re-runs the FRESH Lookup and serves
+// only what that returns. It deliberately does NOT fall back to staleEntries —
+// the real manager cannot, because manager.Serve calls Lookup (no allowStale),
+// which returns nil for a stale mutable entry. Stale bytes are reachable only
+// via ServeEntry.
 func (c *pypiTestCache) Serve(_ context.Context, ref artifact.ArtifactRef, offset, length int64) (io.ReadCloser, *artifact.CacheEntry, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -107,6 +128,22 @@ func (c *pypiTestCache) seed(ref artifact.ArtifactRef, data []byte) {
 	defer c.mu.Unlock()
 	c.blobs[digest] = data
 	c.entries[c.key(ref)] = &artifact.CacheEntry{
+		Ref:      ref,
+		Digest:   digest,
+		Size:     int64(len(data)),
+		Protocol: ref.Protocol,
+	}
+}
+
+// seedStale pre-populates a TTL-expired entry: Lookup misses it, LookupStale
+// finds it. This is the state the mutable tier is in when a short TTL has
+// lapsed and the upstream is unreachable (DESIGN-REVIEW §2 H1).
+func (c *pypiTestCache) seedStale(ref artifact.ArtifactRef, data []byte) {
+	digest := "sha256:stale-" + ref.Name + "-" + ref.Version
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.blobs[digest] = data
+	c.staleEntries[c.key(ref)] = &artifact.CacheEntry{
 		Ref:      ref,
 		Digest:   digest,
 		Size:     int64(len(data)),
@@ -810,3 +847,35 @@ func TestSimpleIndex_JSONAccept_CacheHit(t *testing.T) {
 	got, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, jsonBody, got)
 }
+
+// ServeEntry mirrors manager.ServeEntry: it serves the bytes of the entry the
+// caller already holds, with no lookup and therefore no freshness gate. This is
+// the ONLY way stale bytes can reach the response — Serve cannot produce them.
+func (c *pypiTestCache) ServeEntry(_ context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error) {
+	if entry == nil {
+		return nil, cache.ErrCacheMiss
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	data, ok := c.blobs[entry.Digest]
+	if !ok {
+		return nil, cache.ErrCacheMiss
+	}
+	total := int64(len(data))
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := total
+	if length >= 0 && start+length < end {
+		end = start + length
+	}
+	return io.NopCloser(bytes.NewReader(data[start:end])), nil
+}
+
+// entryServer satisfied — the handler opts in via a type assertion.
+var _ entryServer = (*pypiTestCache)(nil)

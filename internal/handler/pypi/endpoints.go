@@ -43,6 +43,16 @@ type staler interface {
 	LookupStale(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error)
 }
 
+// entryServer is an optional extension of CacheManager that serves the bytes of
+// a CacheEntry the caller ALREADY holds, with no re-lookup and no freshness
+// gate. This is what makes serve-stale-on-upstream-failure work: cache.Serve
+// re-runs Lookup, which reports a miss for a stale mutable entry, so a stale
+// entry can only be rendered through ServeEntry (DESIGN-REVIEW fix H1).
+// The production manager (cache.manager) implements this; test fakes may not.
+type entryServer interface {
+	ServeEntry(ctx context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error)
+}
+
 // wantsJSON reports whether the client signals a preference for the PEP 691
 // JSON simple index via its Accept header.
 func wantsJSON(r *http.Request) bool {
@@ -461,7 +471,7 @@ func (h *Handler) fetchAndStoreFile(ctx context.Context, ref artifact.ArtifactRe
 // Only already-verified CAS content is ever served (fix C2).
 func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, entry *artifact.CacheEntry, ct string) {
 	ctx := r.Context()
-	rc, cacheEntry, err := h.cache.Serve(ctx, ref, 0, -1)
+	rc, cacheEntry, err := h.serveBytes(ctx, ref, entry)
 	if err != nil {
 		if errors.Is(err, cache.ErrCacheMiss) {
 			writeError(w, http.StatusNotFound, "artifact not in cache")
@@ -574,4 +584,18 @@ func extractProjectFromFile(file string) string {
 		return ""
 	}
 	return normalizeProject(base[:idx])
+}
+
+// serveBytes returns a reader for the artifact's bytes plus the entry they
+// belong to. When the caller already holds an entry — including a STALE one
+// obtained from LookupStale — the bytes are served directly from it via
+// ServeEntry. Re-resolving through cache.Serve would re-run the freshness gate
+// and return ErrCacheMiss for stale mutable content, 404-ing the very content
+// the serve-stale path just decided to serve (DESIGN-REVIEW fix H1).
+func (h *Handler) serveBytes(ctx context.Context, ref artifact.ArtifactRef, entry *artifact.CacheEntry) (io.ReadCloser, *artifact.CacheEntry, error) {
+	if es, ok := h.cache.(entryServer); ok && entry != nil {
+		rc, err := es.ServeEntry(ctx, entry, 0, -1)
+		return rc, entry, err
+	}
+	return h.cache.Serve(ctx, ref, 0, -1)
 }

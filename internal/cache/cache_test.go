@@ -707,6 +707,101 @@ func TestServeMutablePayloadEntry(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
+// Tests: ServeEntry — serve bytes for an entry the caller already holds
+// --------------------------------------------------------------------------
+
+// TestServeEntryServesStaleMutableEntry is the regression test for the
+// serve-stale-on-upstream-failure bug (DESIGN-REVIEW §2 H1): Serve is
+// freshness-gated and MUST miss on a stale mutable ref, while ServeEntry MUST
+// still render the entry LookupStale returned for that same ref. Handlers rely
+// on exactly this asymmetry to keep serving an index when the upstream is down.
+func TestServeEntryServesStaleMutableEntry(t *testing.T) {
+	m, fb, fm := newTestManager(t, nil)
+	const digest = "sha256:stale"
+	content := []byte("stale but usable index")
+	ref := artifact.ArtifactRef{Protocol: "npm", Name: "react", Version: "packument", Mutable: true}
+	key := mutableKey(ref)
+
+	fb.blobs[digest] = content
+	fm.mutable[key] = &artifact.MutableEntry{
+		Key:        key,
+		Protocol:   "npm",
+		Digest:     digest,
+		TTLSeconds: ttlAlwaysRevalidate, // 0 → always expired
+		FetchedAt:  time.Now(),
+	}
+
+	// Serve is freshness-gated: it re-runs Lookup and must report a miss.
+	_, _, err := m.Serve(context.Background(), ref, 0, -1)
+	assert.ErrorIs(t, err, ErrCacheMiss,
+		"Serve must not return stale mutable content")
+
+	// LookupStale surfaces the entry the handler will hold...
+	stale, err := m.LookupStale(context.Background(), ref)
+	require.NoError(t, err)
+	require.NotNil(t, stale)
+
+	// ...and ServeEntry must render its bytes despite the expired TTL.
+	rc, err := m.ServeEntry(context.Background(), stale, 0, -1)
+	require.NoError(t, err)
+	require.NotNil(t, rc)
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	assert.Equal(t, content, got, "stale entry bytes must be served verbatim")
+}
+
+// TestServeEntryNilEntryIsMiss — a nil entry is a miss, never a panic.
+func TestServeEntryNilEntryIsMiss(t *testing.T) {
+	m, _, _ := newTestManager(t, nil)
+	_, err := m.ServeEntry(context.Background(), nil, 0, -1)
+	assert.ErrorIs(t, err, ErrCacheMiss)
+}
+
+// TestServeEntryRangeRead — Range semantics (fix M2) hold on the entry path.
+func TestServeEntryRangeRead(t *testing.T) {
+	m, fb, _ := newTestManager(t, nil)
+	const digest = "sha256:entryrange"
+	fb.blobs[digest] = []byte("0123456789")
+
+	rc, err := m.ServeEntry(context.Background(),
+		&artifact.CacheEntry{Digest: digest, Protocol: "oci"}, 3, 4)
+	require.NoError(t, err)
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	assert.Equal(t, []byte("3456"), got)
+}
+
+// TestServeEntryPayloadBackedStaleEntry — payload-backed mutable entries (no CAS
+// blob) are served through the entry path too, using entry.Ref for the payload
+// lookup.
+func TestServeEntryPayloadBackedStaleEntry(t *testing.T) {
+	m, _, fm := newTestManager(t, nil)
+	ref := artifact.ArtifactRef{Protocol: "pypi", Name: "flask", Version: "simple", Mutable: true}
+	key := mutableKey(ref)
+	payload := []byte("<html>stale simple index</html>")
+
+	fm.mutable[key] = &artifact.MutableEntry{
+		Key:        key,
+		Protocol:   "pypi",
+		Digest:     "", // payload-backed
+		Payload:    payload,
+		TTLSeconds: ttlAlwaysRevalidate, // stale
+		FetchedAt:  time.Now(),
+	}
+
+	stale, err := m.LookupStale(context.Background(), ref)
+	require.NoError(t, err)
+	require.NotNil(t, stale)
+
+	rc, err := m.ServeEntry(context.Background(), stale, 0, -1)
+	require.NoError(t, err)
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	assert.Equal(t, payload, got)
+}
+
+// --------------------------------------------------------------------------
 // Tests: Quarantine
 // --------------------------------------------------------------------------
 

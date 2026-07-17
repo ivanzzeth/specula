@@ -24,6 +24,16 @@ type staler interface {
 	LookupStale(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error)
 }
 
+// entryServer is an optional extension of CacheManager that serves the bytes of
+// a CacheEntry the caller ALREADY holds, with no re-lookup and no freshness
+// gate. This is what makes serve-stale-on-upstream-failure work: cache.Serve
+// re-runs Lookup, which reports a miss for a stale mutable entry, so a stale
+// entry can only be rendered through ServeEntry (DESIGN-REVIEW fix H1).
+// The production manager (cache.manager) implements this; test fakes may not.
+type entryServer interface {
+	ServeEntry(ctx context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error)
+}
+
 // helmMutableKey returns the MetadataStore key for a mutable helm ArtifactRef.
 func helmMutableKey(ref artifact.ArtifactRef) string {
 	return ref.Protocol + ":" + ref.Name + ":" + ref.Version
@@ -329,7 +339,7 @@ func (h *Handler) fetchBodyAndStore(ctx context.Context, ref artifact.ArtifactRe
 // The actual bytes are read from h.cache.Serve (only verified content is returned).
 func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, entry *artifact.CacheEntry, ct string) {
 	ctx := r.Context()
-	rc, cacheEntry, err := h.cache.Serve(ctx, ref, 0, -1)
+	rc, cacheEntry, err := h.serveBytes(ctx, ref, entry)
 	if err != nil {
 		if errors.Is(err, cache.ErrCacheMiss) {
 			writeError(w, http.StatusNotFound, "artifact not in cache")
@@ -479,4 +489,18 @@ func rewriteYAMLURLs(n *yaml.Node) {
 			rewriteYAMLURLs(child)
 		}
 	}
+}
+
+// serveBytes returns a reader for the artifact's bytes plus the entry they
+// belong to. When the caller already holds an entry — including a STALE one
+// obtained from LookupStale — the bytes are served directly from it via
+// ServeEntry. Re-resolving through cache.Serve would re-run the freshness gate
+// and return ErrCacheMiss for stale mutable content, 404-ing the very content
+// the serve-stale path just decided to serve (DESIGN-REVIEW fix H1).
+func (h *Handler) serveBytes(ctx context.Context, ref artifact.ArtifactRef, entry *artifact.CacheEntry) (io.ReadCloser, *artifact.CacheEntry, error) {
+	if es, ok := h.cache.(entryServer); ok && entry != nil {
+		rc, err := es.ServeEntry(ctx, entry, 0, -1)
+		return rc, entry, err
+	}
+	return h.cache.Serve(ctx, ref, 0, -1)
 }

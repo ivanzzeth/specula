@@ -60,7 +60,33 @@ type CacheManager interface {
 	// plus its entry. Only ever serves already-verified content (fix C2).
 	// Returns ErrCacheMiss if the artifact is absent or the mutable TTL has
 	// expired.
+	//
+	// Serve is freshness-gated: it re-runs Lookup internally, so it can never
+	// serve a stale mutable entry. Callers that already hold an entry — notably
+	// the serve-stale-on-upstream-failure path, which holds a LookupStale result
+	// — must use EntryServer.ServeEntry instead; passing a stale ref here yields
+	// ErrCacheMiss (DESIGN-REVIEW fix H1).
 	Serve(ctx context.Context, ref artifact.ArtifactRef, offset, length int64) (io.ReadCloser, *artifact.CacheEntry, error)
+}
+
+// EntryServer serves the bytes for a CacheEntry the caller ALREADY holds,
+// performing no lookup and therefore applying no freshness gate.
+//
+// This is what makes serve-stale-on-upstream-failure possible (DESIGN-REVIEW
+// fix H1): a handler that obtained an entry from LookupStale can render its
+// bytes even though Lookup — and hence Serve — would report a miss for it.
+//
+// It is an optional extension rather than a CacheManager method so that the
+// many CacheManager implementations elsewhere in the tree need not change; the
+// production manager implements it, and handlers opt in by type assertion (the
+// same convention already used for LookupStale).
+//
+// Freshness is the caller's decision; verification is NOT. ServeEntry still only
+// ever reads from the verified CAS blob store or a verified mutable payload, so
+// the "unverified bytes are never served" invariant (fix C2) holds regardless of
+// how the entry was obtained.
+type EntryServer interface {
+	ServeEntry(ctx context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error)
 }
 
 // manager is the concrete two-tier CacheManager implementation.
@@ -86,8 +112,14 @@ func New(blobs blob.BlobStore, metaStore meta.MetadataStore, chain *verify.Chain
 	}
 }
 
-// Compile-time assertion.
-var _ CacheManager = (*manager)(nil)
+// Compile-time assertions. The EntryServer assertion matters: handlers reach
+// serve-stale through a type assertion, which would silently degrade to a
+// freshness-gated Serve (and thus 404 on stale content) if manager ever stopped
+// implementing it.
+var (
+	_ CacheManager = (*manager)(nil)
+	_ EntryServer  = (*manager)(nil)
+)
 
 // --------------------------------------------------------------------------
 // Internal helpers
@@ -293,31 +325,43 @@ func (m *manager) runVerify(ctx context.Context, ref artifact.ArtifactRef, art *
 // Serve
 // --------------------------------------------------------------------------
 
-// Serve returns a reader for [offset, offset+length) of the verified blob.
-// Only ever serves from the already-verified CAS store (fix C2).
+// Serve resolves ref to a fresh entry and serves its bytes. It is exactly
+// Lookup + ServeEntry: the freshness gate lives in Lookup, and every byte
+// leaves through ServeEntry, so there is a single byte-serving path.
 // Returns ErrCacheMiss when no valid (fresh) entry exists.
 func (m *manager) Serve(ctx context.Context, ref artifact.ArtifactRef, offset, length int64) (io.ReadCloser, *artifact.CacheEntry, error) {
 	entry, err := m.Lookup(ctx, ref)
 	if err != nil {
 		return nil, nil, fmt.Errorf("cache: serve lookup: %w", err)
 	}
+	rc, err := m.ServeEntry(ctx, entry, offset, length)
+	if err != nil {
+		return nil, nil, err
+	}
+	return rc, entry, nil
+}
+
+// ServeEntry serves [offset, offset+length) of the bytes for an entry the
+// caller already holds, with no re-lookup and no freshness gate — this is what
+// lets handlers serve a LookupStale result when the upstream is down
+// (DESIGN-REVIEW fix H1).
+//
+// The bytes still come only from verified storage (fix C2): either the CAS blob
+// named by entry.Digest, or the verified inline payload of the mutable entry.
+func (m *manager) ServeEntry(ctx context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error) {
 	if entry == nil {
-		return nil, nil, ErrCacheMiss
+		return nil, ErrCacheMiss
 	}
 	// Payload-backed mutable entries have no CAS blob (e.g. small index pages,
 	// packuments stored directly in the MutableEntry.Payload field).
 	if entry.Digest == "" {
-		rc, err := m.serveMutablePayload(ctx, ref, offset, length)
-		if err != nil {
-			return nil, nil, err
-		}
-		return rc, entry, nil
+		return m.serveMutablePayload(ctx, entry.Ref, offset, length)
 	}
 	rc, _, err := m.blobs.Get(ctx, entry.Digest, offset, length)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cache: blob get: %w", err)
+		return nil, fmt.Errorf("cache: blob get: %w", err)
 	}
-	return rc, entry, nil
+	return rc, nil
 }
 
 // serveMutablePayload serves the Payload bytes of a MutableEntry (no CAS blob)

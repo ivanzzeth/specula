@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -145,4 +146,52 @@ func TestNpmServeMutable_StoreError_502(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode,
 		"store failure after successful upstream fetch must return 502")
+}
+
+// ── Tests: serve-stale-on-upstream-failure (DESIGN-REVIEW §2 H1) ─────────────
+//
+// The mutable tier must serve a TTL-expired packument rather than fail when the
+// upstream is unreachable, so `npm install` survives a registry outage (PRD §G5:
+// CN-region deployments where upstreams are slow, throttled, or unreachable).
+
+func TestNpmServeMutable_UpstreamDown_StaleServed(t *testing.T) {
+	cm := newNpmTestCache()
+	stalePackument := []byte(`{"name":"react","versions":{"18.0.0":{}}}`)
+	cm.seedStale(packumentRef("react"), stalePackument)
+
+	// Nothing listening → every upstream fetch fails.
+	h := newNpmHandlerWithUpstream(cm, "http://127.0.0.1:0")
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/react")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"stale packument MUST be served when upstream is down (DESIGN-REVIEW §2 H1)")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, stalePackument, body, "the stale bytes themselves must be served")
+}
+
+func TestNpmServeMutable_NoUpstreamConfigured_StaleServed(t *testing.T) {
+	cm := newNpmTestCache()
+	stalePackument := []byte(`{"name":"lodash","versions":{"4.17.21":{}}}`)
+	cm.seedStale(packumentRef("lodash"), stalePackument)
+
+	// No upstream wired at all → stale is the only possible answer.
+	h := NewHandler(cm, WithMutableTTL(300))
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/lodash")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"stale packument MUST be served when no upstream is configured")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, stalePackument, body)
 }

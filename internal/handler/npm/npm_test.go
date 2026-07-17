@@ -29,17 +29,22 @@ import (
 // matching production behaviour. Serve applies offset/length windowing.
 
 type npmTestCache struct {
-	mu      sync.Mutex
-	entries map[string]*artifact.CacheEntry // cacheKey → CacheEntry
-	blobs   map[string][]byte               // digest → bytes
+	mu           sync.Mutex
+	entries      map[string]*artifact.CacheEntry // cacheKey → fresh CacheEntry
+	staleEntries map[string]*artifact.CacheEntry // cacheKey → TTL-expired CacheEntry
+	blobs        map[string][]byte               // digest → bytes
 }
 
 var _ cache.CacheManager = (*npmTestCache)(nil)
 
+// staler satisfied — the handler opts in via a type assertion.
+var _ staler = (*npmTestCache)(nil)
+
 func newNpmTestCache() *npmTestCache {
 	return &npmTestCache{
-		entries: make(map[string]*artifact.CacheEntry),
-		blobs:   make(map[string][]byte),
+		entries:      make(map[string]*artifact.CacheEntry),
+		staleEntries: make(map[string]*artifact.CacheEntry),
+		blobs:        make(map[string][]byte),
 	}
 }
 
@@ -77,7 +82,22 @@ func (c *npmTestCache) Store(_ context.Context, ref artifact.ArtifactRef, art *a
 	return entry, nil
 }
 
-// Serve returns the blob bytes with offset/length windowing.
+// LookupStale mirrors manager.LookupStale: it returns TTL-expired entries too.
+func (c *npmTestCache) LookupStale(_ context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := c.entryKey(ref)
+	if e, ok := c.staleEntries[k]; ok {
+		return e, nil
+	}
+	return c.entries[k], nil
+}
+
+// Serve mirrors production manager.Serve: it re-runs the FRESH Lookup and serves
+// only what that returns. It deliberately does NOT fall back to staleEntries —
+// the real manager cannot, because manager.Serve calls Lookup (no allowStale),
+// which returns nil for a stale mutable entry. Stale bytes are reachable only
+// via ServeEntry.
 func (c *npmTestCache) Serve(_ context.Context, ref artifact.ArtifactRef, offset, length int64) (io.ReadCloser, *artifact.CacheEntry, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -113,6 +133,23 @@ func (c *npmTestCache) seed(ref artifact.ArtifactRef, data []byte) string {
 	defer c.mu.Unlock()
 	c.blobs[digest] = data
 	c.entries[c.entryKey(ref)] = &artifact.CacheEntry{
+		Ref:      ref,
+		Digest:   digest,
+		Size:     int64(len(data)),
+		Protocol: ref.Protocol,
+	}
+	return digest
+}
+
+// seedStale pre-populates a TTL-expired entry: Lookup misses it, LookupStale
+// finds it. This is the state the mutable tier is in when a short TTL has
+// lapsed and the upstream is unreachable (DESIGN-REVIEW §2 H1).
+func (c *npmTestCache) seedStale(ref artifact.ArtifactRef, data []byte) string {
+	digest := npmsha256sum(data)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.blobs[digest] = data
+	c.staleEntries[c.entryKey(ref)] = &artifact.CacheEntry{
 		Ref:      ref,
 		Digest:   digest,
 		Size:     int64(len(data)),
@@ -761,3 +798,35 @@ func TestDepConfusion_UnscopedGlob(t *testing.T) {
 		})
 	}
 }
+
+// ServeEntry mirrors manager.ServeEntry: it serves the bytes of the entry the
+// caller already holds, with no lookup and therefore no freshness gate. This is
+// the ONLY way stale bytes can reach the response — Serve cannot produce them.
+func (c *npmTestCache) ServeEntry(_ context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error) {
+	if entry == nil {
+		return nil, cache.ErrCacheMiss
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	data, ok := c.blobs[entry.Digest]
+	if !ok {
+		return nil, cache.ErrCacheMiss
+	}
+	total := int64(len(data))
+	start := offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := total
+	if length >= 0 && start+length < end {
+		end = start + length
+	}
+	return io.NopCloser(bytes.NewReader(data[start:end])), nil
+}
+
+// entryServer satisfied — the handler opts in via a type assertion.
+var _ entryServer = (*npmTestCache)(nil)

@@ -107,6 +107,19 @@ func (c *errorAptCache) Serve(ctx context.Context, ref artifact.ArtifactRef, off
 	return c.aptTestCache.Serve(ctx, ref, offset, length)
 }
 
+// ServeEntry mirrors the Serve injection above. serveFromCache reaches the
+// cache through ServeEntry whenever it holds an entry, so a double that injects
+// only on Serve would leave the fault unreachable and test nothing.
+func (c *errorAptCache) ServeEntry(ctx context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error) {
+	if c.serveErr != nil {
+		return nil, c.serveErr
+	}
+	if c.serveNil {
+		return nil, nil
+	}
+	return c.aptTestCache.ServeEntry(ctx, entry, offset, length)
+}
+
 // ── Option function tests ─────────────────────────────────────────────────────
 
 // TestWithMeta_SetsField verifies that WithMeta injects the MetadataStore.

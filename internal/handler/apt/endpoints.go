@@ -20,7 +20,6 @@
 package apt
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -39,6 +38,16 @@ import (
 // The production manager (cache.manager) implements this; test fakes may not.
 type staler interface {
 	LookupStale(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error)
+}
+
+// entryServer is an optional extension of CacheManager that serves the bytes of
+// a CacheEntry the caller ALREADY holds, with no re-lookup and no freshness
+// gate. This is what makes serve-stale-on-upstream-failure work: cache.Serve
+// re-runs Lookup, which reports a miss for a stale mutable entry, so a stale
+// entry can only be rendered through ServeEntry (DESIGN-REVIEW fix H1).
+// The production manager (cache.manager) implements this; test fakes may not.
+type entryServer interface {
+	ServeEntry(ctx context.Context, entry *artifact.CacheEntry, offset, length int64) (io.ReadCloser, error)
 }
 
 // --------------------------------------------------------------------------
@@ -101,11 +110,11 @@ func aptMutableKey(ref artifact.ArtifactRef) string {
 //
 // cache.Serve internally calls cache.Lookup, which respects TTL. When
 // mutableTTLSec==0 (Debian Repository Format §InRelease: always-revalidate),
-// Lookup returns nil immediately even for content just stored, causing
-// cache.Serve to return ErrCacheMiss. To avoid this, fresh upstream responses
-// are buffered in memory and written directly without re-reading from the cache.
-// Mutable dists/ files (InRelease: ~4 KB, Packages.xz: ~5 MB) are small enough
-// that in-memory buffering is safe.
+// Lookup returns nil even for content just stored — so re-resolving a ref
+// through Serve is never correct on this pipeline. Every response below is
+// therefore written by serveFromCache from an entry the handler already holds
+// (a fresh Lookup, a LookupStale, or a Store result), which streams the bytes
+// via cache.EntryServer.ServeEntry without a second lookup.
 func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ct string) {
 	ctx := r.Context()
 
@@ -147,18 +156,13 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 				h.serveFromCache(w, r, ref, staleEntry, ct)
 				return
 			}
-			// 200: new content — buffer, store, and serve directly.
-			// serveFromCache cannot be used here: with TTL=0, cache.Serve
-			// re-runs Lookup which returns nil (always expired), causing
-			// ErrCacheMiss on content we just stored.
+			// 200: new content — store, then serve the stored entry.
 			defer body.Close()
-			bodyBytes, readErr := io.ReadAll(body)
-			if readErr == nil {
-				_, _ = h.fetchBodyAndStore(ctx, ref, bytes.NewReader(bodyBytes), umeta)
-				h.serveBuffered(w, r, bodyBytes, ct)
+			if newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta); storeErr == nil && newEntry != nil {
+				h.serveFromCache(w, r, ref, newEntry, ct)
 				return
 			}
-			// Fall through to fresh fetch if read failed.
+			// Fall through to a fresh fetch if the store failed.
 		}
 	}
 
@@ -176,22 +180,21 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	}
 	defer body.Close()
 
-	// Buffer the freshly-fetched mutable body so we can both store it and
-	// write it to the client directly. Bypasses the TTL=0 cache.Serve miss
-	// (see package-level comment above). Debian Repository Format §InRelease,
-	// §Packages: these files top out at a few MB — buffering is safe.
-	bodyBytes, readErr := io.ReadAll(body)
-	if readErr != nil {
-		h.log.Error("apt: read mutable body", "ref", ref, "err", readErr)
-		writeError(w, http.StatusBadGateway, "upstream read failed")
+	// Stream the freshly-fetched body through verify-on-write into the CAS, then
+	// serve the stored entry. Previously this path buffered the whole body in
+	// memory and wrote it to the client directly, because with TTL=0 cache.Serve
+	// re-ran Lookup and missed on content just stored; serveFromCache now serves
+	// the entry it is handed, so the buffering is unnecessary. Removing it also
+	// closes a fail-open hole: the old code served the buffered bytes even when
+	// the store returned a VerifyError, i.e. it served content whose signature
+	// check had FAILED (fix C2 requires the opposite — see the pool/ path).
+	newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta)
+	if storeErr != nil {
+		h.log.Error("apt: store mutable dists", "ref", ref, "err", storeErr)
+		writeError(w, http.StatusBadGateway, "failed to cache upstream response")
 		return
 	}
-
-	if _, storeErr := h.fetchBodyAndStore(ctx, ref, bytes.NewReader(bodyBytes), umeta); storeErr != nil {
-		h.log.Error("apt: store mutable dists", "ref", ref, "err", storeErr)
-		// Degrade gracefully: serve the buffered bytes even if caching failed.
-	}
-	h.serveBuffered(w, r, bodyBytes, ct)
+	h.serveFromCache(w, r, ref, newEntry, ct)
 }
 
 // --------------------------------------------------------------------------
@@ -319,7 +322,7 @@ func (h *Handler) fetchBodyAndStore(ctx context.Context, ref artifact.ArtifactRe
 // (only verified content is returned — fix C2).
 func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, entry *artifact.CacheEntry, ct string) {
 	ctx := r.Context()
-	rc, cacheEntry, err := h.cache.Serve(ctx, ref, 0, -1)
+	rc, cacheEntry, err := h.serveBytes(ctx, ref, entry)
 	if err != nil {
 		if errors.Is(err, cache.ErrCacheMiss) {
 			writeError(w, http.StatusNotFound, "artifact not in cache")
@@ -355,17 +358,10 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref art
 	}
 }
 
-// serveBuffered writes a pre-buffered response body to w, used for freshly-
-// fetched mutable content where cache.Serve would return ErrCacheMiss due to
-// the always-revalidate (TTL=0) setting.
-func (h *Handler) serveBuffered(w http.ResponseWriter, r *http.Request, buf []byte, ct string) {
-	w.Header().Set("Content-Type", ct)
-	w.Header().Set("Content-Length", strconv.Itoa(len(buf)))
-	w.WriteHeader(http.StatusOK)
-	if r.Method == http.MethodGet {
-		_, _ = w.Write(buf)
-	}
-}
+// serveBuffered has been removed: it existed only to work around cache.Serve
+// re-running Lookup (and thus missing on TTL=0 content that had just been
+// stored). serveFromCache now serves the entry it is passed via ServeEntry, so
+// mutable responses stream from the CAS like every other tier.
 
 // --------------------------------------------------------------------------
 // Mutable revalidation helpers
@@ -422,4 +418,18 @@ func isNotFound(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "HTTP 404")
+}
+
+// serveBytes returns a reader for the artifact's bytes plus the entry they
+// belong to. When the caller already holds an entry — including a STALE one
+// obtained from LookupStale — the bytes are served directly from it via
+// ServeEntry. Re-resolving through cache.Serve would re-run the freshness gate
+// and return ErrCacheMiss for stale mutable content, 404-ing the very content
+// the serve-stale path just decided to serve (DESIGN-REVIEW fix H1).
+func (h *Handler) serveBytes(ctx context.Context, ref artifact.ArtifactRef, entry *artifact.CacheEntry) (io.ReadCloser, *artifact.CacheEntry, error) {
+	if es, ok := h.cache.(entryServer); ok && entry != nil {
+		rc, err := es.ServeEntry(ctx, entry, 0, -1)
+		return rc, entry, err
+	}
+	return h.cache.Serve(ctx, ref, 0, -1)
 }
