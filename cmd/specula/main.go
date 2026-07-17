@@ -188,7 +188,13 @@ func run() error {
 	// than fail-closing every real fetch.
 	mirrorFetcher := verify.NewHTTPMirrorDigestFetcher(0)
 	for _, protocol := range []string{"oci", "pypi", "npm", "tarball"} {
-		if cv := buildConsensusVerifier(protocol, cfg, mirrorFetcher, log); cv != nil {
+		cv, err := buildConsensusVerifier(protocol, cfg, mirrorFetcher, log)
+		if err != nil {
+			// Unsatisfiable consensus config: refuse to start rather than serve
+			// 502s forever from a tier that can never pass (BUG C).
+			return fmt.Errorf("build consensus verifier: %w", err)
+		}
+		if cv != nil {
 			verifiers = append(verifiers, cv)
 		}
 	}
@@ -561,7 +567,11 @@ func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager
 		// Shares the GONOSUMDB private-module matcher with the chain verifier so a
 		// private module name is never forwarded to the public sumdb (H5).
 		if pc.SumDB != nil {
+			// The passthrough serves exactly the database named by the configured
+			// verifier key — the same key the chain verifier pins — so the two
+			// cannot disagree about WHICH log is authoritative.
 			sh := gomod.NewSumDBHandler(pc.SumDB.URL,
+				gomod.WithSumDBName(verify.SumDBNameFromKey(pc.SumDB.VerifierKey)),
 				gomod.WithSumDBPrivateMatcher(verify.NewPrivateMatcher(pc.SumDB.PrivatePatterns)),
 				gomod.WithSumDBLogger(log.With("protocol", gomod.Protocol, "component", "sumdb")),
 			)
@@ -596,6 +606,8 @@ func buildGoSumDBVerifier(cfg *config.Config, metaStore metastore.MetadataStore,
 		Policy:          verify.Policy(sc.Policy),
 		PrivatePatterns: sc.PrivatePatterns,
 		TreeSize:        newMetaTreeSizeStore(metaStore),
+		// nil → built-in tolerance for CDN edge lag; 0 → strict (BUG D).
+		RollbackToleranceEntries: sc.RollbackToleranceEntries,
 	})
 }
 
@@ -885,26 +897,35 @@ func consensusEnabled(vc config.VerificationConfig) bool {
 }
 
 // buildConsensusVerifier constructs a protocol-scoped cross-source consensus
-// verifier for the named protocol from its config, or returns nil when consensus
-// is not enabled or not achievable metadata-only for that protocol. Mirrors come
-// from the structured consensus block when present, else are derived from the
-// protocol upstreams (non-official = independent mirrors; the official upstream
-// becomes the authoritative origin witness). The returned verifier is scoped so
-// it only acts on its own protocol within the shared chain.
-func buildConsensusVerifier(protocol string, cfg *config.Config, fetcher verify.MirrorDigestFetcher, log *slog.Logger) verify.Verifier {
+// verifier for the named protocol from its config, or returns (nil, nil) when
+// consensus is not enabled or not achievable metadata-only for that protocol.
+// Mirrors come from the structured consensus block when present, else are derived
+// from the protocol upstreams (non-official = independent mirrors; the official
+// upstream becomes the authoritative origin witness). The returned verifier is
+// scoped so it only acts on its own protocol within the shared chain.
+//
+// An UNSATISFIABLE quorum (quorum > mirrors) is a hard error, not a warning: the
+// tier could never pass, so every fetch of that protocol would 502 forever. The
+// derivation rule makes this easy to get wrong — marking the official origin
+// `official: true` moves it OUT of the mirror set and into the witness slot, so
+// two upstreams with quorum:2 leaves one voter. Startup used to log a cheerful
+// "quorum:2 mirrors:1" and serve 502s. A security tier that silently cannot pass
+// is worse than one that is off, so we refuse to start and name the numbers
+// (BUG C).
+func buildConsensusVerifier(protocol string, cfg *config.Config, fetcher verify.MirrorDigestFetcher, log *slog.Logger) (verify.Verifier, error) {
 	pc, ok := cfg.Protocols[protocol]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	vc := pc.Verification
 	if !consensusEnabled(vc) {
-		return nil
+		return nil, nil
 	}
 	if !consensusMetadataProtocols[protocol] {
 		log.Warn("specula: consensus requested but not achievable metadata-only — staying at tofu",
 			"protocol", protocol,
 			"reason", "mirror metadata advertises no sha256 (npm uses sha512 integrity; tarball advertises none)")
-		return nil
+		return nil, nil
 	}
 
 	quorum := vc.Quorum
@@ -935,6 +956,26 @@ func buildConsensusVerifier(protocol string, cfg *config.Config, fetcher verify.
 		quorum = 1
 	}
 
+	// Fail closed on an unsatisfiable quorum, naming both numbers and the
+	// derivation that produced them.
+	if len(mirrors) == 0 {
+		return nil, fmt.Errorf(
+			"protocols[%s].verification: consensus tier enabled with quorum %d but 0 independent mirrors — "+
+				"the tier can never pass and every %s fetch would fail closed. Non-official upstreams become "+
+				"consensus mirrors; an upstream marked `official: true` becomes the origin WITNESS, not a mirror. "+
+				"Configure >= %d non-official upstreams (or an explicit verification.consensus.mirrors list), "+
+				"or remove the consensus tier",
+			protocol, quorum, protocol, quorum)
+	}
+	if quorum > len(mirrors) {
+		return nil, fmt.Errorf(
+			"protocols[%s].verification: consensus quorum %d exceeds the %d available independent mirror(s) — "+
+				"the tier can never pass and every %s fetch would fail closed. Note an upstream marked "+
+				"`official: true` becomes the origin WITNESS, not a mirror. Either lower quorum to <= %d, "+
+				"or add %d more non-official upstream(s)/consensus mirror(s)",
+			protocol, quorum, len(mirrors), protocol, len(mirrors), quorum-len(mirrors))
+	}
+
 	cv := verify.NewConsensusVerifier(verify.ConsensusConfig{
 		Quorum:      quorum,
 		Mirrors:     mirrors,
@@ -942,7 +983,7 @@ func buildConsensusVerifier(protocol string, cfg *config.Config, fetcher verify.
 	}, fetcher)
 	log.Info("specula: cross-source consensus enabled",
 		"protocol", protocol, "quorum", quorum, "mirrors", len(mirrors), "origin_check", origin.URL != "")
-	return newProtocolScopedVerifier(cv, protocol)
+	return newProtocolScopedVerifier(cv, protocol), nil
 }
 
 // buildCosignVerifier constructs the keyed cosign verifier for the oci protocol

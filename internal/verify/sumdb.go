@@ -96,6 +96,10 @@ type SumDBConfig struct {
 	// TreeSize persists the anti-rollback high-water tree size. May be nil in
 	// tests; production wiring supplies a metadata-backed implementation.
 	TreeSize TreeSizeStore
+	// RollbackToleranceEntries bounds a tolerated regression of the signed tree
+	// head below the persisted high-water mark (CDN edge lag vs rollback attack).
+	// nil uses defaultRollbackToleranceEntries; 0 is strict.
+	RollbackToleranceEntries *int64
 }
 
 // SumDBVerifier verifies Go module authenticity against a signed sumdb tree head
@@ -304,6 +308,9 @@ func (v *SumDBVerifier) getClient() (*xsumdb.Client, *specOps, error) {
 		if err != nil {
 			v.initErr = err
 			return
+		}
+		if t := v.cfg.RollbackToleranceEntries; t != nil {
+			ops.rollbackTolerance = *t
 		}
 		v.ops = ops
 		v.client = xsumdb.NewClient(ops)

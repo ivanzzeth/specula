@@ -234,10 +234,17 @@ type GitConfig struct {
 // "enforce" (default) or "warn"; anything else — including "off" — is rejected
 // by Validate.
 type SumDBConfig struct {
-	// URL is the sumdb access endpoint. CN-reachable options:
-	// "sum.golang.google.cn" or a GOPROXY "/sumdb/" passthrough base
-	// (e.g. "https://goproxy.cn/sumdb"). Empty falls back to the compiled
-	// default (sum.golang.org) — acceptable only where it is reachable.
+	// URL is the sumdb access endpoint, in either of two wire shapes. Both the
+	// chain verifier and the /sumdb/ passthrough resolve it through
+	// verify.SumDBEndpoint, so both shapes work for both (see that type):
+	//
+	//   DIRECT — the checksum database at its host root; the name is NOT part of
+	//     its URL space.  e.g. "https://sum.golang.google.cn"  (CN default)
+	//   PROXY  — a GOPROXY module-proxy base whose path ends in "/sumdb"; it
+	//     routes on "/<sumdb-name>/...".  e.g. "https://goproxy.cn/sumdb"
+	//
+	// Empty falls back to the compiled default (https://sum.golang.org, direct)
+	// — acceptable only where it is reachable, which in CN it is not.
 	URL string `koanf:"url"`
 
 	// Policy is "enforce" (fail closed on verification failure) or "warn"
@@ -250,6 +257,21 @@ type SumDBConfig struct {
 	// forwarded to the public sumdb and /sumdb/ lookups for them return 403.
 	// Example: ["git.internal.corp/*", "*.corp.example.com/*"].
 	PrivatePatterns []string `koanf:"private_patterns"`
+
+	// RollbackToleranceEntries bounds how far a signed tree head may regress
+	// below the persisted anti-rollback high-water mark before it is treated as
+	// an attack rather than CDN edge lag.
+	//
+	// nil (omitted) uses the built-in default (5000 entries ≈ 1–5.5h of log
+	// growth). 0 is strict: any regression at all fails closed. A regression
+	// within the window is WARN-logged and never advances the high-water mark.
+	//
+	// Rationale, measurements and threat analysis: verify.defaultRollbackTolerance
+	// Entries in internal/verify/sumdb_client.go. In short: sum.golang.google.cn
+	// serves /latest with `cache-control: max-age=300`, so a lagging CDN edge
+	// legitimately returns an older head; strict mode intermittently bricks CN
+	// `go get`.
+	RollbackToleranceEntries *int64 `koanf:"rollback_tolerance_entries"`
 
 	// VerifierKey pins the sumdb note verifier key ("<name>+<hash>+<base64key>",
 	// golang.org/x/mod/sumdb/note format). Empty uses the default sum.golang.org
