@@ -8,7 +8,7 @@ export CGO_ENABLED := 0
 
 .PHONY: all ui build build-go run clean vet fmt cover \
         test test-unit test-integration test-postgres test-conformance \
-        test-trust-oracle test-trust-oracle-mutations \
+        test-trust-oracle test-trust-oracle-mutations test-trust-oracle-signed \
         test-groundtruth test-groundtruth-meta \
         test-mutation \
         test-realclient test-e2e test-ui test-all
@@ -150,10 +150,29 @@ test-conformance:
 #
 # Slow and network-bound by nature, like test-conformance. Writes a machine-readable verdict
 # to results/trust-oracle.json so no one can summarise past a disagreement.
-# NOT covered, and deliberately loud about it: cosign keyed / OCI signed (no cosign CLI
-# available), helm .prov signed (the CN mirror publishes no .prov at all), npm/git/tarball.
+# NOT covered here, by design (it grades against real CN mirrors, which serve no signatures):
+# cosign keyed / OCI signed and helm .prov signed — those two `signed` tiers are graded by
+# test-trust-oracle-signed below, hermetically, against the real cosign/helm binaries.
 test-trust-oracle:
 	bash scripts/trust-oracle.sh
+
+## test-trust-oracle-signed: INDEPENDENT oracle for the two `signed` tiers the CN-mirror gate
+## cannot reach — oci (cosign keyed) and helm (.prov) (needs: docker + cosign + helm + gpg)
+#
+# scripts/trust-oracle.sh is explicit that it says NOTHING about cosign or helm .prov: no CN
+# mirror serves either signature. This gate supplies the missing evidence hermetically — it
+# builds a REAL cosign-signed image on a local registry and a REAL helm-signed chart on a
+# local repo, drives them through a real Specula, and asserts the recorded tier agrees across
+# cache_entries + specula_verification_total + the extended oracle (which re-verifies with the
+# real cosign/gpg binaries and an out-of-band key). It also proves the NEGATIVE (unsigned =>
+# never signed) and TAMPER (bad signature => refused, reaching the verifier) cases fail closed,
+# and INJECTS a fabricated `signed` to prove each new oracle check goes RED.
+#
+# HONEST SCOPE: this proves the verifier + pipeline reach `signed` against real cosign/helm
+# output in a lab we built. It does NOT claim any public CN mirror serves such signatures.
+# Set SPECULA_COSIGN_BIN to a cosign binary (buildable in CN via goproxy.cn).
+test-trust-oracle-signed:
+	bash scripts/trust-oracle-signed.sh
 
 ## test-trust-oracle-mutations: prove the oracle CATCHES lies (needs: everything above + a clean tree)
 #
