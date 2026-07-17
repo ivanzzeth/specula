@@ -27,17 +27,15 @@
 //     is exactly when an attacker's public copy could win.
 //   - TOFU: ref→SHA pins are recorded in MetadataStore; non-fast-forward updates
 //     trigger a logged warning (force-push / history-rewrite detection). This is
-//     the ceiling this package actually reaches — see RepoTier.
-//   - signed refs: NOT REACHED. A verify.GitSignedVerifier is accepted by
-//     WithSignedRefsVerifier and stored on the Handler, but no code path in this
-//     package ever invokes it, so no git ref in this build has had a signature
-//     verified. PRD §G2 lists `signed` as git's reachable ceiling ("签名 tag/commit,
-//     配 allowed-signers"); that row describes an intent, not this code. The
-//     startup log ("git allowed-signers not configured — git tops out at tofu")
-//     is the accurate description of every deployment today, because the
-//     configured case is not implemented either. Reported rather than papered
-//     over: the fix is to invoke the verifier on the ref-advertise path, which is
-//     a feature, not a bug fix, and is out of scope here.
+//     the ceiling a repo reaches with no signed-refs anchor configured — see
+//     RepoTier.
+//   - signed refs: REACHED when a verify.GitSignedVerifier is configured
+//     (WithSignedRefsVerifier). After each sync, updateSignedRefs verifies the
+//     signature on every ref tip against the allowed-signers anchor; a ref that
+//     verifies earns the `signed` tier (a per-ref pin + a signed/pass series on
+//     /metrics), fulfilling PRD §G2 ("签名 tag/commit（配 allowed-signers）；否则
+//     tofu"). A ref with no signature stays at tofu (opt-in). Under policy=enforce
+//     an untrusted signature fails closed. See signed.go.
 package git
 
 import (
@@ -183,13 +181,11 @@ func WithFailClosed(failClosed bool) Option {
 	return func(h *Handler) { h.failClosed = failClosed }
 }
 
-// WithSignedRefsVerifier injects the signed tag/commit verifier.
-//
-// WARNING — currently inert: the verifier is stored and never called. Injecting
-// it does NOT lift any ref to the signed tier, and no tier this package reports
-// will ever say "signed" (see RepoTier). Kept wired so the integration seam and
-// its cmd/specula construction survive, but it buys no verification today. See
-// the package doc.
+// WithSignedRefsVerifier injects the signed tag/commit verifier. When set, each
+// sync runs updateSignedRefs: a ref whose tip carries a valid signature from the
+// allowed-signers anchor is lifted to the `signed` tier (RepoTier reports it and
+// a signed/pass series appears on /metrics). Under policy=enforce an untrusted
+// signature fails the serve closed. Leaving it nil keeps the repo at tofu.
 func WithSignedRefsVerifier(v *verify.GitSignedVerifier) Option {
 	return func(h *Handler) { h.signedRefs = v }
 }
@@ -421,6 +417,25 @@ func (h *Handler) serveMirror(w http.ResponseWriter, r *http.Request, ref repoRe
 		alerts := updateTOFUPins(ctx, h.meta, h.mirrorDir, ref, h.log)
 		for _, a := range alerts {
 			h.log.Warn(a)
+		}
+
+		// 3b. Verify signed refs (signed tier). A ref whose tip carries a valid
+		// signature from the allowed-signers anchor earns `signed`; the rest stay
+		// at their tofu pins. Under policy=enforce, an UNTRUSTED signature (present
+		// but unauthenticated — a forged/rotated tag) fails closed: refuse to
+		// serve rather than hand the client bytes an authenticity policy rejected.
+		if h.signedRefs != nil {
+			failClosed, sAlerts := updateSignedRefs(ctx, h.signedRefs, h.meta, h.mirrorDir, ref, h.log)
+			for _, a := range sAlerts {
+				h.log.Warn(a)
+			}
+			if failClosed {
+				h.log.Error("git: refusing to serve — untrusted ref signature under enforce policy",
+					slog.String("repo", ref.mirrorRelPath()))
+				writeError(w, http.StatusBadGateway,
+					"git: refusing to serve — a signed ref failed signature verification (enforce policy)")
+				return
+			}
 		}
 	}
 

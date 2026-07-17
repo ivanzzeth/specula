@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 )
 
@@ -72,6 +73,11 @@ func updateTOFUPins(
 			}); putErr != nil {
 				alerts = append(alerts,
 					fmt.Sprintf("git tofu: set pin for %s in %s: %v", refname, ref.mirrorRelPath(), putErr))
+			} else {
+				// A newly locked ref is the moment the tofu guarantee turns on:
+				// record the achieved tier so /metrics reflects it (the tier is a
+				// real tofu PASS — a first-lock, not a change alert).
+				metrics.RecordVerification(Protocol, "tofu", artifact.TierTofu, artifact.StatusPass)
 			}
 			// First-lock is informational, not an alert.
 			continue
@@ -90,6 +96,9 @@ func updateTOFUPins(
 				refname, ref.mirrorRelPath(), me.Digest, sha,
 			)
 			alerts = append(alerts, alert)
+			// A non-fast-forward change is the tofu guarantee firing: still the
+			// tofu tier, but a WARN (force-push / history rewrite).
+			metrics.RecordVerification(Protocol, "tofu", artifact.TierTofu, artifact.StatusWarn)
 			if log != nil {
 				log.Warn("git: non-fast-forward ref update detected",
 					slog.String("ref", refname),
@@ -172,21 +181,25 @@ func RefTOFUKeyFor(repo, refname string) string {
 // RepoTier reports the honest trust tier a mirrored repo has EARNED, as a
 // PRD §G2 tier name, or "" when it has earned nothing.
 //
-// The tier is derived from real state, never asserted from configuration: it
-// returns artifact.TierTofu only when a ref→SHA pin actually exists in the
-// MetadataStore for one of the mirror's refs. A pin is what makes the tofu
-// guarantee true — first-sight lock plus a non-fast-forward alert on every later
-// change (see updateTOFUPins) — so a repo with pins has force-push /
-// history-rewrite detection live, and one without has nothing.
+// The tier is derived from real state, never asserted from configuration, and is
+// the HIGHEST tier any of the mirror's refs reached:
 //
-// # Why this tops out at tofu
+//   - `signed` — at least one ref carries a valid signature from an allowed
+//     principal, recorded by updateSignedRefs as a RefSignedKeyFor pin. This is
+//     a per-ref property (release tags sign; branch tips usually do not), so
+//     repo-level `signed` means "this mirror has ≥1 authenticated ref", not that
+//     every ref is authenticated — the per-ref truth lives in
+//     specula_verification_total{check="gitsigned"}.
+//   - `tofu` — no signed ref, but a ref→SHA pin exists (RefTOFUKeyFor). A pin is
+//     what makes the tofu guarantee true: first-sight lock plus a
+//     non-fast-forward alert on every later change (see updateTOFUPins), so a
+//     pinned repo has force-push / history-rewrite detection live.
+//   - "" — the repo has earned nothing (no refs, or no pins).
 //
-// PRD §G2 lists `signed` as git's reachable ceiling via signed tag/commit
-// verification (allowed-signers). That anchor is NOT reached here, and RepoTier
-// will not claim it: Handler.signedRefs is injected by cmd/specula but never
-// invoked on any code path in this package, so no git ref in this build has ever
-// had a signature verified. Reporting `signed` would be a claim about
-// cryptography we did not do. See the package doc.
+// `signed` is reached only when a signed-refs verifier is configured AND a ref's
+// tip actually verified against the allowed-signers anchor — never asserted from
+// config. When no verifier is configured, no signed pin is ever written, so this
+// correctly tops out at tofu.
 func RepoTier(ctx context.Context, ms meta.MetadataStore, mirrorDir, repo string) string {
 	if ms == nil || mirrorDir == "" || repo == "" {
 		return ""
@@ -195,15 +208,22 @@ func RepoTier(ctx context.Context, ms meta.MetadataStore, mirrorDir, repo string
 	if err != nil {
 		return "" // cannot enumerate refs → cannot substantiate any tier
 	}
+	tofu := false
 	for refname := range refs {
+		if me, err := ms.GetMutable(ctx, RefSignedKeyFor(repo, refname)); err == nil && me != nil && me.Digest != "" {
+			// At least one ref carries a verified signature: authenticity is live.
+			return artifact.TierSigned.String()
+		}
 		me, err := ms.GetMutable(ctx, RefTOFUKeyFor(repo, refname))
 		if err != nil {
 			return ""
 		}
 		if me != nil && me.Digest != "" {
-			// At least one ref is pinned: change detection is live for this repo.
-			return artifact.TierTofu.String()
+			tofu = true
 		}
+	}
+	if tofu {
+		return artifact.TierTofu.String()
 	}
 	return ""
 }

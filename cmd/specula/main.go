@@ -903,7 +903,7 @@ func buildGitSignedVerifier(cfg *config.Config, log *slog.Logger) *verify.GitSig
 		return nil
 	}
 	signers := pc.Verification.SignedRefs.AllowedSigners
-	v, err := verify.NewGitSignedVerifier(signers)
+	v, err := verify.NewGitSignedVerifier(signers, policyOrWarn(pc.Verification.SignedRefs.Policy))
 	if err != nil {
 		log.Warn("specula: git signed-refs verifier disabled (allowed-signers load failed) — downgrading git to tofu",
 			"allowed_signers", signers, "err", err)
