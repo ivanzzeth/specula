@@ -3,13 +3,17 @@ package verify
 import (
 	"bufio"
 	"bytes"
+	"compress/bzip2"
+	"compress/gzip"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
+	"github.com/ulikunitz/xz"
 	debcontrol "pault.ag/go/debian/control"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
@@ -131,6 +135,9 @@ func (v *GPGVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, art 
 
 // verifyDists routes mutable dists/ artifacts by file type.
 func (v *GPGVerifier) verifyDists(ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
+	// Acquire-By-Hash: rewrite a content-addressed index request back to the
+	// canonical path InRelease pins, then route normally (see resolveByHashRef).
+	ref = v.resolveByHashRef(ref)
 	version := ref.Version
 
 	switch {
@@ -147,6 +154,83 @@ func (v *GPGVerifier) verifyDists(ref artifact.ArtifactRef, art *artifact.Artifa
 		// pipeline is not blocked (ChecksumVerifier + TofuVerifier still apply).
 		return v.verifyInReleasePin(ref, art)
 	}
+}
+
+// maxIndexPlaintextBytes caps the decompressed size of a Packages/Sources index.
+// noble/main/binary-amd64/Packages is ~50 MB plaintext; 512 MB leaves generous
+// headroom for the largest suites while bounding a decompression bomb.
+const maxIndexPlaintextBytes = int64(512 << 20)
+
+// byHashSHA256Marker is the path element apt inserts for content-addressed index
+// fetches under `Acquire-By-Hash: yes`: <dir>/by-hash/SHA256/<hex>.
+const byHashSHA256Marker = "/by-hash/SHA256/"
+
+// resolveByHashRef normalises an Acquire-By-Hash index request back to the
+// canonical suite-relative path that InRelease actually pins, so all downstream
+// routing and chain logic works unchanged.
+//
+// Why this is not a downgrade of the trust chain (PRD §G2, DESIGN-REVIEW §3):
+// by-hash exists precisely so apt fetches EXACTLY the index the signature covers.
+// The requested hash IS the pin. We do not trust the requester's hash: we accept
+// it only if that hex appears among the SHA256 sums of a GPG-VERIFIED InRelease
+// for this suite, in the same directory. Resolution therefore proves the fetched
+// address is signed; the existing `actualHex != expectedHex` check then proves
+// the mirror returned the bytes that address commits to.
+//
+// Real apt-get update requests dists/noble/main/binary-amd64/by-hash/SHA256/37cb…
+// while InRelease lists main/binary-amd64/Packages.xz and zero by-hash paths. The
+// former literal `sums[relPath]` lookup missed every time, so apt — the PRD's
+// end-to-end gold standard — degraded to tofu for everything it really fetches.
+//
+// An unresolvable by-hash path (hash not pinned, or a non-SHA256 by-hash variant
+// such as by-hash/MD5Sum) is returned unchanged: it then falls through to the
+// TierChecksum pass-through, which is the safe direction.
+func (v *GPGVerifier) resolveByHashRef(ref artifact.ArtifactRef) artifact.ArtifactRef {
+	idx := strings.IndexByte(ref.Version, '/')
+	if idx < 0 {
+		return ref
+	}
+	suite, relPath := ref.Version[:idx], ref.Version[idx+1:]
+
+	i := strings.Index(relPath, byHashSHA256Marker)
+	if i < 0 {
+		return ref
+	}
+	dir := relPath[:i]
+	hex := relPath[i+len(byHashSHA256Marker):]
+	if dir == "" || hex == "" || strings.Contains(hex, "/") {
+		return ref
+	}
+
+	v.mu.RLock()
+	sums := v.suiteSHA256s[ref.Name+":"+suite]
+	v.mu.RUnlock()
+	if sums == nil {
+		// InRelease not GPG-verified for this suite yet — nothing to resolve
+		// against. Never guess.
+		return ref
+	}
+
+	for canonical, pinnedHex := range sums {
+		// Directory must match: a hash pinned for one component/architecture
+		// must not authorise an index served from another path.
+		if pinnedHex == hex && pathDir(canonical) == dir {
+			ref.Version = suite + "/" + canonical
+			return ref
+		}
+	}
+	return ref
+}
+
+// pathDir returns the directory part of a slash-separated relative path, or ""
+// when there is none. (path.Dir returns "." for a bare name; "" is the useful
+// answer here since a bare name has no by-hash directory.)
+func pathDir(p string) string {
+	i := strings.LastIndexByte(p, '/')
+	if i < 0 {
+		return ""
+	}
+	return p[:i]
 }
 
 // isPackagesFile returns true when the last path component looks like a Packages
@@ -308,7 +392,21 @@ func (v *GPGVerifier) verifyPackages(ref artifact.ArtifactRef, art *artifact.Art
 		}, fmt.Errorf("gpg: read Packages: %w", err)
 	}
 
-	entries, err := debcontrol.ParseBinaryIndex(bufio.NewReader(bytes.NewReader(data)))
+	// Decompress first: real mirrors serve ONLY compressed indices (aliyun 404s
+	// dists/noble/main/binary-amd64/Packages and 200s Packages.xz / Packages.gz),
+	// and apt prefers .xz. isPackagesFile has always matched the compressed
+	// variants, but the raw bytes used to go straight to the RFC2822 parser, which
+	// fail-closed on them. That was dormant while by-hash never reached here.
+	plain, err := decompressIndex(relPath, data)
+	if err != nil {
+		return artifact.Result{
+			Status:  artifact.StatusFail,
+			Tier:    artifact.TierSigned,
+			Message: fmt.Sprintf("gpg: decompress Packages index %q: %v", relPath, err),
+		}, nil
+	}
+
+	entries, err := debcontrol.ParseBinaryIndex(bufio.NewReader(bytes.NewReader(plain)))
 	if err != nil {
 		return artifact.Result{
 			Status:  artifact.StatusFail,
@@ -491,4 +589,57 @@ func loadKeyring(path string) (openpgp.EntityList, error) {
 		return nil, fmt.Errorf("not a valid armored (%v) or binary (%v) keyring", armErr, binErr)
 	}
 	return el, nil
+}
+
+// --------------------------------------------------------------------------
+// Index decompression
+// --------------------------------------------------------------------------
+
+// decompressIndex returns the plaintext of a Packages/Sources index, decoding the
+// compression implied by relPath's extension.
+//
+// Every real mirror serves these indices compressed and ONLY compressed —
+// mirrors.aliyun.com/ubuntu returns 404 for dists/noble/main/binary-amd64/Packages
+// but 200 for Packages.xz and Packages.gz — and apt prefers .xz. The SHA256 that
+// InRelease pins (and that by-hash addresses) covers the COMPRESSED bytes, so the
+// chain check runs on the raw bytes and only the .deb-hash extraction needs the
+// plaintext. Decoding therefore happens here, after the digest has been verified:
+// we never decompress unverified bytes.
+//
+// Unrecognised extensions are returned unchanged, which keeps an uncompressed
+// index working and lets the RFC2822 parser produce the error for genuine junk.
+func decompressIndex(relPath string, data []byte) ([]byte, error) {
+	var r io.Reader
+	switch {
+	case strings.HasSuffix(relPath, ".gz"):
+		zr, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("gzip: %w", err)
+		}
+		defer zr.Close()
+		r = zr
+	case strings.HasSuffix(relPath, ".xz"):
+		zr, err := xz.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("xz: %w", err)
+		}
+		r = zr
+	case strings.HasSuffix(relPath, ".bz2"):
+		r = bzip2.NewReader(bytes.NewReader(data))
+	default:
+		return data, nil // uncompressed
+	}
+
+	// Bounded: a decompressed Packages index is tens of MB (noble/main is ~50 MB);
+	// the cap stops a decompression bomb from an untrusted mirror turning into an
+	// OOM. The bytes are digest-verified but the mirror still chose their content.
+	plain, err := io.ReadAll(io.LimitReader(r, maxIndexPlaintextBytes))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(plain)) >= maxIndexPlaintextBytes {
+		return nil, fmt.Errorf("decompressed index exceeds %d bytes — refusing (possible decompression bomb)",
+			maxIndexPlaintextBytes)
+	}
+	return plain, nil
 }
