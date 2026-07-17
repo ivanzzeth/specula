@@ -576,11 +576,15 @@ func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager
 }
 
 // buildGoSumDBVerifier constructs the Go checksum-database verifier from the "go"
-// protocol's sumdb block, or returns nil when the go protocol has no sumdb
-// config. Anti-rollback high-water tree size is persisted via the metadata store.
+// protocol's sumdb block, or returns nil (with a startup warning) when the go
+// protocol has no sumdb config. Without the warning, go is the only protocol
+// that degrades to tofu silently — every other anchor builder (GPG, Helm .prov,
+// git signed-refs) logs a Warn when its anchor is unconfigured. Anti-rollback
+// high-water tree size is persisted via the metadata store.
 func buildGoSumDBVerifier(cfg *config.Config, metaStore metastore.MetadataStore, log *slog.Logger) *verify.SumDBVerifier {
 	pc, ok := cfg.Protocols[goProtocolKey]
 	if !ok || pc.SumDB == nil {
+		log.Warn("specula: go sumdb not configured — go tops out at tofu tier")
 		return nil
 	}
 	sc := pc.SumDB

@@ -108,12 +108,28 @@ func (f *HTTPMirrorDigestFetcher) fetchOCIDigest(ctx context.Context, base strin
 // fetchPyPISHA256 fetches the small PEP 503 simple-index page for the package
 // and extracts the sha256 advertised for the requested file (ref.Version is the
 // distribution filename for a resolved pypi artifact).
+//
+// Root-cause A fix: for a resolved wheel/sdist, ref.Name is the hash-directory
+// path (e.g. "b7/ce/149a00...") from the /packages/ tree, NOT the package name.
+// The package name must be extracted from the filename (ref.Version) per PEP 427.
+//
+// Root-cause B fix: operator configs set base_url WITH a trailing "/simple"
+// suffix (matching pip --index-url convention). Stripping it before appending
+// "/simple/<pkg>/" prevents the double "/simple/simple/" path.
 func (f *HTTPMirrorDigestFetcher) fetchPyPISHA256(ctx context.Context, base string, ref artifact.ArtifactRef) (string, error) {
 	filename := ref.Version
 	if filename == "" {
 		return "", fmt.Errorf("consensus: pypi ref has no filename to match")
 	}
-	url := base + "/simple/" + ref.Name + "/"
+	// Root-cause A: extract the PEP 503-normalised package name from the filename
+	// so the correct /simple/<name>/ index URL is built.
+	pkgName, ok := pypiPackageFromFilename(filename)
+	if !ok {
+		return "", fmt.Errorf("consensus: pypi: cannot extract package name from filename %q", filename)
+	}
+	// Root-cause B: strip any trailing /simple suffix that operator configs add.
+	base = strings.TrimSuffix(strings.TrimRight(base, "/"), "/simple")
+	url := base + "/simple/" + pkgName + "/"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -130,11 +146,56 @@ func (f *HTTPMirrorDigestFetcher) fetchPyPISHA256(ctx context.Context, base stri
 	if err != nil {
 		return "", err
 	}
-	hex, ok := pep503DigestForFile(body, filename)
-	if !ok {
-		return "", fmt.Errorf("consensus: pypi index for %s has no sha256 for file %q", ref.Name, filename)
+	hex, found := pep503DigestForFile(body, filename)
+	if !found {
+		return "", fmt.Errorf("consensus: pypi index for %s has no sha256 for file %q", pkgName, filename)
 	}
 	return "sha256:" + strings.ToLower(hex), nil
+}
+
+// pypiPackageFromFilename extracts the PEP 503-normalised package name from a
+// wheel (PEP 427) or sdist filename.
+//
+// Wheel:  {distribution}-{version}(-{build})?-{python}-{abi}-{platform}.whl
+// Sdist:  {distribution}-{version}.tar.gz | .zip | .tar.bz2 | .tar.xz | .egg
+//
+// PEP 503 normalisation: lowercase, collapse runs of [-_.] to a single "-".
+func pypiPackageFromFilename(filename string) (string, bool) {
+	base := filename
+	for _, ext := range []string{".whl", ".tar.gz", ".tar.bz2", ".tar.xz", ".zip", ".egg"} {
+		if strings.HasSuffix(base, ext) {
+			base = base[:len(base)-len(ext)]
+			break
+		}
+	}
+	// First component before the first "-" separator is the distribution name.
+	idx := strings.IndexByte(base, '-')
+	if idx <= 0 {
+		return "", false
+	}
+	raw := base[:idx]
+	if raw == "" {
+		return "", false
+	}
+	// PEP 503: lowercase + collapse runs of [-_.] to single "-".
+	var out strings.Builder
+	prevSep := false
+	for _, c := range strings.ToLower(raw) {
+		if c == '-' || c == '_' || c == '.' {
+			if !prevSep {
+				out.WriteByte('-')
+				prevSep = true
+			}
+		} else {
+			out.WriteRune(c)
+			prevSep = false
+		}
+	}
+	result := out.String()
+	if result == "" {
+		return "", false
+	}
+	return result, true
 }
 
 // pep503DigestForFile parses a PEP 503 simple-index HTML page using

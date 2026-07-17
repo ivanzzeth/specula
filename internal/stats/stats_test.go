@@ -562,6 +562,9 @@ func TestRefreshOnce_DUFallback_MultiplePathsSameProtocol(t *testing.T) {
 }
 
 func TestRefreshOnce_DUFallback_Disabled(t *testing.T) {
+	// After the git-visibility fix: paths registered via AddOpaquePath are
+	// ALWAYS walked in refreshOnce, even when EnableDUFallback=false.
+	// The EnableDUFallback flag is now irrelevant for already-registered paths.
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "pack"), make([]byte, 4000), 0o644))
 
@@ -569,17 +572,16 @@ func TestRefreshOnce_DUFallback_Disabled(t *testing.T) {
 	store := &fakeStore{stats: map[string]artifact.SizeStat{}}
 	c := newCollector(store, reg, CollectorConfig{
 		RefreshInterval:  30 * time.Second,
-		EnableDUFallback: false, // explicitly disabled
+		EnableDUFallback: false, // explicitly disabled — now irrelevant for registered paths
 	})
 	c.AddOpaquePath(dir, "git")
 
 	c.refreshOnce(context.Background())
 
-	// When du fallback is disabled the gauge for "git" should not be set by
-	// the refresh cycle (it remains at the zero value).
+	// Registered paths are always updated; EnableDUFallback no longer gates them.
 	found := gatherGaugeVals(t, reg)
-	_, exists := found["specula_cache_bytes[git]"]
-	assert.False(t, exists, "gauge must not be set when EnableDUFallback=false")
+	assert.Equal(t, float64(4000), found["specula_cache_bytes[git]"],
+		"registered opaque paths must always update the gauge (EnableDUFallback no longer gates them)")
 }
 
 func TestRefreshOnce_DUFallback_UnreachablePath_Skipped(t *testing.T) {
@@ -695,4 +697,115 @@ func TestRun_DefaultIntervalNormalised(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("Run with normalised interval did not exit on cancel")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// RED tests — git visibility bug (opaque-path du fallback not wired)
+// ---------------------------------------------------------------------------
+
+// TestByProtocol_IncludesOpaquePathsWithStore verifies that ByProtocol merges
+// du-computed bytes for registered opaque paths even in store-backed mode.
+// BUG (before fix): ByProtocol only returns MetadataStore results; duPaths bytes
+// are silently dropped → git tab shows zero rows despite caching correctly.
+func TestByProtocol_IncludesOpaquePathsWithStore(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pack.pack"), make([]byte, 7000), 0o644))
+
+	store := &fakeStore{stats: map[string]artifact.SizeStat{
+		"oci": {Bytes: 1000, Objects: 2},
+	}}
+	c := newTestCollector(store)
+	c.AddOpaquePath(dir, "git")
+
+	got, err := c.ByProtocol(context.Background())
+	require.NoError(t, err)
+
+	// oci bytes from the MetadataStore must be unchanged.
+	assert.Equal(t, int64(1000), got["oci"].Bytes, "oci bytes unchanged")
+	assert.Equal(t, int64(2), got["oci"].Objects, "oci objects unchanged")
+
+	// git must appear with du-computed bytes even though no CAS entries exist.
+	gitStat, ok := got["git"]
+	require.True(t, ok, "git must appear in ByProtocol when an opaque path is registered")
+	assert.Equal(t, int64(7000), gitStat.Bytes, "git bytes must reflect du of the mirror directory")
+	assert.Equal(t, int64(0), gitStat.Objects, "git has no CAS objects")
+}
+
+// TestByProtocol_IncludesOpaquePathsStandalone verifies opaque-path merging in
+// standalone mode (no MetadataStore).
+func TestByProtocol_IncludesOpaquePathsStandalone(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pack.pack"), make([]byte, 4000), 0o644))
+
+	c := newTestCollector(nil) // standalone
+	c.AddOpaquePath(dir, "git")
+
+	got, err := c.ByProtocol(context.Background())
+	require.NoError(t, err)
+
+	gitStat, ok := got["git"]
+	require.True(t, ok, "git must appear in ByProtocol (standalone) when an opaque path is registered")
+	assert.Equal(t, int64(4000), gitStat.Bytes, "git bytes must reflect du of the mirror directory")
+	assert.Equal(t, int64(0), gitStat.Objects, "standalone opaque path has no CAS objects")
+}
+
+// TestRefreshOnce_AlwaysUpdatesGaugeForRegisteredPaths verifies that
+// AddOpaquePath-registered paths always update specula_cache_bytes in
+// refreshOnce, even when EnableDUFallback=false (the default).
+// BUG (before fix): refreshOnce returned early when EnableDUFallback=false,
+// leaving specula_cache_bytes{protocol="git"} permanently unset → /metrics
+// showed no git gauge even though caching was working correctly.
+func TestRefreshOnce_AlwaysUpdatesGaugeForRegisteredPaths(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "objects.pack"), make([]byte, 2500), 0o644))
+
+	reg := prometheus.NewRegistry()
+	store := &fakeStore{stats: map[string]artifact.SizeStat{}}
+	// Explicitly use the production default (EnableDUFallback=false).
+	c := newCollector(store, reg, DefaultCollectorConfig())
+	c.AddOpaquePath(dir, "git")
+
+	c.refreshOnce(context.Background())
+
+	found := gatherGaugeVals(t, reg)
+	assert.Equal(t, float64(2500), found["specula_cache_bytes[git]"],
+		"registered opaque paths must always update the gauge in refreshOnce, "+
+			"regardless of EnableDUFallback")
+}
+
+// TestAddOpaquePath_Idempotent verifies that duplicate registrations of the
+// same path+protocol pair are silently deduplicated.
+// BUG (before fix): AddOpaquePath always appended → repeated calls inflated
+// the byte count returned by ByProtocol and Total.
+func TestAddOpaquePath_Idempotent(t *testing.T) {
+	c := newTestCollector(nil)
+	c.AddOpaquePath("/some/mirror", "git")
+	c.AddOpaquePath("/some/mirror", "git") // duplicate
+	c.AddOpaquePath("/some/mirror", "git") // duplicate
+
+	c.mu.Lock()
+	n := len(c.duPaths)
+	c.mu.Unlock()
+
+	assert.Equal(t, 1, n, "AddOpaquePath must deduplicate same path+protocol pairs")
+}
+
+// TestByProtocol_OpaquePathGaugeUpdated verifies that ByProtocol also updates
+// the Prometheus gauge for opaque paths (so /metrics shows git bytes after a
+// stats API call without needing a separate background-refresh tick).
+func TestByProtocol_OpaquePathGaugeUpdated(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "pack.pack"), make([]byte, 5500), 0o644))
+
+	reg := prometheus.NewRegistry()
+	store := &fakeStore{stats: map[string]artifact.SizeStat{}}
+	c := newCollector(store, reg, DefaultCollectorConfig())
+	c.AddOpaquePath(dir, "git")
+
+	_, err := c.ByProtocol(context.Background())
+	require.NoError(t, err)
+
+	found := gatherGaugeVals(t, reg)
+	assert.Equal(t, float64(5500), found["specula_cache_bytes[git]"],
+		"ByProtocol must update the Prometheus gauge for registered opaque paths")
 }

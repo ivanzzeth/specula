@@ -163,11 +163,20 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Immutable: <repo>/<chart>-<ver>.tgz[.prov].
+	// splitRepoFile handles the common "<repo>/<file>" shape. When there is no
+	// slash (ok=false) the file sits at the mount root — a flat repository
+	// layout where the chart lives directly at the base URL with no sub-path
+	// (e.g. https://mirror.azure.cn/kubernetes/charts/redis-10.5.7.tgz).
+	// Treat this identically to the root index.yaml special case above:
+	// repo="" (empty) and file=the bare filename.  Without this, index.yaml
+	// discovery succeeds (the special case above already handled it) but chart
+	// downloads return 404, making the entire flat-repo workflow unusable.
 	if strings.HasSuffix(rest, extProv) || strings.HasSuffix(rest, extChart) {
 		repo, file, ok := splitRepoFile(rest)
 		if !ok {
-			writeError(w, http.StatusNotFound, "not a chart file path")
-			return
+			// Flat repo: bare chart filename with no repo segment.
+			repo = ""
+			file = rest
 		}
 		h.serveChart(w, r, repo, file)
 		return

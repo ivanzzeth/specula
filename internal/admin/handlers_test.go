@@ -200,6 +200,7 @@ func (c *fakeStatsCollector) Total(ctx context.Context) (artifact.SizeStat, erro
 func (c *fakeStatsCollector) RecordPut(_ context.Context, _ string, _ int64) error   { return nil }
 func (c *fakeStatsCollector) RecordEvict(_ context.Context, _ string, _ int64) error { return nil }
 func (c *fakeStatsCollector) Run(_ context.Context)                                  {}
+func (c *fakeStatsCollector) AddOpaquePath(_, _ string)                              {}
 
 // fakeBlobReporter implements BlobUsageReporter.
 type fakeBlobReporter struct{ usedBytes int64 }

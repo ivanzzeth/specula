@@ -1543,21 +1543,151 @@ func TestAllowGetHead_BlocksOtherMethods(t *testing.T) {
 //   - TestServeHTTP_Chart_CacheMiss_NoUpstream_Returns404 (no upstream → 404)
 //   - The storeErr VerifyError path (→ 502) ensuring the two paths are distinct.
 
-// TestServeHTTP_ChartPath_NoSlash_Returns404 verifies that a chart path with
-// no directory separator returns 404 (splitRepoFile returns ok=false).
-func TestServeHTTP_ChartPath_NoSlash_Returns404(t *testing.T) {
+// TestServeHTTP_ChartPath_NoSlash_CacheMiss_Returns404 verifies that a bare
+// chart filename (no repo segment) with an empty cache and no upstream returns
+// 404.  Before the flat-repo routing fix the 404 came from splitRepoFile
+// rejecting the path; after the fix it comes from the cache miss / no-upstream
+// guard inside serveChart — the observable result is the same.
+func TestServeHTTP_ChartPath_NoSlash_CacheMiss_Returns404(t *testing.T) {
 	h := newHelmHandlerNoUpstream(newHelmTestCache())
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 
-	// A bare filename with .tgz extension but no repo prefix.
-	// ServeHTTP strips the leading "/" making rest="mysql-1.0.0.tgz".
-	// strings.HasSuffix(rest, extChart) is true → splitRepoFile → ok=false → 404.
+	// Cache empty, no upstream → 404 regardless of routing.
 	resp, err := http.Get(srv.URL + "/mysql-1.0.0.tgz")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode,
-		"chart path with no repo prefix (no slash) must return 404")
+		"bare chart with no cache and no upstream must return 404")
+}
+
+// ── Flat-repo routing fix (E2E regression) ───────────────────────────────────
+
+// TestServeHTTP_FlatRepo_ChartRouting_Asymmetry_BugRegression reproduces the
+// routing asymmetry discovered during real E2E testing against
+// https://mirror.azure.cn/kubernetes/charts (a flat chart repository where
+// every artifact lives directly at the base URL with no repo sub-path):
+//
+//	helm repo add spec http://127.0.0.1:PORT/helm/ -> OK
+//	helm repo update                               -> OK   (index served 200)
+//	helm pull spec/redis
+//	  Error: failed to fetch http://127.0.0.1:PORT/helm/redis-10.5.7.tgz : 404
+//
+// Before the fix ServeHTTP had a dedicated branch for a bare index.yaml (the
+// "rest == indexFile" check) that routed it to serveIndex("") — hence 200.
+// But bare .tgz paths were funnelled through splitRepoFile which requires a
+// <repo>/<file> shape and returned ok=false → 404.
+//
+// The fix makes the bare .tgz / .prov path fall through to serveChart("", file)
+// — the same empty-repo model used by the bare index.yaml path — so that BOTH
+// discovery and download work for flat repositories.
+//
+// This is the mandatory RED test: run it against the unfixed code and it MUST
+// produce "got 404, want 200" on the chart_tgz_returns_200 subtest.
+func TestServeHTTP_FlatRepo_ChartRouting_Asymmetry_BugRegression(t *testing.T) {
+	chartContent := []byte("fake flat-repo chart bytes\x00\x01\x02")
+	indexContent := []byte("apiVersion: v1\nentries: {}\n")
+
+	// Seed both artifacts with the empty-repo ("") key that matches the flat
+	// routing model used by the bare-index special case.
+	cm := newHelmTestCache()
+	cm.seedFresh(indexRef(""), indexContent)
+	cm.seedFresh(chartRef("", "redis-10.5.7.tgz"), chartContent)
+
+	h := newHelmHandlerNoUpstream(cm, WithPathPrefix("/helm"))
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	// The index half — was already working before the fix (special-cased).
+	t.Run("index_yaml_returns_200", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/helm/index.yaml")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode,
+			"flat-repo index.yaml must return 200 (sanity check)")
+	})
+
+	// The chart half — BUG: 404 before the fix, 200 after.
+	t.Run("chart_tgz_returns_200", func(t *testing.T) {
+		resp, err := http.Get(srv.URL + "/helm/redis-10.5.7.tgz")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode,
+			"flat-repo chart .tgz with no repo segment must return 200 (routing asymmetry fix)")
+		body, _ := io.ReadAll(resp.Body)
+		assert.Equal(t, chartContent, body,
+			"flat-repo chart body must match cached bytes")
+	})
+}
+
+// TestServeHTTP_FlatRepo_Prov_CacheHit_Returns200 verifies that a flat-repo
+// .prov file (no repo segment) is routed to serveChart("", "redis-10.5.7.tgz.prov")
+// and served from cache after the routing fix.
+func TestServeHTTP_FlatRepo_Prov_CacheHit_Returns200(t *testing.T) {
+	provContent := []byte("-----BEGIN PGP SIGNED MESSAGE-----\nFake GPG sig\n")
+	cm := newHelmTestCache()
+	cm.seedFresh(chartRef("", "redis-10.5.7.tgz.prov"), provContent)
+
+	h := newHelmHandlerNoUpstream(cm, WithPathPrefix("/helm"))
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/helm/redis-10.5.7.tgz.prov")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"flat-repo .prov at mount root must return 200 after routing fix")
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, provContent, body)
+}
+
+// TestServeHTTP_FlatRepo_Chart_FetchFromUpstream verifies the upstream fetch
+// path for a flat-repo chart (no repo prefix in the request URL).
+//
+// Real flat repositories (e.g. https://mirror.azure.cn/kubernetes/charts) have
+// their charts at the base path: GET /redis-10.5.7.tgz → 200.  When buildPath
+// constructs the upstream URL for an empty-repo chartRef it produces a leading
+// slash (ref.Name + "/" + ref.Version = "/redis-10.5.7.tgz"). The resulting
+// URL has the double-slash in the middle of a non-root path
+// (base-has-path//file), which real HTTP servers normalise silently.  The fake
+// upstream handler below mimics that normalisation.
+func TestServeHTTP_FlatRepo_Chart_FetchFromUpstream(t *testing.T) {
+	chartContent := []byte("flat-repo upstream chart bytes")
+
+	// Fake upstream that normalises consecutive slashes in the path before
+	// routing, matching real-server behaviour.
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.ReplaceAll(r.URL.Path, "//", "/")
+		switch path {
+		case "/redis-10.5.7.tgz":
+			w.WriteHeader(http.StatusOK)
+			if r.Method == http.MethodGet {
+				_, _ = w.Write(chartContent)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(up.Close)
+
+	cm := newHelmTestCache()
+	h := newHelmHandlerWithUpstream(cm, up.URL,
+		WithPathPrefix("/helm"),
+		WithQuarantineDir(t.TempDir()),
+	)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/helm/redis-10.5.7.tgz")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"flat-repo chart must be fetched from upstream on cache miss")
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, chartContent, body,
+		"flat-repo chart bytes must match upstream response")
 }
 
 // ── Helm writeError content-type ─────────────────────────────────────────────

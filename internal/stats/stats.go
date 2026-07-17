@@ -42,6 +42,7 @@ func DefaultCollectorConfig() CollectorConfig {
 // Collector aggregates cache capacity statistics.
 type Collector interface {
 	// ByProtocol returns per-protocol size stats (SUM/COUNT/oldest/newest).
+	// Opaque-cache roots registered via AddOpaquePath are always included.
 	ByProtocol(ctx context.Context) (map[string]artifact.SizeStat, error)
 	// Total returns the grand-total size stat across all protocols.
 	Total(ctx context.Context) (artifact.SizeStat, error)
@@ -57,6 +58,11 @@ type Collector interface {
 	//
 	// In standalone mode (no MetadataStore) it is a context-aware no-op loop.
 	Run(ctx context.Context)
+	// AddOpaquePath registers an opaque-cache root (e.g., a git bare-mirror
+	// directory) with its Prometheus protocol label. The path is included in
+	// ByProtocol, Total, and the background refresh loop via a du-sb directory
+	// walk. Idempotent: duplicate (path, protocol) pairs are silently ignored.
+	AddOpaquePath(path, protocol string)
 }
 
 // inmemStat holds in-memory byte and object counters for standalone mode.
@@ -196,9 +202,15 @@ func (c *collector) Run(ctx context.Context) {
 }
 
 // refreshOnce performs one refresh cycle: reads CacheSizeByProtocol from the
-// MetadataStore and sets the Prometheus gauges to the authoritative values.
-// If CollectorConfig.EnableDUFallback is true it also walks every opaque-cache
-// root registered via AddOpaquePath and updates specula_cache_bytes{protocol}.
+// MetadataStore, sets the Prometheus gauges to the authoritative values, and
+// then always walks every opaque-cache root registered via AddOpaquePath to
+// update their specula_cache_bytes{protocol} gauge.
+//
+// The EnableDUFallback flag is kept for API compatibility but no longer gates
+// already-registered paths: any path explicitly registered via AddOpaquePath is
+// unconditionally walked on every refresh. This is the fix for git being
+// invisible in /metrics (the flag's original early-return guard silently
+// prevented the git gauge from ever being set).
 //
 // In standalone mode (store == nil) it is a no-op because RecordPut/RecordEvict
 // already keep the gauges current between refreshes.
@@ -223,16 +235,18 @@ func (c *collector) refreshOnce(ctx context.Context) {
 		c.cacheObjects.WithLabelValues(proto).Set(float64(s.Objects))
 	}
 
-	if !c.cfg.EnableDUFallback {
-		return
-	}
-
-	// du-sb fallback for opaque-cache roots (e.g., git bare mirror dirs).
-	// Snapshot the slice under lock, then walk without holding the lock so
-	// slow FS walks do not block RecordPut/RecordEvict.
+	// Always walk opaque-cache roots registered via AddOpaquePath (e.g., git
+	// bare mirror dirs). This unconditional walk replaces the former
+	// EnableDUFallback gate which silently prevented the git Prometheus gauge
+	// from being set, causing git to be invisible in /metrics even when it was
+	// caching correctly.
 	c.mu.Lock()
 	paths := append([]duEntry(nil), c.duPaths...)
 	c.mu.Unlock()
+
+	if len(paths) == 0 {
+		return
+	}
 
 	// Accumulate per-protocol byte totals across all registered paths.
 	byProto := make(map[string]int64, len(paths))
@@ -253,7 +267,16 @@ func (c *collector) refreshOnce(ctx context.Context) {
 // When a MetadataStore is available it calls CacheSizeByProtocol (a single
 // O(1) SUM GROUP BY query) and re-syncs the Prometheus gauges. In standalone
 // mode it returns the in-memory counters maintained by RecordPut/RecordEvict.
+//
+// In both modes, opaque-cache roots registered via AddOpaquePath (e.g., git
+// bare mirror directories) are always included: their byte totals are computed
+// via a du-sb directory walk and merged into the result map. This is the fix
+// for git being invisible in GET /api/v1/admin/stats and /metrics — git objects
+// live on disk as bare mirrors, not in the CAS / MetadataStore, so they were
+// silently absent from ByProtocol before this change.
 func (c *collector) ByProtocol(ctx context.Context) (map[string]artifact.SizeStat, error) {
+	var result map[string]artifact.SizeStat
+
 	if c.store != nil {
 		stats, err := c.store.CacheSizeByProtocol(ctx)
 		if err != nil {
@@ -265,27 +288,61 @@ func (c *collector) ByProtocol(ctx context.Context) (map[string]artifact.SizeSta
 			c.cacheBytes.WithLabelValues(proto).Set(float64(s.Bytes))
 			c.cacheObjects.WithLabelValues(proto).Set(float64(s.Objects))
 		}
-		return stats, nil
+		// Copy the map so we can safely add opaque-path bytes below without
+		// mutating the store's internal representation.
+		result = make(map[string]artifact.SizeStat, len(stats))
+		for k, v := range stats {
+			result[k] = v
+		}
+	} else {
+		// Standalone mode: snapshot the in-memory counters.
+		c.mu.Lock()
+		result = make(map[string]artifact.SizeStat, len(c.inmem))
+		for proto, s := range c.inmem {
+			result[proto] = artifact.SizeStat{
+				Bytes:   s.bytes,
+				Objects: s.objects,
+			}
+		}
+		c.mu.Unlock()
 	}
 
-	// Standalone mode: snapshot the in-memory counters.
+	// Always merge in du-computed bytes for registered opaque-cache paths.
+	// Snapshot the slice under lock so a concurrent AddOpaquePath does not race.
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	result := make(map[string]artifact.SizeStat, len(c.inmem))
-	for proto, s := range c.inmem {
-		result[proto] = artifact.SizeStat{
-			Bytes:   s.bytes,
-			Objects: s.objects,
-		}
+	paths := append([]duEntry(nil), c.duPaths...)
+	c.mu.Unlock()
+
+	if len(paths) == 0 {
+		return result, nil
 	}
+
+	// Accumulate per-protocol byte totals across all registered opaque paths.
+	byProto := make(map[string]int64, len(paths))
+	for _, e := range paths {
+		size, err := duBytes(e.path)
+		if err != nil {
+			continue // best-effort: skip unreachable dirs silently
+		}
+		byProto[e.protocol] += size
+	}
+	for proto, size := range byProto {
+		s := result[proto]
+		s.Bytes += size
+		result[proto] = s
+		// Also update the Prometheus gauge so /metrics reflects the opaque bytes
+		// immediately without waiting for the next background-refresh tick.
+		c.cacheBytes.WithLabelValues(proto).Set(float64(result[proto].Bytes))
+	}
+
 	return result, nil
 }
 
 // Total returns the grand-total SizeStat across all protocols. It sums
-// ByProtocol; for opaque cache directories registered via AddOpaquePath (e.g.,
-// git bare mirror roots), it adds a best-effort directory-walk byte count
-// (du -sb). The EnableDUFallback flag controls only the background-refresh path;
-// Total always includes opaque-path bytes.
+// ByProtocol, which already includes du-computed bytes for any opaque-cache
+// roots registered via AddOpaquePath (e.g., git bare mirror directories).
+// There is no separate du loop here; ByProtocol is the single source of truth
+// for opaque-path bytes to avoid double-counting.
 func (c *collector) Total(ctx context.Context) (artifact.SizeStat, error) {
 	byProto, err := c.ByProtocol(ctx)
 	if err != nil {
@@ -303,21 +360,6 @@ func (c *collector) Total(ctx context.Context) (artifact.SizeStat, error) {
 		if s.Newest.After(total.Newest) {
 			total.Newest = s.Newest
 		}
-	}
-
-	// Add du-sb byte counts for opaque cache roots (always, regardless of
-	// EnableDUFallback — that flag only governs the background-refresh path).
-	c.mu.Lock()
-	paths := append([]duEntry(nil), c.duPaths...) // snapshot under lock
-	c.mu.Unlock()
-
-	for _, e := range paths {
-		size, err := duBytes(e.path)
-		if err != nil {
-			// best-effort: don't fail Total() for unreachable paths
-			continue
-		}
-		total.Bytes += size
 	}
 
 	return total, nil
@@ -371,14 +413,21 @@ func (c *collector) RecordEvict(ctx context.Context, protocol string, size int64
 }
 
 // AddOpaquePath registers an opaque-cache root paired with its Prometheus
-// protocol label for the du-sb fallback in Total() and (when
-// CollectorConfig.EnableDUFallback is true) in the background refresh loop.
-// The protocol argument becomes the label value on
+// protocol label for the du-sb fallback in ByProtocol(), Total(), and the
+// background refresh loop. The protocol argument becomes the label value on
 // specula_cache_bytes{protocol=...}. Failures are silently skipped (best-effort).
 // Intended for git bare mirror repositories whose blobs are not tracked in the
 // MetadataStore.
+//
+// Idempotent: duplicate (path, protocol) pairs are silently ignored so callers
+// can safely register on every request without inflating byte counts.
 func (c *collector) AddOpaquePath(path, protocol string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, e := range c.duPaths {
+		if e.path == path && e.protocol == protocol {
+			return // already registered
+		}
+	}
 	c.duPaths = append(c.duPaths, duEntry{path: path, protocol: protocol})
-	c.mu.Unlock()
 }

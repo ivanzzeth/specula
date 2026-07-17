@@ -170,84 +170,177 @@ Specula 实例**无状态**。持久状态在：
 
 ## 6. Verification Policy Model (excerpt)
 
+> **IMPORTANT**: This YAML block is machine-tested — `TestPRDSection6_YAMLLoads` in
+> `internal/config/config_test.go` parses it on every CI run. Do NOT edit the schema
+> without also updating `specula.example.yaml` and the config structs in
+> `internal/config/config.go`.
+>
+> **Derived from** `specula.example.yaml` (the authoritative tested source of truth).
+> The authoritative field reference is `internal/config/config.go`.
+
 ```yaml
 protocols:
+  # ── OCI ─────────────────────────────────────────────────────────────────────
+  # 无 cosign 密钥时最高达 tofu 档；配公钥后可达 signed 档。
+  # Upstreams each require: name, base_url, priority, official.
   oci:
+    mutable_ttl_seconds: 300
     upstreams:
-      - url: https://docker.m.daocloud.io   # CN 镜像优先
-      - url: https://registry-1.docker.io   # fallback
+      - name: daocloud
+        base_url: https://docker.m.daocloud.io
+        priority: 1
+        official: false
+      - name: docker-hub
+        base_url: https://registry-1.docker.io
+        priority: 2
+        official: true
     verification:
-      cosign:
-        mode: keyed          # keyed（CN 可用）| keyless（需 Fulcio/Rekor）| off
-        keys: [/etc/specula/publisher.pub]
-        tlog: false          # CN 下关闭（Rekor 被墙）
-        policy: warn         # warn | enforce
-      consensus:
-        enabled: true
-        quorum: 2            # ≥2 独立镜像 digest 一致
-        origin_check:        # 可选：代理直连官方源比对
-          url: https://registry-1.docker.io
-          via_proxy: ${HTTPS_PROXY}
+      tiers: [tofu, checksum]
+      quorum: 2
       tofu: enforce          # 首次锁定 digest，变更告警
+      # 达到 signed 档需配 cosign 公钥。keyed 模式（CN 可用）；
+      # keyless 需 Fulcio/Rekor（CN 被墙，不支持）。
+      # cosign:
+      #   keys: [/etc/specula/keys/cosign.pub]
+      #   tlog: false          # keyless/tlog 在 CN 默认不可用
+      # 跨源共识（可选，抬高攻击门槛）:
+      # consensus:
+      #   quorum: 2
+      #   origin_check:
+      #     url: https://registry-1.docker.io
+      #     via_proxy: https://your.egress.proxy:3128
 
+  # ── PyPI ─────────────────────────────────────────────────────────────────────
+  # CN 下可达 consensus + tofu 档。Specula 作唯一 index 防依赖混淆。
   pypi:
+    mutable_ttl_seconds: 1800
     upstreams:
-      - url: https://pypi.tuna.tsinghua.edu.cn/simple
-      - url: https://pypi.org/simple
-    mode: single_index       # Specula 作唯一 index（防依赖混淆）
+      - name: tuna
+        base_url: https://pypi.tuna.tsinghua.edu.cn
+        priority: 1
+        official: false
+      - name: pypi-org
+        base_url: https://pypi.org
+        priority: 2
+        official: true
     verification:
-      consensus: { enabled: true, quorum: 2 }
+      tiers: [consensus, tofu, checksum]
+      quorum: 2
       tofu: enforce
       dependency_confusion:
-        private_names: ["mycompany-*"]   # 精确清单（非"信任前缀"）
-        private_upstream: "https://pypi.internal.example.com/simple"
-        on_private_down: fail_closed     # 绝不回落公网
+        private_names: ["mycompany-*"]        # 精确清单（非"信任前缀"）
+        private_upstream: https://pypi.internal.example.com/simple
+        on_private_down: fail_closed          # 绝不回落公网
 
+  # ── npm ──────────────────────────────────────────────────────────────────────
+  # scope 绑定防依赖混淆；unscoped 私有名用显式 denylist。
   npm:
+    mutable_ttl_seconds: 120
     upstreams:
-      - url: https://registry.npmmirror.com
-      - url: https://registry.npmjs.org
+      - name: npmmirror
+        base_url: https://registry.npmmirror.com
+        priority: 1
+        official: false
+      - name: npm-registry
+        base_url: https://registry.npmjs.org
+        priority: 2
+        official: true
     verification:
-      consensus: { enabled: true, quorum: 2 }
+      tiers: [consensus, tofu, checksum]
+      quorum: 2
       tofu: enforce
       dependency_confusion:
-        private_scopes: ["@myorg"]       # scope 绑定（npm 有效）
-        private_unscoped: ["internal-svc"]  # unscoped 显式 no-upstream
-        private_upstream: "https://npm.internal.example.com"
+        private_scopes: ["@myorg"]            # scope 绑定（npm 有效）
+        private_unscoped: ["internal-svc"]    # unscoped 显式 no-upstream
+        private_upstream: https://npm.internal.example.com
         on_private_down: fail_closed
 
+  # ── Go modules ───────────────────────────────────────────────────────────────
+  # sumdb 提供 Ed25519 签名 Merkle tree proof — CN 下可达 signed 档。
+  # sumdb 是 ProtocolConfig 的直接子块（与 upstreams 平级），不在 verification 下。
   go:
-    upstreams: [https://goproxy.cn, https://proxy.golang.org]
+    mutable_ttl_seconds: 300
+    upstreams:
+      - name: goproxy-cn
+        base_url: https://goproxy.cn
+        priority: 1
+        official: false
+      - name: golang-proxy
+        base_url: https://proxy.golang.org
+        priority: 2
+        official: true
+    verification:
+      tiers: [signed, tofu, checksum]
+      quorum: 1
     sumdb:
-      url: sum.golang.google.cn          # CN 可达；或 goproxy.cn /sumdb/ 透传
-      policy: enforce                    # 验签 tree head + inclusion/consistency
-      private_patterns: ["git.internal.corp/*"]  # GONOSUMDB：返 403，不转发公网
+      url: https://sum.golang.google.cn      # CN 可达；或 goproxy.cn /sumdb/ 透传
+      policy: enforce                        # 验签 tree head + inclusion/consistency
+      private_patterns:
+        - git.internal.corp/*               # GONOSUMDB：返 403，不转发公网
 
+  # ── apt ──────────────────────────────────────────────────────────────────────
+  # GPG 端到端验证（InRelease → Packages → per-file hash），CN 下 signed 档。
+  # gpg 为结构体块 {policy, keyring}，非裸字符串。
   apt:
-    upstreams: [http://mirrors.aliyun.com/ubuntu, http://archive.ubuntu.com/ubuntu]
+    mutable_ttl_seconds: 0
+    upstreams:
+      - name: aliyun
+        base_url: https://mirrors.aliyun.com/ubuntu
+        priority: 1
+        official: false
+      - name: ubuntu-archive
+        base_url: https://archive.ubuntu.com/ubuntu
+        priority: 2
+        official: true
     verification:
-      gpg: enforce
-      keyring: /etc/specula/ubuntu-archive-keyring.gpg   # 本地锚
+      tiers: [signed, tofu, checksum]
+      quorum: 1
+      tofu: enforce
+      gpg:
+        policy: enforce
+        keyring: /etc/specula/ubuntu-archive-keyring.gpg   # 本地锚，带外获取
 
+  # ── Helm ─────────────────────────────────────────────────────────────────────
+  # .prov 文件 GPG 验签可达 signed 档；无 .prov 时降级（policy: warn）。
   helm:
-    upstreams: [https://charts.example.com]
+    mutable_ttl_seconds: 1800
+    upstreams:
+      - name: charts-example
+        base_url: https://charts.example.com
+        priority: 1
+        official: true
     verification:
-      provenance:            # .prov GPG 验证
+      tiers: [tofu, checksum]
+      quorum: 1
+      tofu: enforce
+      provenance:                            # .prov GPG 验证
         policy: warn
         keyring: /etc/specula/helm-keyring.gpg
-      tofu: enforce
 
+  # ── git ──────────────────────────────────────────────────────────────────────
+  # bare mirror 加速；git 对象天然内容寻址。
+  # git 特有配置在 git: 子块下（与 upstreams/verification 平级）；
+  # upstreams 仅为满足通用字段校验，实际路由由 git.allowed_upstreams 控制。
   git:
-    allowed_upstreams: [github.com, gitlab.com]
-    mirror_dir: /var/specula/git
-    sync_stale_after: 30s
-    public_only: true        # 私有仓/带 Authorization → bypass passthrough
-    fail_closed: true
+    mutable_ttl_seconds: 30
+    upstreams:
+      - name: github
+        base_url: https://github.com
+        priority: 1
+        official: true
+    git:
+      allowed_upstreams: [github.com, gitlab.com]
+      mirror_dir: /var/specula/git
+      sync_stale_after: 30s
+      public_only: true                      # 私有仓/带 Authorization → bypass
+      fail_closed: true
     verification:
-      signed_refs:           # 可选：验签名 tag/commit
+      tiers: [tofu, checksum]
+      quorum: 1
+      tofu: enforce
+      signed_refs:                           # 可选：验签名 tag/commit
         policy: warn
         allowed_signers: /etc/specula/git-allowed-signers
-      tofu: enforce          # ref→SHA 锁定，非快进更新告警
 ```
 
 ---

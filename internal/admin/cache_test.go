@@ -3,6 +3,8 @@ package admin
 import (
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/auth"
+	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 )
 
@@ -325,4 +328,124 @@ func TestCacheEndpoints_RequireAuth(t *testing.T) {
 	seedCache(m)
 
 	assert.Equal(t, http.StatusUnauthorized, h.do("GET", "/api/v1/admin/cache/oci", "", nil).Code)
+}
+
+// newGitCacheHarness creates an admin server wired with a git mirror dir.
+// The caller is responsible for populating mirrorDir before making requests.
+func newGitCacheHarness(t *testing.T, mirrorDir string) *harness {
+	t.Helper()
+	store := newFakeUserStore()
+	verifier := auth.NewHS256Verifier([]byte("test-secret-32-bytes-minimum!!!"))
+	hasher := &fakeHasher{}
+	metaStore := &fakeMetaStore{}
+
+	cfg := testConfig()
+	cfg.Protocols["git"] = config.ProtocolConfig{
+		Git: &config.GitConfig{
+			MirrorDir:        mirrorDir,
+			AllowedUpstreams: []string{"github.com"},
+		},
+	}
+
+	srv := New(Deps{
+		Stats:  newFakeStatsCollector(),
+		Meta:   metaStore,
+		Users:  store,
+		Auth:   auth.NewService(store, hasher, verifier, false, nil),
+		Tokens: verifier,
+		Config: cfg,
+		Blobs:  &fakeBlobReporter{usedBytes: 999},
+	})
+	srv.hasher = hasher
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	return &harness{srv: srv, mux: mux, store: store, verifier: verifier, hasher: hasher}
+}
+
+// TestListCache_GitShowsMirrorRepos verifies that GET /admin/cache/git returns
+// the bare-mirror repos found on disk, not an empty list from MetadataStore.
+// BUG (before fix): handleListCache called meta.ListEntries("git", …) which
+// always returned empty because git objects are NOT in the CAS / MetadataStore.
+func TestListCache_GitShowsMirrorRepos(t *testing.T) {
+	mirrorDir := t.TempDir()
+
+	// Create two fake bare-mirror repos: github.com/alice/hello.git and
+	// github.com/bob/world.git. Populate each with a small file so size > 0.
+	for _, repoPath := range []string{
+		"github.com/alice/hello.git",
+		"github.com/bob/world.git",
+	} {
+		full := filepath.Join(mirrorDir, repoPath)
+		require.NoError(t, os.MkdirAll(full, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(full, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(full, "pack.pack"), make([]byte, 1024), 0o644))
+	}
+
+	h := newGitCacheHarness(t, mirrorDir)
+	_, tok := h.mustCreateAdmin(t)
+
+	rr := h.do("GET", "/api/v1/admin/cache/git", tok, nil)
+	require.Equal(t, http.StatusOK, rr.Code, "git cache browser must return 200")
+
+	var resp CacheEntriesResponse
+	decodeJSON(t, rr, &resp)
+
+	assert.Equal(t, int64(2), resp.Total, "total must equal the number of bare-mirror repos on disk")
+	require.Len(t, resp.Entries, 2, "entries must list both repos")
+
+	protocols := make([]string, 0, len(resp.Entries))
+	for _, e := range resp.Entries {
+		protocols = append(protocols, e.Protocol)
+		assert.Equal(t, "git", e.Protocol, "all entries must carry protocol=git")
+		assert.Greater(t, e.Size, int64(0), "each entry must have a non-zero size from du walk")
+	}
+}
+
+// TestListCache_GitEmpty returns an empty list when the mirror dir has no repos.
+func TestListCache_GitEmpty(t *testing.T) {
+	mirrorDir := t.TempDir() // empty
+
+	h := newGitCacheHarness(t, mirrorDir)
+	_, tok := h.mustCreateAdmin(t)
+
+	rr := h.do("GET", "/api/v1/admin/cache/git", tok, nil)
+	require.Equal(t, http.StatusOK, rr.Code)
+
+	var resp CacheEntriesResponse
+	decodeJSON(t, rr, &resp)
+	assert.Equal(t, int64(0), resp.Total)
+	assert.Empty(t, resp.Entries)
+}
+
+// TestListCache_GitNotConfigured verifies that GET /admin/cache/git returns an
+// empty list (not 500 or 404) when no git protocol is configured in the server.
+// This exercises the mirrorDir=="" early return in handleListGitMirrors.
+func TestListCache_GitNotConfigured(t *testing.T) {
+	// newCacheHarness uses testConfig() which has ONLY "oci"; no git key.
+	h, _ := newCacheHarness(t)
+	_, tok := h.mustCreateAdmin(t)
+
+	rr := h.do("GET", "/api/v1/admin/cache/git", tok, nil)
+	require.Equal(t, http.StatusOK, rr.Code, "git cache endpoint must return 200 when unconfigured")
+
+	var resp CacheEntriesResponse
+	decodeJSON(t, rr, &resp)
+	assert.Equal(t, int64(0), resp.Total)
+	assert.Empty(t, resp.Entries)
+}
+
+// TestListCache_GitMirrorDirNotExist verifies that a non-existent mirror dir
+// does not cause a 500 — it returns an empty list gracefully.
+func TestListCache_GitMirrorDirNotExist(t *testing.T) {
+	h := newGitCacheHarness(t, "/nonexistent/specula/git-mirror-that-does-not-exist")
+	_, tok := h.mustCreateAdmin(t)
+
+	rr := h.do("GET", "/api/v1/admin/cache/git", tok, nil)
+	require.Equal(t, http.StatusOK, rr.Code, "non-existent mirror dir must return 200, not 500")
+
+	var resp CacheEntriesResponse
+	decodeJSON(t, rr, &resp)
+	assert.Equal(t, int64(0), resp.Total)
+	assert.Empty(t, resp.Entries)
 }

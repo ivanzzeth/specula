@@ -12,6 +12,7 @@ package config
 import (
 	"fmt"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/confmap"
 	"github.com/knadh/koanf/providers/file"
@@ -477,8 +478,26 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: load env: %w", err)
 	}
 
+	// Unmarshal with ErrorUnused: true so that misplaced or misspelled keys are
+	// a hard error rather than a silent no-op.  A typo that silently disables a
+	// security anchor (e.g. sumdb placed under verification instead of at the
+	// protocol level) is the worst possible failure mode for a product whose
+	// thesis is honest supply-chain verification.
+	//
+	// We preserve koanf's default WeaklyTypedInput (required so that SPECULA_*
+	// string env vars can coerce to int64/bool at unmarshal time) and the two
+	// standard decode hooks (StringToTimeDuration for future use, TextUnmarshaller
+	// for types that implement encoding.TextUnmarshaler).
 	var cfg Config
-	if err := k.Unmarshal("", &cfg); err != nil {
+	dc := &mapstructure.DecoderConfig{
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			mapstructure.StringToTimeDurationHookFunc(),
+			mapstructure.TextUnmarshallerHookFunc(),
+		),
+		WeaklyTypedInput: true,
+		ErrorUnused:      true,
+	}
+	if err := k.UnmarshalWithConf("", &cfg, koanf.UnmarshalConf{DecoderConfig: dc}); err != nil {
 		return nil, fmt.Errorf("config: unmarshal: %w", err)
 	}
 

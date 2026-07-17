@@ -139,13 +139,13 @@ func (v *GPGVerifier) verifyDists(ref artifact.ArtifactRef, art *artifact.Artifa
 	case isPackagesFile(version):
 		return v.verifyPackages(ref, art)
 	default:
-		// Release, Release.gpg, Sources, Translation-*, Contents-*, etc.:
-		// SHA256 integrity is optionally covered by ChecksumVerifier via ref.Digest.
-		return artifact.Result{
-			Status:  artifact.StatusPass,
-			Tier:    artifact.TierChecksum,
-			Message: fmt.Sprintf("gpg: dists file %q not GPG-chain verifiable (InRelease covers SHA256)", version),
-		}, nil
+		// Release.gpg, Translation-*, Contents-*, DEP11 cnf, etc.: these files
+		// are listed in the InRelease SHA256 section. If InRelease has been
+		// GPG-verified for this suite, verify the file's SHA256 against the
+		// pinned value and return TierSigned. If InRelease has not yet been
+		// seen (or the file is not listed), fall through at TierChecksum so the
+		// pipeline is not blocked (ChecksumVerifier + TofuVerifier still apply).
+		return v.verifyInReleasePin(ref, art)
 	}
 }
 
@@ -335,6 +335,73 @@ func (v *GPGVerifier) verifyPackages(ref artifact.ArtifactRef, art *artifact.Art
 		Status:  artifact.StatusPass,
 		Tier:    artifact.TierSigned,
 		Message: fmt.Sprintf("gpg: Packages %q SHA256 chain-verified (InRelease→Packages) — %d .deb hashes pinned", relPath, len(poolHashes)),
+	}, nil
+}
+
+// verifyInReleasePin attempts to verify a dists file that is neither InRelease
+// nor a Packages/Sources index but that may be listed in the InRelease SHA256
+// section (Translation-*, Contents-*, DEP11 Components, cnf, etc.).
+//
+//   - suite and relPath are derived from ref.Version the same way verifyPackages
+//     does: "noble/main/i18n/Translation-en" → suite="noble", relPath="main/i18n/Translation-en".
+//   - If InRelease has not yet been GPG-verified for this suite (suiteSHA256s
+//     has no entry), returns TierChecksum PASS — the pipeline is not blocked.
+//   - If InRelease was verified but the file is not listed, returns TierChecksum
+//     PASS (some dists files such as Release.gpg are never in SHA256).
+//   - If listed and SHA256 matches, returns TierSigned PASS.
+//   - If listed but SHA256 mismatches, returns TierSigned FAIL (tamper detected).
+func (v *GPGVerifier) verifyInReleasePin(ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
+	version := ref.Version
+	idx := strings.IndexByte(version, '/')
+	if idx < 0 {
+		// No suite component in the path — cannot derive a cache key.
+		return artifact.Result{
+			Status:  artifact.StatusPass,
+			Tier:    artifact.TierChecksum,
+			Message: fmt.Sprintf("gpg: dists file %q has no suite component — pass-through at TierChecksum", version),
+		}, nil
+	}
+	suite := version[:idx]
+	relPath := version[idx+1:]
+	cacheKey := ref.Name + ":" + suite
+
+	v.mu.RLock()
+	sums, hasInRelease := v.suiteSHA256s[cacheKey]
+	v.mu.RUnlock()
+
+	if !hasInRelease {
+		// InRelease not yet GPG-verified for this suite — cannot chain-verify.
+		return artifact.Result{
+			Status:  artifact.StatusPass,
+			Tier:    artifact.TierChecksum,
+			Message: fmt.Sprintf("gpg: dists file %q not GPG-chain verifiable (InRelease not yet verified, suite=%q)", version, suite),
+		}, nil
+	}
+
+	expectedHex, listed := sums[relPath]
+	if !listed {
+		// File is not in the InRelease SHA256 section (e.g. Release.gpg).
+		return artifact.Result{
+			Status:  artifact.StatusPass,
+			Tier:    artifact.TierChecksum,
+			Message: fmt.Sprintf("gpg: dists file %q not listed in InRelease SHA256 (suite=%q) — pass-through at TierChecksum", version, suite),
+		}, nil
+	}
+
+	// File is pinned by InRelease: verify the SHA256.
+	actualHex := strings.TrimPrefix(art.Digest, "sha256:")
+	if actualHex != expectedHex {
+		return artifact.Result{
+			Status:  artifact.StatusFail,
+			Tier:    artifact.TierSigned,
+			Message: fmt.Sprintf("gpg: dists file %q SHA256 mismatch: got %s, expected %s (InRelease chain)", relPath, actualHex, expectedHex),
+		}, nil
+	}
+
+	return artifact.Result{
+		Status:  artifact.StatusPass,
+		Tier:    artifact.TierSigned,
+		Message: fmt.Sprintf("gpg: dists file %q SHA256 chain-verified via InRelease (TierSigned)", relPath),
 	}, nil
 }
 

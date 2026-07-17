@@ -3,8 +3,12 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/store/meta"
@@ -86,6 +90,133 @@ func toCacheEntryDTO(e meta.Entry) CacheEntryDTO {
 	}
 }
 
+// gitMirrorDir extracts the configured mirror directory for the git protocol.
+// Returns empty string when git is unconfigured or MirrorDir is unset.
+func (s *Server) gitMirrorDir() string {
+	if s.cfg == nil {
+		return ""
+	}
+	pc, ok := s.cfg.Protocols["git"]
+	if !ok || pc.Git == nil {
+		return ""
+	}
+	return pc.Git.MirrorDir
+}
+
+// mirrorDirSize returns the total size in bytes of a bare-mirror repo directory
+// (analogous to `du -sb`). Returns 0 on any error (best-effort).
+func mirrorDirSize(dir string) int64 {
+	var total int64
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if info, e := d.Info(); e == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}
+
+// listGitMirrors walks the bare-mirror tree rooted at mirrorDir and returns a
+// CacheEntryDTO for each discovered bare-mirror repository. The mirror layout
+// follows the git handler's convention:
+//
+//	<mirrorDir>/<host>/<project-path>.git
+//
+// where <project-path> may include slashes (e.g., github.com/alice/hello.git).
+// The walk uses filepath.WalkDir and stops descending into any directory whose
+// name ends in ".git" (those are the bare mirrors, not intermediate path
+// components). Size is approximated via mirrorDirSize (analogous to du -sb).
+// Returns nil, nil when mirrorDir does not exist.
+func listGitMirrors(mirrorDir string) ([]CacheEntryDTO, error) {
+	var entries []CacheEntryDTO
+
+	walkErr := filepath.WalkDir(mirrorDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// Propagate root-not-exist so the caller can distinguish "not
+			// configured" from "broken"; skip individual unreadable sub-paths.
+			if path == mirrorDir {
+				return err
+			}
+			return nil
+		}
+		if !d.IsDir() || path == mirrorDir {
+			return nil // skip files and the root itself
+		}
+		if !strings.HasSuffix(d.Name(), ".git") {
+			return nil // intermediate directory (host, user/org); keep descending
+		}
+		// Found a bare-mirror directory (ends in ".git").
+		rel, err2 := filepath.Rel(mirrorDir, path)
+		if err2 != nil {
+			return nil
+		}
+		// rel is like "github.com/alice/hello.git"; strip the suffix to get the
+		// canonical repo name used in Upstream and display.
+		name := strings.TrimSuffix(filepath.ToSlash(rel), ".git")
+		entries = append(entries, CacheEntryDTO{
+			ID:       name,
+			Protocol: "git",
+			Name:     name,
+			// Tier "mirror" distinguishes a bare-mirror entry from a CAS/verified entry.
+			Tier:     "mirror",
+			Size:     mirrorDirSize(path),
+			Upstream: "https://" + name,
+		})
+		return fs.SkipDir // do not descend into the bare-mirror contents
+	})
+
+	if walkErr != nil {
+		if errors.Is(walkErr, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, walkErr
+	}
+	return entries, nil
+}
+
+// handleListGitMirrors handles GET /api/v1/admin/cache/git. It walks the
+// configured git mirror directory (bare-mirror tree, not the CAS) and returns
+// one CacheEntryDTO per discovered repository. The MetadataStore is NOT
+// consulted because git objects are never stored in the CAS.
+//
+// As a side effect it registers the mirror directory with the stats collector
+// (idempotent) so that subsequent calls to GET /api/v1/admin/stats and
+// /metrics also reflect git disk usage.
+func (s *Server) handleListGitMirrors(w http.ResponseWriter, r *http.Request) {
+	mirrorDir := s.gitMirrorDir()
+	if mirrorDir == "" {
+		// Git is not configured or MirrorDir is unset; return empty, not an error.
+		writeJSON(w, http.StatusOK, CacheEntriesResponse{Entries: []CacheEntryDTO{}})
+		return
+	}
+
+	// Lazy registration of the mirror dir with the stats collector so that
+	// GET /api/v1/admin/stats and /metrics reflect git bytes after first visit.
+	// AddOpaquePath is idempotent (duplicate calls are silently ignored).
+	if s.stats != nil {
+		s.stats.AddOpaquePath(mirrorDir, "git")
+	}
+
+	entries, err := listGitMirrors(mirrorDir)
+	if err != nil {
+		s.log.Error("admin: list git mirrors", "err", err, "mirror_dir", mirrorDir)
+		writeError(w, http.StatusInternalServerError, "failed to list git mirror repos")
+		return
+	}
+	if entries == nil {
+		entries = []CacheEntryDTO{}
+	}
+	writeJSON(w, http.StatusOK, CacheEntriesResponse{
+		Entries: entries,
+		Total:   int64(len(entries)),
+		Limit:   len(entries),
+		Offset:  0,
+	})
+}
+
 // handleListCache → GET /api/v1/admin/cache/{protocol}. Returns
 // CacheEntriesResponse.
 //
@@ -103,13 +234,21 @@ func toCacheEntryDTO(e meta.Entry) CacheEntryDTO {
 // An unparseable filter value is a 400: silently dropping it would render rows
 // that contradict the filter chips the operator can see.
 func (s *Server) handleListCache(w http.ResponseWriter, r *http.Request) {
-	if s.meta == nil {
-		writeError(w, http.StatusNotImplemented, "metadata store not configured")
-		return
-	}
 	protocol := canonicalProtocol(r.PathValue("protocol"))
 	if _, ok := knownProtocols[protocol]; !ok {
 		writeError(w, http.StatusNotFound, "unknown protocol")
+		return
+	}
+
+	// Git is special: objects live in a bare-mirror tree on disk, not in the
+	// CAS / MetadataStore. Delegate to the mirror-aware handler.
+	if protocol == "git" {
+		s.handleListGitMirrors(w, r)
+		return
+	}
+
+	if s.meta == nil {
+		writeError(w, http.StatusNotImplemented, "metadata store not configured")
 		return
 	}
 

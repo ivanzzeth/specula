@@ -885,3 +885,139 @@ storage:
 	assert.Equal(t, ":19999", cfg.Server.DataPlaneAddr)
 	assert.Equal(t, ":19998", cfg.Server.ControlPlaneAddr)
 }
+
+// ── BUG A: unknown config key silently ignored ─────────────────────────────
+//
+// RED test: misplaced sumdb under verification must be rejected.
+// sumdb is a field of ProtocolConfig (sibling to upstreams/verification),
+// NOT a field of VerificationConfig. Placing it under verification silently
+// disabled the Go signed-tier anchor.
+//
+// BEFORE the fix: Load returns nil — sumdb is silently swallowed.
+// AFTER the fix:  Load returns an error naming the unknown key.
+
+// TestLoad_UnknownKey_SumDBMisplacedUnderVerification is the primary RED test
+// for BUG A. sumdb belongs at protocols.go (ProtocolConfig.SumDB), not under
+// protocols.go.verification (VerificationConfig). A typo here silently drops
+// Go's signed-tier supply-chain anchor.
+func TestLoad_UnknownKey_SumDBMisplacedUnderVerification(t *testing.T) {
+	yaml := `
+server:
+  data_plane_addr: ":5000"
+  control_plane_addr: ":8080"
+storage:
+  blob:
+    driver: local
+    local:
+      root: /tmp/blobs
+  meta:
+    driver: sqlite
+    dsn: /tmp/meta.db
+protocols:
+  go:
+    mutable_ttl_seconds: 300
+    upstreams:
+      - name: goproxy-cn
+        base_url: https://goproxy.cn
+        priority: 1
+        official: false
+    verification:
+      tiers: [signed, tofu, checksum]
+      quorum: 1
+      sumdb:
+        url: https://sum.golang.google.cn
+        policy: enforce
+`
+	path := writeYAML(t, yaml)
+	_, err := config.Load(path)
+	require.Error(t, err,
+		"misplaced sumdb under verification must be rejected — "+
+			"before the fix, Load returns nil and Go's signed tier is silently disabled")
+	assert.Contains(t, err.Error(), "sumdb",
+		"error must name the unknown key so the operator can fix the typo")
+}
+
+// TestLoad_UnknownKey_TopLevel verifies that a completely unknown top-level key
+// is rejected (belt-and-braces: covers non-protocol misplacement).
+func TestLoad_UnknownKey_TopLevel(t *testing.T) {
+	yaml := minimalYAML() + `
+bogus_key: this-should-not-exist
+`
+	path := writeYAML(t, yaml)
+	_, err := config.Load(path)
+	require.Error(t, err, "an unknown top-level YAML key must be rejected")
+	assert.Contains(t, err.Error(), "bogus_key")
+}
+
+// ── BUG B: PRD §6 config model does not load ──────────────────────────────
+//
+// RED test: the YAML block in docs/PRD.md §6 must parse through config.Load.
+// Before the fix the PRD uses a stale schema (bare-string upstreams, wrong
+// verification sub-keys) that causes a startup failure when followed literally.
+//
+// This test is the permanent guard: if PRD §6 ever drifts from the real schema
+// again, this test goes red and the PR cannot merge.
+
+// prdSection6Header is the minimum required config that PRD §6 omits (it shows
+// only the protocols block as an excerpt). We prepend it so config.Load can
+// validate the full config.
+const prdSection6Header = `
+server:
+  data_plane_addr: ":5000"
+  control_plane_addr: ":8080"
+storage:
+  blob:
+    driver: local
+    local:
+      root: /tmp/blobs
+  meta:
+    driver: sqlite
+    dsn: /tmp/meta.db
+`
+
+// TestPRDSection6_YAMLLoads extracts the YAML block from docs/PRD.md §6 and
+// runs it through config.Load. It is the permanent guard for BUG B: if the
+// PRD's schema example drifts, this test goes red.
+func TestPRDSection6_YAMLLoads(t *testing.T) {
+	prdPath := filepath.Join("..", "..", "docs", "PRD.md")
+	data, err := os.ReadFile(prdPath)
+	require.NoError(t, err, "docs/PRD.md must be readable")
+
+	yamlBlock := extractPRDSection6YAML(t, string(data))
+	require.NotEmpty(t, yamlBlock, "PRD §6 must contain a ```yaml code block")
+
+	// Prepend the required non-protocol config (PRD §6 is a protocols-only excerpt).
+	fullYAML := prdSection6Header + yamlBlock
+	path := writeYAML(t, fullYAML)
+
+	_, loadErr := config.Load(path)
+	require.NoError(t, loadErr,
+		"PRD §6 YAML block must load and validate without error.\n"+
+			"If this fails, PRD §6 is out of sync with the real config schema.\n"+
+			"Fix: update docs/PRD.md §6 to match specula.example.yaml.")
+}
+
+// extractPRDSection6YAML finds the ## 6. section in PRD.md content and returns
+// the body of its first ```yaml … ``` block.
+func extractPRDSection6YAML(t *testing.T, content string) string {
+	t.Helper()
+
+	// Locate the ## 6. heading.
+	sec6Idx := strings.Index(content, "\n## 6.")
+	require.True(t, sec6Idx >= 0, "PRD.md must contain a '## 6.' section")
+	rest := content[sec6Idx+1:] // skip the leading newline
+
+	// Trim at the next section boundary so we only search within §6.
+	if nextSec := strings.Index(rest[5:], "\n## "); nextSec >= 0 {
+		rest = rest[:nextSec+5]
+	}
+
+	// Extract the yaml fenced block.
+	const fence = "```yaml\n"
+	start := strings.Index(rest, fence)
+	require.True(t, start >= 0, "PRD §6 must contain a ```yaml block")
+	rest = rest[start+len(fence):]
+	end := strings.Index(rest, "```")
+	require.True(t, end >= 0, "PRD §6 yaml block must have a closing ```")
+	return rest[:end]
+}

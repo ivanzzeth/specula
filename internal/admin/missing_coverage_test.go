@@ -54,6 +54,7 @@ func (c *errStatsCollector) Total(_ context.Context) (artifact.SizeStat, error) 
 func (c *errStatsCollector) RecordPut(_ context.Context, _ string, _ int64) error   { return nil }
 func (c *errStatsCollector) RecordEvict(_ context.Context, _ string, _ int64) error { return nil }
 func (c *errStatsCollector) Run(_ context.Context)                                  {}
+func (c *errStatsCollector) AddOpaquePath(_, _ string)                              {}
 
 // errOrgStore wraps fakeOrgStore and injects errors on CountOrgOwners /
 // CountOrgAdmins so that guardLastPrivileged's fail-CLOSED 503 branch can be
