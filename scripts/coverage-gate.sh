@@ -39,12 +39,20 @@ MODULE="github.com/ivanzzeth/specula"
 #                          recorded by the compiler).
 #   internal/migrate     → one 19-line func that delegates to the driver-specific migrators
 #                          in internal/store/{sqlite,postgres}, which are gated/watched.
+#   test/groundtruth/interposer
+#                        → main: flag parsing + listener wiring only, for the same reason
+#                          cmd/specula is excluded. The arbitration logic it wires lives in
+#                          test/groundtruth/interposer/proxy, which is GATED at the normal
+#                          threshold — deliberately, because that package decides whether
+#                          Specula's counters are lying, and an untested arbiter would just
+#                          relocate the problem it exists to solve.
 EXCLUDE_PKGS=(
   "cmd/specula"
   "web"
   "internal/store/blob"
   "internal/store/meta"
   "internal/migrate"
+  "test/groundtruth/interposer"
 )
 
 # WATCH — reported, never blocking. Deliberately kept SHORT. A package earns a WATCH slot
