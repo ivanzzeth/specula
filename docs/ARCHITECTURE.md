@@ -3,6 +3,22 @@
 > 强化依据见 [DESIGN-REVIEW.md](./DESIGN-REVIEW.md)；需求见 [PRD.md](./PRD.md)。
 > v0.2 关键变化：双平面架构、二层缓存(CAS)、verify-on-write 隔离区、流式验证接口、
 > 两层 stampede 保护、缓存容量统计、新增 Helm/git、内嵌 WebUI + 邮箱认证。
+>
+> **库化**：公开 API 见 [LIBRARY.md](./LIBRARY.md)；`cmd/specula` 是 `pkg/*` 之上的薄壳。
+
+---
+
+## 0. Library surface (SDK + Embed)
+
+任意 Go 项目可通过 `pkg/` 接入同一套核心管线，无需运行 daemon：
+
+| 层 | 包 | 用途 |
+|---|---|---|
+| L1 SDK | `pkg/specula` | `Get` / `Open` / `VerifyFile` |
+| L2 Embed | `pkg/handler/*` + `Server.Mount` | 挂到现有 `http.ServeMux` |
+| L3 Daemon | `cmd/specula` | YAML + 控制面 WebUI |
+
+实现仍主要在 `internal/`；`pkg/` 为稳定再导出 + Facade。重依赖驱动（S3 / Postgres）为 opt-in 子包。
 
 ---
 

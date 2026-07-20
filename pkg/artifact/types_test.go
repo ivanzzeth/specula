@@ -46,8 +46,8 @@ func TestStatusSkipIsDistinct(t *testing.T) {
 
 // TestStringFallbacks covers the out-of-range branches. "unknown" is the honest
 // answer for a value outside the enum — and note it is NOT one of PRD §G2's four
-// tiers, which is exactly why internal/metrics must only ever be handed a tier
-// the verify chain actually produced, never an arbitrary int.
+// tiers, which is exactly why metrics must only ever be handed a tier the verify
+// chain actually produced, never an arbitrary int.
 func TestStringFallbacks(t *testing.T) {
 	require.Equal(t, "unknown", Tier(99).String())
 	require.Equal(t, "unknown", Tier(-1).String())

@@ -1,12 +1,11 @@
-// Command specula is the Specula daemon entrypoint. It loads configuration,
-// constructs the selected CAS BlobStore + MetadataStore, builds the streaming
-// verification chain (checksum + TOFU) and CacheManager, then serves the OCI
-// data plane on its port and the control-plane health/metrics endpoints.
+// Command specula is the Specula daemon entrypoint — a thin shell over the
+// public library (pkg/specula, pkg/handler/*, pkg/cache, pkg/verify). It loads
+// YAML configuration, wires CAS + metadata stores, mounts the eight data-plane
+// protocol handlers from pkg/handler, and serves the control-plane WebUI
+// (internal/admin — not part of the library surface).
 //
-// v0.2 scope: all eight data-plane protocol handlers serve for real — OCI,
-// Go module (GOPROXY), pypi, npm, apt, helm, tarball and git. Protocol-native
-// signed anchors are wired where they exist (apt GPG keyring, Helm .prov GPG,
-// git signed refs); pypi/npm/tarball land on TOFU in this batch.
+// External Go programs should import pkg/specula or pkg/handler directly; see
+// docs/LIBRARY.md.
 package main
 
 import (
@@ -31,20 +30,10 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/admin"
 	"github.com/ivanzzeth/specula/internal/apikey"
-	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/auth"
-	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/grant"
-	apthandler "github.com/ivanzzeth/specula/internal/handler/apt"
-	githandler "github.com/ivanzzeth/specula/internal/handler/git"
-	"github.com/ivanzzeth/specula/internal/handler/gomod"
-	helmhandler "github.com/ivanzzeth/specula/internal/handler/helm"
-	"github.com/ivanzzeth/specula/internal/handler/npm"
-	"github.com/ivanzzeth/specula/internal/handler/oci"
-	"github.com/ivanzzeth/specula/internal/handler/pypi"
 	"github.com/ivanzzeth/specula/internal/handler/registry"
-	tarballhandler "github.com/ivanzzeth/specula/internal/handler/tarball"
 	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/org"
 	"github.com/ivanzzeth/specula/internal/registryauthz"
@@ -53,15 +42,27 @@ import (
 	"github.com/ivanzzeth/specula/internal/settings"
 	"github.com/ivanzzeth/specula/internal/stats"
 	"github.com/ivanzzeth/specula/internal/store/aptpins"
-	blobstore "github.com/ivanzzeth/specula/internal/store/blob"
-	"github.com/ivanzzeth/specula/internal/store/local"
-	metastore "github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/store/postgres"
 	"github.com/ivanzzeth/specula/internal/store/s3"
 	"github.com/ivanzzeth/specula/internal/store/sqlite"
-	"github.com/ivanzzeth/specula/internal/upstream"
-	"github.com/ivanzzeth/specula/internal/verify"
 	webui "github.com/ivanzzeth/specula/web"
+
+	// Public library surface — data plane is assembled from pkg/* (docs/LIBRARY.md).
+	"github.com/ivanzzeth/specula/pkg/artifact"
+	"github.com/ivanzzeth/specula/pkg/cache"
+	apthandler "github.com/ivanzzeth/specula/pkg/handler/apt"
+	githandler "github.com/ivanzzeth/specula/pkg/handler/git"
+	"github.com/ivanzzeth/specula/pkg/handler/gomod"
+	helmhandler "github.com/ivanzzeth/specula/pkg/handler/helm"
+	"github.com/ivanzzeth/specula/pkg/handler/npm"
+	"github.com/ivanzzeth/specula/pkg/handler/oci"
+	"github.com/ivanzzeth/specula/pkg/handler/pypi"
+	tarballhandler "github.com/ivanzzeth/specula/pkg/handler/tarball"
+	blobstore "github.com/ivanzzeth/specula/pkg/store/blob"
+	"github.com/ivanzzeth/specula/pkg/store/local"
+	metastore "github.com/ivanzzeth/specula/pkg/store/meta"
+	"github.com/ivanzzeth/specula/pkg/upstream"
+	"github.com/ivanzzeth/specula/pkg/verify"
 )
 
 const banner = `

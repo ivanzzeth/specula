@@ -1,11 +1,10 @@
 // Package artifact defines the canonical, protocol-agnostic core types shared
-// across every Specula subsystem: the internal artifact reference, cache
-// entries (immutable + mutable tiers), the honest tiered-trust enum, and the
-// streaming verification result types.
+// across every Specula subsystem: the artifact reference, cache entries
+// (immutable + mutable tiers), the honest tiered-trust enum, and the streaming
+// verification result types.
 //
-// These types are the FOUNDATION contract. Everything else compiles against
-// them, so they must stay stable and dependency-free (no imports of other
-// internal packages).
+// This is the public FOUNDATION contract (see docs/LIBRARY.md). It is
+// dependency-free. Prefer this package over the internal/artifact shim.
 package artifact
 
 import "time"
