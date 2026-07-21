@@ -26,6 +26,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/grant"
 	"github.com/ivanzzeth/specula/internal/org"
+	"github.com/ivanzzeth/specula/internal/stats"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 )
 
@@ -244,6 +245,9 @@ func (c *fakeStatsCollector) RecordPut(_ context.Context, _ string, _ int64) err
 func (c *fakeStatsCollector) RecordEvict(_ context.Context, _ string, _ int64) error { return nil }
 func (c *fakeStatsCollector) Refresh(_ context.Context)                              {}
 func (c *fakeStatsCollector) Run(_ context.Context)                                  {}
+func (c *fakeStatsCollector) Series(_ context.Context, _ string) ([]stats.SeriesPoint, error) {
+	return nil, nil
+}
 
 // AddOpaquePath records the registration (idempotently, like the real one)
 // instead of discarding it.

@@ -268,40 +268,50 @@ func (s *Server) handleInstanceStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleStatsSeries → GET /api/v1/admin/stats/series?protocol=<p>.
-// Returns SeriesResponse (grand total when protocol is omitted).
-//
-// NOTE: stats.Collector does not yet expose a time-series ring buffer; a
-// single-point snapshot of the current aggregate is returned as a
-// best-effort fallback until a Series(ctx, protocol) method is added to
-// the Collector interface (missing dep — tracked as TODO).
+// Returns SeriesResponse (grand total when protocol is omitted) from the
+// collector's in-memory ring buffer. Falls back to a single live snapshot when
+// the ring is still empty (process just started).
 func (s *Server) handleStatsSeries(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	proto := r.URL.Query().Get("protocol")
 
-	var bytes int64
-	if proto == "" {
-		total, err := s.stats.Total(ctx)
-		if err != nil {
-			s.log.Error("admin: stats series total", "err", err)
-			writeError(w, http.StatusInternalServerError, "failed to retrieve stats")
-			return
+	points, err := s.stats.Series(ctx, proto)
+	if err != nil {
+		s.log.Error("admin: stats series", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve stats series")
+		return
+	}
+	out := make([]SeriesPoint, 0, len(points))
+	for _, p := range points {
+		out = append(out, SeriesPoint{Unix: p.Unix, Bytes: p.Bytes})
+	}
+	if len(out) == 0 {
+		var bytes int64
+		if proto == "" {
+			total, err := s.stats.Total(ctx)
+			if err != nil {
+				s.log.Error("admin: stats series total", "err", err)
+				writeError(w, http.StatusInternalServerError, "failed to retrieve stats")
+				return
+			}
+			bytes = total.Bytes
+		} else {
+			byProto, err := s.stats.ByProtocol(ctx)
+			if err != nil {
+				s.log.Error("admin: stats series by protocol", "err", err)
+				writeError(w, http.StatusInternalServerError, "failed to retrieve stats")
+				return
+			}
+			if ss, ok := byProto[proto]; ok {
+				bytes = ss.Bytes
+			}
 		}
-		bytes = total.Bytes
-	} else {
-		byProto, err := s.stats.ByProtocol(ctx)
-		if err != nil {
-			s.log.Error("admin: stats series by protocol", "err", err)
-			writeError(w, http.StatusInternalServerError, "failed to retrieve stats")
-			return
-		}
-		if ss, ok := byProto[proto]; ok {
-			bytes = ss.Bytes
-		}
+		out = []SeriesPoint{{Unix: time.Now().Unix(), Bytes: bytes}}
 	}
 
 	writeJSON(w, http.StatusOK, SeriesResponse{
 		Protocol: proto,
-		Points:   []SeriesPoint{{Unix: time.Now().Unix(), Bytes: bytes}},
+		Points:   out,
 	})
 }
 

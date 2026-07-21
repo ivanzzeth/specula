@@ -56,6 +56,9 @@ type Collector interface {
 	ByProtocol(ctx context.Context) (map[string]artifact.SizeStat, error)
 	// Total returns the grand-total size stat across all protocols.
 	Total(ctx context.Context) (artifact.SizeStat, error)
+	// Series returns oldest→newest capacity samples for protocol. An empty
+	// protocol returns the grand-total series.
+	Series(ctx context.Context, protocol string) ([]SeriesPoint, error)
 	// RecordPut increments the aggregate for protocol by size bytes.
 	RecordPut(ctx context.Context, protocol string, size int64) error
 	// RecordEvict decrements the aggregate for protocol by size bytes.
@@ -108,6 +111,7 @@ type collector struct {
 	// inmem tracks per-protocol bytes/objects when store == nil.
 	inmem   map[string]inmemStat
 	duPaths []duEntry // opaque-cache roots for du-sb fallback
+	series  *seriesStore
 
 	// tickCh, when non-nil, replaces time.NewTicker inside Run.
 	// Intended only for unit tests that drive refresh ticks deterministically.
@@ -159,6 +163,7 @@ func newCollectorWithGauges(store meta.MetadataStore, cacheBytes, cacheObjects *
 		cacheObjects: cacheObjects,
 		cfg:          cfg,
 		inmem:        make(map[string]inmemStat),
+		series:       newSeriesStore(DefaultSeriesCapacity),
 	}
 }
 
@@ -254,7 +259,8 @@ func (c *collector) Run(ctx context.Context) {
 // walks.
 func (c *collector) refreshOnce(ctx context.Context) {
 	if c.store == nil {
-		// Standalone mode: gauges are kept current by RecordPut/RecordEvict.
+		// Standalone: sample in-memory counters so Series still advances.
+		c.sampleSeries(ctx)
 		return
 	}
 
@@ -274,22 +280,47 @@ func (c *collector) refreshOnce(ctx context.Context) {
 	paths := append([]duEntry(nil), c.duPaths...)
 	c.mu.Unlock()
 
-	if len(paths) == 0 {
-		return
+	if len(paths) > 0 {
+		byProto := make(map[string]int64, len(paths))
+		for _, e := range paths {
+			size, err := duBytes(e.path)
+			if err != nil {
+				continue // best-effort: skip unreachable dirs silently
+			}
+			byProto[e.protocol] += size
+		}
+		for proto, size := range byProto {
+			c.cacheBytes.WithLabelValues(proto).Set(float64(size))
+		}
 	}
 
-	// Accumulate per-protocol byte totals across all registered paths.
-	byProto := make(map[string]int64, len(paths))
-	for _, e := range paths {
-		size, err := duBytes(e.path)
-		if err != nil {
-			continue // best-effort: skip unreachable dirs silently
-		}
-		byProto[e.protocol] += size
+	c.sampleSeries(ctx)
+}
+
+// sampleSeries appends one point per protocol (and the grand total) to the ring.
+func (c *collector) sampleSeries(ctx context.Context) {
+	if c.series == nil {
+		return
 	}
-	for proto, size := range byProto {
-		c.cacheBytes.WithLabelValues(proto).Set(float64(size))
+	byProto, err := c.ByProtocol(ctx)
+	if err != nil {
+		return
 	}
+	now := time.Now().UTC().Unix()
+	var total int64
+	for proto, s := range byProto {
+		c.series.record(proto, s.Bytes, now)
+		total += s.Bytes
+	}
+	c.series.record("", total, now)
+}
+
+// Series returns oldest→newest capacity samples for protocol ("" = grand total).
+func (c *collector) Series(_ context.Context, protocol string) ([]SeriesPoint, error) {
+	if c.series == nil {
+		return nil, nil
+	}
+	return c.series.snapshot(protocol), nil
 }
 
 // ByProtocol returns per-protocol SizeStat.

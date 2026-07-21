@@ -33,6 +33,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/org"
+	"github.com/ivanzzeth/specula/internal/stats"
 )
 
 // ── error-injecting test doubles ─────────────────────────────────────────────
@@ -56,6 +57,9 @@ func (c *errStatsCollector) RecordEvict(_ context.Context, _ string, _ int64) er
 func (c *errStatsCollector) Refresh(_ context.Context)                              {}
 func (c *errStatsCollector) Run(_ context.Context)                                  {}
 func (c *errStatsCollector) AddOpaquePath(_, _ string)                              {}
+func (c *errStatsCollector) Series(_ context.Context, _ string) ([]stats.SeriesPoint, error) {
+	return nil, nil
+}
 
 // errOrgStore wraps fakeOrgStore and injects errors on CountOrgOwners /
 // CountOrgAdmins so that guardLastPrivileged's fail-CLOSED 503 branch can be
