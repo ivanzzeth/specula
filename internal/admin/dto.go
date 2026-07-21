@@ -426,6 +426,7 @@ type KeyDTO struct {
 	OrgID      string     `json:"org_id"`
 	Label      string     `json:"label,omitempty"`
 	Prefix     string     `json:"prefix"`
+	Scopes     []string   `json:"scopes"` // registry scopes: pull and/or push
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
@@ -441,7 +442,8 @@ type KeysResponse struct {
 
 // CreateKeyRequest is the POST /api/v1/keys body.
 type CreateKeyRequest struct {
-	Label string `json:"label,omitempty"`
+	Label  string   `json:"label,omitempty"`
+	Scopes []string `json:"scopes,omitempty"` // empty → pull+push
 }
 
 // ---- cache browser (GET /api/v1/admin/cache/{protocol}) ----------------------

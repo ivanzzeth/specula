@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/ivanzzeth/specula/internal/acl"
+	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/handler/oci"
 	"github.com/ivanzzeth/specula/internal/handler/registry"
@@ -129,6 +130,11 @@ func (a *Authz) GrantedActions(ctx context.Context, p registrytoken.Principal, r
 
 	var granted []string
 	for _, action := range requested {
+		// API-key principals are further constrained by per-key scopes
+		// (pull/push). Password users have empty KeyScopes and skip this gate.
+		if len(p.KeyScopes) > 0 && !apikey.AllowsAction(p.KeyScopes, action) {
+			continue
+		}
 		needWrite := action != registrytoken.ActionPull
 		if acl.CanAccess(resource, subject, needWrite) == nil {
 			granted = append(granted, action)

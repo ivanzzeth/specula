@@ -115,6 +115,7 @@
     "active": "有效 token",
     "colPrefix": "前缀",
     "colLabel": "标签",
+    "colScopes": "权限",
     "colCreated": "创建时间",
     "colLastUsed": "最近使用",
     "colExpires": "过期时间",
@@ -138,6 +139,10 @@
       "label": "标签",
       "labelOptional": "（可选）",
       "labelPlaceholder": "例如 CI deploy key、笔记本",
+      "scopes": "Registry 权限",
+      "scopePull": "pull（读）",
+      "scopePush": "push（写）",
+      "scopesHint": "至少选择一项。默认 pull + push。",
       "submit": "创建 token",
       "busy": "创建中…"
     },

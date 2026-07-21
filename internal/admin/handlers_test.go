@@ -723,7 +723,7 @@ func newFakeAPIKeyStore() *fakeAPIKeyStore {
 	}
 }
 
-func (f *fakeAPIKeyStore) create(orgID, userID, label string) (string, string, error) {
+func (f *fakeAPIKeyStore) create(orgID, userID, label string, scopes []string) (string, string, error) {
 	// Use public helpers via a raw key construction.
 	rawKey := apikey.KeyPrefix + "testkey" + strconv.Itoa(len(f.byID)+1)
 	id := "kid_" + strconv.Itoa(len(f.byID)+1)
@@ -733,6 +733,7 @@ func (f *fakeAPIKeyStore) create(orgID, userID, label string) (string, string, e
 		UserID:    userID,
 		Label:     label,
 		Prefix:    rawKey[:len(apikey.KeyPrefix)+6] + "…",
+		Scopes:    apikey.NormalizeScopes(scopes),
 		CreatedAt: time.Now().UTC(),
 		Revoked:   false,
 	}
@@ -741,40 +742,52 @@ func (f *fakeAPIKeyStore) create(orgID, userID, label string) (string, string, e
 	return id, rawKey, nil
 }
 
-func (f *fakeAPIKeyStore) Create(orgID, label string) (string, string, error) {
+func (f *fakeAPIKeyStore) Create(orgID, label string, scopes ...string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if orgID == "" {
 		orgID = apikey.DefaultOrgID
 	}
-	return f.create(orgID, "", label)
+	return f.create(orgID, "", label, scopes)
 }
 
-func (f *fakeAPIKeyStore) CreateOwned(orgID, userID, label string) (string, string, error) {
+func (f *fakeAPIKeyStore) CreateOwned(orgID, userID, label string, scopes ...string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if orgID == "" {
 		orgID = apikey.DefaultOrgID
 	}
-	return f.create(orgID, userID, label)
+	return f.create(orgID, userID, label, scopes)
 }
 
 func (f *fakeAPIKeyStore) LookupSubject(token string) (string, string, bool) {
+	info, ok := f.LookupKey(token)
+	if !ok {
+		return "", "", false
+	}
+	return info.OrgID, apikey.SubjectID(info.ID), true
+}
+
+func (f *fakeAPIKeyStore) LookupKey(token string) (apikey.KeyInfo, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for id, raw := range f.rawKeys {
 		if raw == token {
 			info, ok := f.byID[id]
 			if !ok || info.Revoked {
-				return "", "", false
+				return apikey.KeyInfo{}, false
 			}
 			if info.ExpiresAt != nil && time.Now().After(*info.ExpiresAt) {
-				return "", "", false
+				return apikey.KeyInfo{}, false
 			}
-			return info.OrgID, apikey.SubjectID(id), true
+			cp := *info
+			if info.Scopes != nil {
+				cp.Scopes = append([]string(nil), info.Scopes...)
+			}
+			return cp, true
 		}
 	}
-	return "", "", false
+	return apikey.KeyInfo{}, false
 }
 
 func (f *fakeAPIKeyStore) List(orgID string) ([]apikey.KeyInfo, error) {
@@ -1959,6 +1972,18 @@ func TestKeysCRUD(t *testing.T) {
 		assert.True(t, strings.HasPrefix(dto.RawKey, apikey.KeyPrefix), "key must start with spck_")
 		assert.Equal(t, "ci-key", dto.Label)
 		assert.False(t, dto.Revoked)
+		assert.Equal(t, []string{"pull", "push"}, dto.Scopes, "default scopes")
+	})
+
+	t.Run("create key with pull-only scope", func(t *testing.T) {
+		rr := h.do("POST", "/api/v1/keys", adminTok, jsonBody(CreateKeyRequest{
+			Label:  "ro-key",
+			Scopes: []string{"pull"},
+		}))
+		assert.Equal(t, http.StatusCreated, rr.Code)
+		var dto KeyDTO
+		decodeJSON(t, rr, &dto)
+		assert.Equal(t, []string{"pull"}, dto.Scopes)
 	})
 
 	t.Run("list keys returns created key", func(t *testing.T) {

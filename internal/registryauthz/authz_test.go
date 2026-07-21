@@ -335,6 +335,40 @@ func TestGrantedActions_APIKeyCallerSameOrg_CanPushNonexistentRepo(t *testing.T)
 	}
 }
 
+func TestGrantedActions_APIKeyPullOnly_DeniesPush(t *testing.T) {
+	// Scope filter applies after ACL: same-org API key on first-push resource
+	// would get pull+push+delete from ACL, but pull-only KeyScopes drops write.
+	orgs, _ := setupOrgAndRepo(t)
+	repos := newFakeRepoStore()
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{
+		Subject:   "apikey:ro",
+		OrgID:     testOrgID,
+		KeyScopes: []string{"pull"},
+	}
+	got := a.GrantedActions(context.Background(), p, "myorg/newapp", []string{"pull", "push", "delete"})
+	if len(got) != 1 || got[0] != "pull" {
+		t.Errorf("pull-only key: got %v, want [pull]", got)
+	}
+}
+
+func TestGrantedActions_APIKeyPushOnly_DeniesPull(t *testing.T) {
+	orgs, _ := setupOrgAndRepo(t)
+	repos := newFakeRepoStore()
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{
+		Subject:   "apikey:wo",
+		OrgID:     testOrgID,
+		KeyScopes: []string{"push"},
+	}
+	got := a.GrantedActions(context.Background(), p, "myorg/newapp", []string{"pull", "push"})
+	if len(got) != 1 || got[0] != "push" {
+		t.Errorf("push-only key: got %v, want [push]", got)
+	}
+}
+
 func TestGrantedActions_NonMemberUser_DeniedPrivate(t *testing.T) {
 	// An authenticated user who is not a member of the org is denied on private.
 	orgs, repos := setupOrgAndRepo(t)

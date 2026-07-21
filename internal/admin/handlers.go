@@ -778,11 +778,16 @@ func (s *Server) guardLastPrivileged(w http.ResponseWriter, r *http.Request, org
 
 // toKeyDTO converts an apikey.KeyInfo to its client-facing projection.
 func toKeyDTO(k apikey.KeyInfo, rawKey string) KeyDTO {
+	scopes := k.Scopes
+	if len(scopes) == 0 {
+		scopes = apikey.NormalizeScopes(nil)
+	}
 	return KeyDTO{
 		ID:         k.ID,
 		OrgID:      k.OrgID,
 		Label:      k.Label,
 		Prefix:     k.Prefix,
+		Scopes:     scopes,
 		CreatedAt:  k.CreatedAt,
 		LastUsedAt: k.LastUsedAt,
 		ExpiresAt:  k.ExpiresAt,
@@ -818,9 +823,9 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 	var err error
 
 	if subj.UserID != "" {
-		id, rawKey, err = s.keys.CreateOwned(orgID, subj.UserID, req.Label)
+		id, rawKey, err = s.keys.CreateOwned(orgID, subj.UserID, req.Label, req.Scopes...)
 	} else {
-		id, rawKey, err = s.keys.Create(orgID, req.Label)
+		id, rawKey, err = s.keys.Create(orgID, req.Label, req.Scopes...)
 	}
 	if err != nil {
 		s.log.Error("admin: create key", "err", err)

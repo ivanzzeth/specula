@@ -219,6 +219,8 @@ export function Tokens() {
   const [createOpen, setCreateOpen] = useState(false);
   const [step, setStep] = useState<Step>('form');
   const [keyLabel, setKeyLabel] = useState('');
+  const [scopePull, setScopePull] = useState(true);
+  const [scopePush, setScopePush] = useState(true);
   const [createBusy, setCreateBusy] = useState(false);
   const [createErr, setCreateErr] = useState('');
   const [rawKey, setRawKey] = useState('');
@@ -253,10 +255,20 @@ export function Tokens() {
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
+    if (!scopePull && !scopePush) {
+      setCreateErr(t('tokens.createDialog.scopesHint'));
+      return;
+    }
     setCreateBusy(true);
     setCreateErr('');
     try {
-      const key = await createKey({ label: keyLabel.trim() || undefined });
+      const scopes: string[] = [];
+      if (scopePull) scopes.push('pull');
+      if (scopePush) scopes.push('push');
+      const key = await createKey({
+        label: keyLabel.trim() || undefined,
+        scopes,
+      });
       // Prepend to list even before reveal — so it's there when the dialog closes.
       setKeys((prev) => [key, ...prev]);
 
@@ -289,6 +301,8 @@ export function Tokens() {
     setTimeout(() => {
       setStep('form');
       setKeyLabel('');
+      setScopePull(true);
+      setScopePush(true);
       setRawKey('');
       setKeyCopied(false);
       setCreateErr('');
@@ -366,6 +380,7 @@ export function Tokens() {
                 <TableRow>
                   <TableHead className="w-32">{t('tokens.colPrefix')}</TableHead>
                   <TableHead>{t('tokens.colLabel')}</TableHead>
+                  <TableHead className="w-28">{t('tokens.colScopes')}</TableHead>
                   <TableHead className="w-28">{t('tokens.colCreated')}</TableHead>
                   <TableHead className="w-28">{t('tokens.colLastUsed')}</TableHead>
                   <TableHead className="w-28">{t('tokens.colExpires')}</TableHead>
@@ -374,7 +389,7 @@ export function Tokens() {
               </TableHeader>
               <TableBody>
                 {activeKeys.length === 0 ? (
-                  <EmptyRow colSpan={6}>{t('tokens.empty')}</EmptyRow>
+                  <EmptyRow colSpan={7}>{t('tokens.empty')}</EmptyRow>
                 ) : (
                   activeKeys.map((k) => (
                     <TableRow key={k.id}>
@@ -383,6 +398,9 @@ export function Tokens() {
                       </TableCell>
                       <TableCell className="text-slate-300">
                         {k.label ?? <span className="text-slate-500">—</span>}
+                      </TableCell>
+                      <TableCell className="tnum text-slate-400">
+                        {(k.scopes ?? []).join(', ') || '—'}
                       </TableCell>
                       <TableCell className="tnum text-slate-400">
                         <span title={isoDate(k.created_at)}>{isoRelative(k.created_at)}</span>
@@ -443,6 +461,29 @@ export function Tokens() {
                       onChange={(e) => setKeyLabel(e.target.value)}
                       autoFocus
                     />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label>{t('tokens.createDialog.scopes')}</Label>
+                    <div className="flex flex-wrap gap-4 text-data text-slate-300">
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={scopePull}
+                          onChange={(e) => setScopePull(e.target.checked)}
+                        />
+                        {t('tokens.createDialog.scopePull')}
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={scopePush}
+                          onChange={(e) => setScopePush(e.target.checked)}
+                        />
+                        {t('tokens.createDialog.scopePush')}
+                      </label>
+                    </div>
+                    <p className="text-label text-slate-500">{t('tokens.createDialog.scopesHint')}</p>
                   </div>
 
                   {createErr && (

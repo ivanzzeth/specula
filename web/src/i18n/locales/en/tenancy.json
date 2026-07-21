@@ -114,6 +114,7 @@
     "active": "Active tokens",
     "colPrefix": "Prefix",
     "colLabel": "Label",
+    "colScopes": "Scopes",
     "colCreated": "Created",
     "colLastUsed": "Last used",
     "colExpires": "Expires",
@@ -137,6 +138,10 @@
       "label": "Label",
       "labelOptional": "(optional)",
       "labelPlaceholder": "e.g. CI deploy key, laptop",
+      "scopes": "Registry scopes",
+      "scopePull": "pull (read)",
+      "scopePush": "push (write)",
+      "scopesHint": "At least one scope is required. Defaults to pull + push.",
       "submit": "Create token",
       "busy": "Creating…"
     },

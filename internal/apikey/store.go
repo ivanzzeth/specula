@@ -48,23 +48,23 @@ func NewSQLStorePostgres(db *sql.DB) *SQLStore {
 // SQLite).
 func (s *SQLStore) rb(query string) string { return dbx.Rebind(s.dialect, query) }
 
-// Create issues a key for an org (no issuing user). Returns the stable id and
-// the plaintext key — the plaintext is visible only at this call.
-func (s *SQLStore) Create(orgID, label string) (string, string, error) {
-	return s.sqlInsert(orgID, "", label, time.Time{})
+// Create issues a key for an org (no issuing user). scopes empty → DefaultScopes.
+func (s *SQLStore) Create(orgID, label string, scopes ...string) (string, string, error) {
+	return s.sqlInsert(orgID, "", label, time.Time{}, scopes)
 }
 
-// CreateOwned issues a key for an org and records the issuing userID (the acl
-// subject string, e.g. org.UserSubjectID(user.ID)). orgID empty → DefaultOrgID.
-func (s *SQLStore) CreateOwned(orgID, userID, label string) (string, string, error) {
-	return s.sqlInsert(orgID, userID, label, time.Time{})
+// CreateOwned issues a key for an org and records the issuing userID. orgID
+// empty → DefaultOrgID. scopes empty → DefaultScopes.
+func (s *SQLStore) CreateOwned(orgID, userID, label string, scopes ...string) (string, string, error) {
+	return s.sqlInsert(orgID, userID, label, time.Time{}, scopes)
 }
 
 // sqlInsert is the single insert path (Create / CreateOwned share it).
-func (s *SQLStore) sqlInsert(orgID, userID, label string, expiresAt time.Time) (string, string, error) {
+func (s *SQLStore) sqlInsert(orgID, userID, label string, expiresAt time.Time, scopes []string) (string, string, error) {
 	if orgID == "" {
 		orgID = DefaultOrgID
 	}
+	norm := NormalizeScopes(scopes)
 	id := newID()
 	rawKey := newRawKey()
 	now := time.Now().UTC()
@@ -76,10 +76,10 @@ func (s *SQLStore) sqlInsert(orgID, userID, label string, expiresAt time.Time) (
 		exp = expiresAt.UTC().Format(time.RFC3339Nano)
 	}
 
-	const q = `INSERT INTO api_keys(key_hash,id,label,prefix,org_id,user_id,created_at,expires_at,revoked)
-	           VALUES(?,?,?,?,?,?,?,?,0)`
+	const q = `INSERT INTO api_keys(key_hash,id,label,prefix,org_id,user_id,created_at,expires_at,revoked,scopes)
+	           VALUES(?,?,?,?,?,?,?,?,0,?)`
 	if _, err := s.db.Exec(s.rb(q), h, id, label, pfx, orgID, userID,
-		now.Format(time.RFC3339Nano), exp); err != nil {
+		now.Format(time.RFC3339Nano), exp, EncodeScopes(norm)); err != nil {
 		return "", "", fmt.Errorf("apikey: insert: %w", err)
 	}
 	return id, rawKey, nil
@@ -90,43 +90,61 @@ func (s *SQLStore) sqlInsert(orgID, userID, label string, expiresAt time.Time) (
 // (uniform failure, no distinction leaked). On success, last_used_at is
 // touched.
 func (s *SQLStore) LookupSubject(token string) (string, string, bool) {
+	info, ok := s.LookupKey(token)
+	if !ok {
+		return "", "", false
+	}
+	return info.OrgID, SubjectID(info.ID), true
+}
+
+// LookupKey verifies a presented plaintext key and returns full KeyInfo
+// (including Scopes). On success, last_used_at is touched.
+func (s *SQLStore) LookupKey(token string) (KeyInfo, bool) {
 	var (
 		id        sql.NullString
 		orgID     sql.NullString
 		revoked   sql.NullInt64
 		expiresAt sql.NullString
+		scopesRaw sql.NullString
 	)
 	h := hashKey(token)
 	err := s.db.QueryRow(
-		s.rb(`SELECT id, org_id, revoked, expires_at FROM api_keys WHERE key_hash=?`), h,
-	).Scan(&id, &orgID, &revoked, &expiresAt)
+		s.rb(`SELECT id, org_id, revoked, expires_at, scopes FROM api_keys WHERE key_hash=?`), h,
+	).Scan(&id, &orgID, &revoked, &expiresAt, &scopesRaw)
 	if err == sql.ErrNoRows {
-		return "", "", false
+		return KeyInfo{}, false
 	}
 	if err != nil {
 		log.Printf("apikey: lookup: %v", err)
-		return "", "", false
+		return KeyInfo{}, false
 	}
 	if revoked.Valid && revoked.Int64 != 0 {
-		return "", "", false
+		return KeyInfo{}, false
 	}
 	if expiresAt.Valid && expiresAt.String != "" {
 		if exp, perr := time.Parse(time.RFC3339Nano, expiresAt.String); perr == nil && !time.Now().UTC().Before(exp) {
-			return "", "", false // expired: uniform silent failure
+			return KeyInfo{}, false // expired: uniform silent failure
 		}
 	}
+	now := time.Now().UTC()
 	if _, err := s.db.Exec(
 		s.rb(`UPDATE api_keys SET last_used_at=? WHERE key_hash=?`),
-		time.Now().UTC().Format(time.RFC3339Nano), h,
+		now.Format(time.RFC3339Nano), h,
 	); err != nil {
 		log.Printf("apikey: touch last_used_at: %v", err)
 	}
-	return orgID.String, SubjectID(id.String), true
+	info := KeyInfo{
+		ID:     id.String,
+		OrgID:  orgID.String,
+		Scopes: DecodeScopes(scopesRaw.String),
+	}
+	info.LastUsedAt = &now
+	return info, true
 }
 
 // List returns an org's keys newest→oldest (including revoked).
 func (s *SQLStore) List(orgID string) ([]KeyInfo, error) {
-	const q = `SELECT id,org_id,user_id,label,prefix,created_at,last_used_at,revoked,expires_at
+	const q = `SELECT id,org_id,user_id,label,prefix,created_at,last_used_at,revoked,expires_at,scopes
 	           FROM api_keys WHERE org_id=? ORDER BY created_at DESC, id DESC`
 	rows, err := s.db.Query(s.rb(q), orgID)
 	if err != nil {
@@ -147,7 +165,7 @@ func (s *SQLStore) List(orgID string) ([]KeyInfo, error) {
 
 // Get returns a single key by (orgID, id); cross-org lookups miss (ok=false).
 func (s *SQLStore) Get(orgID, id string) (KeyInfo, bool) {
-	const q = `SELECT id,org_id,user_id,label,prefix,created_at,last_used_at,revoked,expires_at
+	const q = `SELECT id,org_id,user_id,label,prefix,created_at,last_used_at,revoked,expires_at,scopes
 	           FROM api_keys WHERE id=? AND org_id=?`
 	return scanKeyInfo(s.db.QueryRow(s.rb(q), id, orgID))
 }
@@ -169,8 +187,8 @@ func (s *SQLStore) Revoke(orgID, id string) (bool, error) {
 // keyScanner abstracts *sql.Row and *sql.Rows for the shared scanKeyInfo.
 type keyScanner interface{ Scan(...any) error }
 
-// scanKeyInfo populates a KeyInfo from the 9-column api_keys projection:
-// id, org_id, user_id, label, prefix, created_at, last_used_at, revoked, expires_at.
+// scanKeyInfo populates a KeyInfo from the 10-column api_keys projection:
+// id, org_id, user_id, label, prefix, created_at, last_used_at, revoked, expires_at, scopes.
 func scanKeyInfo(sc keyScanner) (KeyInfo, bool) {
 	var (
 		id, orgID, userID     sql.NullString
@@ -178,9 +196,10 @@ func scanKeyInfo(sc keyScanner) (KeyInfo, bool) {
 		createdAt, lastUsedAt sql.NullString
 		revoked               sql.NullInt64
 		expiresAt             sql.NullString
+		scopesRaw             sql.NullString
 	)
 	if err := sc.Scan(&id, &orgID, &userID, &label, &prefix,
-		&createdAt, &lastUsedAt, &revoked, &expiresAt); err != nil {
+		&createdAt, &lastUsedAt, &revoked, &expiresAt, &scopesRaw); err != nil {
 		return KeyInfo{}, false
 	}
 	info := KeyInfo{
@@ -189,6 +208,7 @@ func scanKeyInfo(sc keyScanner) (KeyInfo, bool) {
 		UserID:  userID.String,
 		Label:   label.String,
 		Prefix:  prefix.String,
+		Scopes:  DecodeScopes(scopesRaw.String),
 		Revoked: revoked.Valid && revoked.Int64 != 0,
 	}
 	if createdAt.Valid && createdAt.String != "" {
@@ -220,20 +240,19 @@ type MemStore struct {
 // NewMemStore constructs an empty in-memory Store.
 func NewMemStore() *MemStore { return &MemStore{dyn: map[string]*KeyInfo{}} }
 
-// Create issues a key for an org (no issuing user). Returns id and plaintext
-// key — the plaintext is not retained after this call returns.
-func (m *MemStore) Create(orgID, label string) (string, string, error) {
-	return m.memMint(orgID, "", label, time.Time{})
+// Create issues a key for an org (no issuing user). scopes empty → DefaultScopes.
+func (m *MemStore) Create(orgID, label string, scopes ...string) (string, string, error) {
+	return m.memMint(orgID, "", label, time.Time{}, scopes)
 }
 
 // CreateOwned issues a key for an org and records the issuing userID. orgID
-// empty → DefaultOrgID.
-func (m *MemStore) CreateOwned(orgID, userID, label string) (string, string, error) {
-	return m.memMint(orgID, userID, label, time.Time{})
+// empty → DefaultOrgID. scopes empty → DefaultScopes.
+func (m *MemStore) CreateOwned(orgID, userID, label string, scopes ...string) (string, string, error) {
+	return m.memMint(orgID, userID, label, time.Time{}, scopes)
 }
 
 // memMint is the single create path for MemStore.
-func (m *MemStore) memMint(orgID, userID, label string, expiresAt time.Time) (string, string, error) {
+func (m *MemStore) memMint(orgID, userID, label string, expiresAt time.Time, scopes []string) (string, string, error) {
 	if orgID == "" {
 		orgID = DefaultOrgID
 	}
@@ -246,6 +265,7 @@ func (m *MemStore) memMint(orgID, userID, label string, expiresAt time.Time) (st
 		UserID:    userID,
 		Label:     label,
 		Prefix:    prefixOf(rawKey),
+		Scopes:    NormalizeScopes(scopes),
 		CreatedAt: now,
 	}
 	if !expiresAt.IsZero() {
@@ -258,23 +278,31 @@ func (m *MemStore) memMint(orgID, userID, label string, expiresAt time.Time) (st
 	return id, rawKey, nil
 }
 
-// LookupSubject verifies a presented plaintext key (hashes it, looks up the
-// hash) and returns (orgID, "apikey:<id>"). ok=false for unknown/revoked/
-// expired. On success, LastUsedAt is updated.
+// LookupSubject verifies a presented plaintext key and returns (orgID,
+// "apikey:<id>"). ok=false for unknown/revoked/expired.
 func (m *MemStore) LookupSubject(token string) (string, string, bool) {
+	info, ok := m.LookupKey(token)
+	if !ok {
+		return "", "", false
+	}
+	return info.OrgID, SubjectID(info.ID), true
+}
+
+// LookupKey verifies a presented plaintext key and returns full KeyInfo.
+func (m *MemStore) LookupKey(token string) (KeyInfo, bool) {
 	h := hashKey(token)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	e, ok := m.dyn[h]
 	if !ok || e.Revoked {
-		return "", "", false
+		return KeyInfo{}, false
 	}
 	now := time.Now().UTC()
 	if e.ExpiresAt != nil && !now.Before(*e.ExpiresAt) {
-		return "", "", false // expired: uniform silent failure
+		return KeyInfo{}, false // expired: uniform silent failure
 	}
 	e.LastUsedAt = &now
-	return e.OrgID, SubjectID(e.ID), true
+	return copyKeyInfo(e), true
 }
 
 // List returns all keys for orgID newest→oldest (including revoked).
@@ -326,8 +354,8 @@ func (m *MemStore) Revoke(orgID, id string) (bool, error) {
 	return false, nil
 }
 
-// copyKeyInfo returns a value copy of src with time-pointer fields deep-copied
-// so callers cannot mutate stored state through the returned struct.
+// copyKeyInfo returns a value copy of src with time-pointer fields and Scopes
+// deep-copied so callers cannot mutate stored state through the returned struct.
 func copyKeyInfo(src *KeyInfo) KeyInfo {
 	cp := *src
 	if src.LastUsedAt != nil {
@@ -337,6 +365,10 @@ func copyKeyInfo(src *KeyInfo) KeyInfo {
 	if src.ExpiresAt != nil {
 		t := *src.ExpiresAt
 		cp.ExpiresAt = &t
+	}
+	if src.Scopes != nil {
+		cp.Scopes = make([]string, len(src.Scopes))
+		copy(cp.Scopes, src.Scopes)
 	}
 	return cp
 }

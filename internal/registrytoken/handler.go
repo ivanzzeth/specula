@@ -27,6 +27,9 @@ type Principal struct {
 	OrgID     string // pinned org for an API key; "" for a session/password user
 	Email     string // login email for a password user; "" for an API key
 	Anonymous bool
+	// KeyScopes is set for API-key principals (normalised pull/push). Empty for
+	// password users — the ScopeAuthorizer must not apply key-scope filtering then.
+	KeyScopes []string
 }
 
 // Authenticator resolves /token Basic credentials into a Principal. The username
@@ -294,11 +297,16 @@ func (a *BasicAuthenticator) Authenticate(ctx context.Context, email, secret str
 		if a.Keys == nil {
 			return Principal{}, false
 		}
-		orgID, subject, ok := a.Keys.LookupSubject(secret)
+		info, ok := a.Keys.LookupKey(secret)
 		if !ok {
 			return Principal{}, false
 		}
-		return Principal{Subject: subject, OrgID: orgID, Email: email}, true
+		return Principal{
+			Subject:   apikey.SubjectID(info.ID),
+			OrgID:     info.OrgID,
+			Email:     email,
+			KeyScopes: info.Scopes,
+		}, true
 	}
 	if a.Passwords == nil {
 		return Principal{}, false

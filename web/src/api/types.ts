@@ -426,6 +426,8 @@ export interface KeyDTO {
   org_id: string;
   label?: string;
   prefix: string;
+  /** Registry scopes: "pull" and/or "push". */
+  scopes: string[];
   created_at: string;
   last_used_at?: string;
   expires_at?: string;
@@ -440,6 +442,8 @@ export interface KeysResponse {
 
 export interface CreateKeyRequest {
   label?: string;
+  /** Empty/omitted → pull+push. */
+  scopes?: string[];
 }
 
 // ---- Hosted repos (/api/v1/orgs/{org}/repos) ---------------------------------

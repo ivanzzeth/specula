@@ -55,6 +55,7 @@ type KeyInfo struct {
 	UserID     string     `json:"user_id,omitempty"` // issuing user (visibility ownership); empty = org-level, admin-only
 	Label      string     `json:"label,omitempty"`
 	Prefix     string     `json:"prefix"` // display-only truncated prefix; never reversible to plaintext
+	Scopes     []string   `json:"scopes"` // registry scopes (pull/push); always normalised non-empty
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"` // nil = never expires
@@ -66,15 +67,19 @@ type KeyInfo struct {
 type Store interface {
 	// Create issues a key for an org (no issuing user). Returns the stable id
 	// and the plaintext key — the plaintext is visible only here, once.
-	Create(orgID, label string) (id, rawKey string, err error)
+	// scopes empty → DefaultScopes.
+	Create(orgID, label string, scopes ...string) (id, rawKey string, err error)
 	// CreateOwned issues a key for an org and records the issuing userID (the
 	// acl subject string, e.g. org.UserSubjectID(user.ID)). orgID empty →
-	// DefaultOrgID.
-	CreateOwned(orgID, userID, label string) (id, rawKey string, err error)
+	// DefaultOrgID. scopes empty → DefaultScopes.
+	CreateOwned(orgID, userID, label string, scopes ...string) (id, rawKey string, err error)
 	// LookupSubject verifies a presented plaintext key and returns its org and
 	// synthetic subject ("apikey:<id>"). ok=false for unknown / revoked /
 	// expired keys (uniform failure, no distinction leaked).
 	LookupSubject(token string) (orgID, subject string, ok bool)
+	// LookupKey verifies a presented plaintext key and returns full KeyInfo
+	// (including Scopes). Prefer this when registry scope enforcement is needed.
+	LookupKey(token string) (KeyInfo, bool)
 	// List returns an org's keys (newest→oldest, including revoked).
 	List(orgID string) ([]KeyInfo, error)
 	// Get returns a single key by (id, org); cross-org lookups miss.
