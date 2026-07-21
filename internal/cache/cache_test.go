@@ -410,35 +410,56 @@ func TestIsMutableFresh(t *testing.T) {
 	tests := []struct {
 		name  string
 		entry artifact.MutableEntry
+		u     float64 // XFetch uniform draw; 0 = force soft-expire when applicable
 		want  bool
 	}{
 		{
 			name:  "never revalidate sentinel (-1) always fresh regardless of age",
 			entry: artifact.MutableEntry{TTLSeconds: -1, FetchedAt: now.Add(-100 * 24 * time.Hour)},
+			u:     0.5,
 			want:  true,
 		},
 		{
 			name:  "always revalidate sentinel (0) always stale",
 			entry: artifact.MutableEntry{TTLSeconds: 0, FetchedAt: now},
+			u:     0.5,
 			want:  false,
 		},
 		{
-			name:  "within TTL window",
+			name:  "mid-TTL with high U stays fresh (XFetch unlikely)",
 			entry: artifact.MutableEntry{TTLSeconds: 3600, FetchedAt: now.Add(-30 * time.Minute)},
+			u:     0.999,
 			want:  true,
 		},
 		{
-			name:  "past TTL window",
+			name:  "past hard TTL window",
 			entry: artifact.MutableEntry{TTLSeconds: 60, FetchedAt: now.Add(-2 * time.Minute)},
+			u:     0.999,
+			want:  false,
+		},
+		{
+			name:  "near expiry with tiny U soft-expires (XFetch)",
+			entry: artifact.MutableEntry{TTLSeconds: 3600, FetchedAt: now.Add(-59 * time.Minute)},
+			u:     1e-12,
 			want:  false,
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			e := tc.entry
-			assert.Equal(t, tc.want, isMutableFresh(&e))
+			assert.Equal(t, tc.want, isMutableFreshAt(&e, now, tc.u))
 		})
 	}
+}
+
+func TestXFetchShouldRefresh_HardExpired(t *testing.T) {
+	fetched := time.Now().Add(-2 * time.Hour)
+	assert.True(t, xfetchShouldRefresh(fetched, 3600, time.Now(), 0.5))
+}
+
+func TestXFetchShouldRefresh_FreshUnlikely(t *testing.T) {
+	fetched := time.Now().Add(-1 * time.Second)
+	assert.False(t, xfetchShouldRefresh(fetched, 3600, time.Now(), 0.999))
 }
 
 // --------------------------------------------------------------------------

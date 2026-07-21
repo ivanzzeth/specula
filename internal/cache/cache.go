@@ -213,18 +213,7 @@ func checkDigestPin(ref artifact.ArtifactRef, got string) error {
 	return &PinMismatchError{Ref: ref, Want: ref.Digest, Got: got}
 }
 
-// isMutableFresh reports whether the mutable entry's TTL window has not
-// expired. Sentinels: -1 = never expire, 0 = always expired.
-func isMutableFresh(e *artifact.MutableEntry) bool {
-	switch e.TTLSeconds {
-	case ttlNeverRevalidate:
-		return true
-	case ttlAlwaysRevalidate:
-		return false
-	default:
-		return time.Since(e.FetchedAt) < time.Duration(e.TTLSeconds)*time.Second
-	}
-}
+// isMutableFresh is defined in xfetch.go (XFetch soft-expiry + TTL sentinels).
 
 // --------------------------------------------------------------------------
 // Lookup
