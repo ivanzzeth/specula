@@ -23,6 +23,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/acl"
 	"github.com/ivanzzeth/specula/internal/auth"
+	"github.com/ivanzzeth/specula/internal/grant"
 	"github.com/ivanzzeth/specula/internal/handler/oci"
 	"github.com/ivanzzeth/specula/internal/org"
 	"github.com/ivanzzeth/specula/internal/registryauthz"
@@ -366,6 +367,36 @@ func TestGrantedActions_APIKeyPushOnly_DeniesPull(t *testing.T) {
 	got := a.GrantedActions(context.Background(), p, "myorg/newapp", []string{"pull", "push"})
 	if len(got) != 1 || got[0] != "push" {
 		t.Errorf("push-only key: got %v, want [push]", got)
+	}
+}
+
+func TestGrantedActions_CrossOrgGrant_PullOnly(t *testing.T) {
+	orgs, repos := setupOrgAndRepo(t)
+	grants := grant.NewMemStore()
+	a := registryauthz.New(orgs, repos).WithGrants(grants)
+
+	// Seed a second org and share the private repo with it (read).
+	ctx := context.Background()
+	_ = orgs.CreateOrg(ctx, &org.Org{ID: "org_partner", Slug: "partner", Status: org.StatusActive})
+	_ = orgs.AddOrgMember(ctx, &org.Member{OrgID: "org_partner", Email: "partner@example.com", Role: org.RoleViewer})
+	r, err := repos.GetRepo(ctx, testOrgID, testRepoName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := grants.Upsert(grant.Grant{
+		ResourceType: "repo",
+		ResourceID:   r.ID,
+		SubjectType:  grant.SubjectOrg,
+		SubjectID:    "org_partner",
+		Access:       grant.AccessRead,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	p := registrytoken.Principal{Subject: "user:77", Email: "partner@example.com"}
+	got := a.GrantedActions(ctx, p, testRepoName, []string{"pull", "push"})
+	if len(got) != 1 || got[0] != "pull" {
+		t.Errorf("cross-org read grant: got %v, want [pull]", got)
 	}
 }
 

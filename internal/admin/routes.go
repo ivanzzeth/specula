@@ -136,4 +136,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/v1/orgs/{org}/repos/{repo}", requireSubject(s.handleDeleteRepo))
 	mux.Handle("GET /api/v1/orgs/{org}/repos/{repo}/tags", requireSubject(s.handleListRepoTags))
 	mux.Handle("DELETE /api/v1/orgs/{org}/repos/{repo}/tags/{tag}", requireSubject(s.handleDeleteRepoTag))
+	mux.Handle("GET /api/v1/orgs/{org}/repos/{repo}/grants", requireSubject(s.handleListRepoGrants))
+	mux.Handle("PUT /api/v1/orgs/{org}/repos/{repo}/grants", requireSubject(s.handleUpsertRepoGrant))
+	mux.Handle("DELETE /api/v1/orgs/{org}/repos/{repo}/grants/{stype}/{sid}", requireSubject(s.handleDeleteRepoGrant))
 }

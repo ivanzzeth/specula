@@ -125,10 +125,28 @@ func storeChecks(t *testing.T, s Store) {
 	if orgs := s.GrantedOrgs("repo", "r1"); len(orgs) != 1 || orgs[0] != "orgB" {
 		t.Fatalf("after Delete orgA: GrantedOrgs = %v, want [orgB]", orgs)
 	}
+	if got := s.OrgAccess("repo", "r1", "orgB"); got != AccessWrite {
+		t.Fatalf("OrgAccess orgB = %q, want write", got)
+	}
+	if got := s.OrgAccess("repo", "r1", "orgA"); got != "" {
+		t.Fatalf("OrgAccess deleted orgA = %q, want \"\"", got)
+	}
 
 	// Delete missing entry is a no-op (no error).
 	if err := s.Delete("repo", "r1", SubjectOrg, "nope"); err != nil {
 		t.Fatalf("Delete missing should be no-op: %v", err)
+	}
+}
+
+func TestAllows(t *testing.T) {
+	if Allows("", false) || Allows("", true) {
+		t.Fatal("empty must deny")
+	}
+	if !Allows(AccessRead, false) || Allows(AccessRead, true) {
+		t.Fatal("read allows read only")
+	}
+	if !Allows(AccessWrite, false) || !Allows(AccessWrite, true) {
+		t.Fatal("write allows both")
 	}
 }
 

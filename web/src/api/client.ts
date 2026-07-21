@@ -40,6 +40,9 @@ import type {
   ReposResponse,
   PatchRepoRequest,
   TagsResponse,
+  GrantDTO,
+  GrantsResponse,
+  UpsertGrantRequest,
 } from './types';
 
 const API_PREFIX = '/api/v1';
@@ -422,6 +425,36 @@ export function listRepoTags(org: string, repo: string): Promise<TagsResponse> {
  */
 export function deleteRepoTag(org: string, repo: string, tag: string): Promise<void> {
   return reqVoid(`/orgs/${seg(org)}/repos/${seg(repo)}/tags/${seg(tag)}`, { method: 'DELETE' });
+}
+
+/** GET /orgs/{org}/repos/{repo}/grants — list cross-org shares (admin). */
+export function listRepoGrants(org: string, repo: string): Promise<GrantsResponse> {
+  return reqJSON<GrantsResponse>(`/orgs/${seg(org)}/repos/${seg(repo)}/grants`);
+}
+
+/** PUT /orgs/{org}/repos/{repo}/grants — upsert a share. */
+export function upsertRepoGrant(
+  org: string,
+  repo: string,
+  body: UpsertGrantRequest,
+): Promise<GrantDTO> {
+  return reqJSON<GrantDTO>(`/orgs/${seg(org)}/repos/${seg(repo)}/grants`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  });
+}
+
+/** DELETE /orgs/{org}/repos/{repo}/grants/{stype}/{sid}. */
+export function deleteRepoGrant(
+  org: string,
+  repo: string,
+  subjectType: string,
+  subjectId: string,
+): Promise<void> {
+  return reqVoid(
+    `/orgs/${seg(org)}/repos/${seg(repo)}/grants/${seg(subjectType)}/${seg(subjectId)}`,
+    { method: 'DELETE' },
+  );
 }
 
 // ---- Admin: Users ----

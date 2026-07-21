@@ -25,6 +25,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/acl"
 	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/auth"
+	"github.com/ivanzzeth/specula/internal/grant"
 	"github.com/ivanzzeth/specula/internal/handler/oci"
 	"github.com/ivanzzeth/specula/internal/handler/registry"
 	"github.com/ivanzzeth/specula/internal/org"
@@ -35,13 +36,20 @@ import (
 // Authz is the shared registry authorization glue. It is safe for concurrent
 // use (the underlying stores are).
 type Authz struct {
-	orgs  org.Store
-	repos repo.RepoStore
+	orgs   org.Store
+	repos  repo.RepoStore
+	grants grant.Store // optional; nil disables cross-org grant checks
 }
 
 // New constructs the Authz glue over the org and hosted-repo stores.
 func New(orgs org.Store, repos repo.RepoStore) *Authz {
 	return &Authz{orgs: orgs, repos: repos}
+}
+
+// WithGrants attaches the resource_grants store for cross-org repo sharing.
+func (a *Authz) WithGrants(g grant.Store) *Authz {
+	a.grants = g
+	return a
 }
 
 // Compile-time assertions: one value satisfies every registry seam.
@@ -128,6 +136,15 @@ func (a *Authz) GrantedActions(ctx context.Context, p registrytoken.Principal, r
 	resource := a.resourceFor(ctx, orgID, repoName)
 	subject := a.subjectForOrg(ctx, p, orgID)
 
+	var grantedOrgs []string
+	var rp *repo.Repo
+	if a.grants != nil {
+		if r, err := a.repos.GetRepo(ctx, orgID, repoName); err == nil && r != nil {
+			rp = r
+			grantedOrgs = a.grants.GrantedOrgs("repo", r.ID)
+		}
+	}
+
 	var granted []string
 	for _, action := range requested {
 		// API-key principals are further constrained by per-key scopes
@@ -136,11 +153,51 @@ func (a *Authz) GrantedActions(ctx context.Context, p registrytoken.Principal, r
 			continue
 		}
 		needWrite := action != registrytoken.ActionPull
-		if acl.CanAccess(resource, subject, needWrite) == nil {
+		if acl.CanAccessGranted(resource, subject, needWrite, grantedOrgs) == nil {
+			granted = append(granted, action)
+			continue
+		}
+		// Private repos stay owner-only in acl; honour explicit org grants.
+		if a.grantAllows(ctx, p, rp, needWrite) {
 			granted = append(granted, action)
 		}
 	}
 	return granted
+}
+
+// grantAllows reports whether any of the caller's orgs holds a sufficient
+// resource_grant on rp (private-repo cross-org share).
+func (a *Authz) grantAllows(ctx context.Context, p registrytoken.Principal, rp *repo.Repo, needWrite bool) bool {
+	if a.grants == nil || rp == nil {
+		return false
+	}
+	for _, oid := range a.callerOrgIDs(ctx, p) {
+		if grant.Allows(a.grants.OrgAccess("repo", rp.ID, oid), needWrite) {
+			return true
+		}
+	}
+	return false
+}
+
+// callerOrgIDs lists org ids the principal may act as for grant matching.
+func (a *Authz) callerOrgIDs(ctx context.Context, p registrytoken.Principal) []string {
+	if p.OrgID != "" {
+		return []string{p.OrgID}
+	}
+	if a.orgs == nil || p.Email == "" {
+		return nil
+	}
+	orgs, err := a.orgs.ListOrgsForEmail(ctx, p.Email)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(orgs))
+	for _, o := range orgs {
+		if o != nil && o.ID != "" {
+			out = append(out, o.ID)
+		}
+	}
+	return out
 }
 
 // pullOnly returns the pull action from requested (dropping push/delete), used

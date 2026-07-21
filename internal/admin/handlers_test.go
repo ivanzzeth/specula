@@ -24,6 +24,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/config"
+	"github.com/ivanzzeth/specula/internal/grant"
 	"github.com/ivanzzeth/specula/internal/org"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 )
@@ -905,17 +906,18 @@ func newHarnessWithMT(t *testing.T) (*harness, *fakeOrgStore, *fakeAPIKeyStore) 
 	svc := auth.NewService(store, hasher, verifier, false, nil) // bootstrap not tested here
 
 	srv := New(Deps{
-		Stats:    newFakeStatsCollector(),
-		Meta:     &fakeMetaStore{},
-		Users:    store,
-		Auth:     svc,
-		Tokens:   verifier,
-		Config:   testConfig(),
-		Blobs:    &fakeBlobReporter{usedBytes: 999},
-		Secure:   false,
-		Logger:   nil,
-		OrgStore: orgStore,
-		KeyStore: keyStore,
+		Stats:      newFakeStatsCollector(),
+		Meta:       &fakeMetaStore{},
+		Users:      store,
+		Auth:       svc,
+		Tokens:     verifier,
+		Config:     testConfig(),
+		Blobs:      &fakeBlobReporter{usedBytes: 999},
+		Secure:     false,
+		Logger:     nil,
+		OrgStore:   orgStore,
+		KeyStore:   keyStore,
+		GrantStore: grant.NewMemStore(),
 	})
 	srv.hasher = hasher
 

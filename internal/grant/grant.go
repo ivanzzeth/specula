@@ -64,6 +64,22 @@ type Store interface {
 	// GrantedOrgs returns the org subject ids a resource is shared with, to feed
 	// acl.CanAccessGranted.
 	GrantedOrgs(resourceType, resourceID string) []string
+	// OrgAccess returns the access level ("read"|"write") for an org grant on the
+	// resource, or "" when no org grant exists. Used for private-repo sharing
+	// where acl.CanAccessGranted still treats private as owner-only.
+	OrgAccess(resourceType, resourceID, orgID string) string
+}
+
+// Allows reports whether a grant access level permits the requested operation.
+// Empty/unknown access denies. Write implies read.
+func Allows(access string, needWrite bool) bool {
+	if access != AccessRead && access != AccessWrite {
+		return false
+	}
+	if needWrite {
+		return access == AccessWrite
+	}
+	return true
 }
 
 // normAccess maps unknown/empty access to the most conservative read.
@@ -211,6 +227,24 @@ func (s *SQLStore) GrantedOrgs(resourceType, resourceID string) []string {
 	return out
 }
 
+// OrgAccess returns "read"|"write" for an org grant, or "" if absent.
+func (s *SQLStore) OrgAccess(resourceType, resourceID, orgID string) string {
+	if orgID == "" {
+		return ""
+	}
+	var access string
+	err := s.db.QueryRow(
+		s.rb(`SELECT access FROM resource_grants
+		  WHERE resource_type = ? AND resource_id = ?
+		    AND subject_type = ? AND subject_id = ?`),
+		resourceType, resourceID, SubjectOrg, orgID,
+	).Scan(&access)
+	if err != nil {
+		return ""
+	}
+	return normAccess(access)
+}
+
 // PurgeSubject deletes every grant for a subject (org or user) — used for
 // cascade cleanup when an org or user is deleted.
 func (s *SQLStore) PurgeSubject(ctx context.Context, subjectType, subjectID string) error {
@@ -281,4 +315,18 @@ func (s *MemStore) GrantedOrgs(resourceType, resourceID string) []string {
 		}
 	}
 	return out
+}
+
+// OrgAccess returns "read"|"write" for an org grant, or "" if absent.
+func (s *MemStore) OrgAccess(resourceType, resourceID, orgID string) string {
+	if orgID == "" {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	g, ok := s.m[memKey{resourceType, resourceID, SubjectOrg, orgID}]
+	if !ok {
+		return ""
+	}
+	return normAccess(g.Access)
 }

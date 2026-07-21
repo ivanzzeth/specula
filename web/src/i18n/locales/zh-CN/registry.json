@@ -62,6 +62,24 @@
       "nowPublicDesc": "现在允许匿名 pull。",
       "nowPrivateDesc": "只有组织成员能 pull。",
       "visibilityFailed": "修改可见性失败"
+    },
+    "grants": {
+      "title": "跨组织共享",
+      "hint": "把此仓库的 pull/push 权限授给其他组织",
+      "org": "组织 slug 或 id",
+      "orgPlaceholder": "partner-org",
+      "access": "权限",
+      "read": "read",
+      "write": "write",
+      "add": "共享",
+      "empty": "尚未共享给其他组织。",
+      "colSubject": "主体",
+      "colAccess": "权限",
+      "revoke": "撤销",
+      "added": "已添加共享",
+      "addFailed": "添加共享失败",
+      "revoked": "已撤销共享",
+      "revokeFailed": "撤销共享失败"
     }
   },
 

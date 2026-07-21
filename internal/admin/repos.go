@@ -128,6 +128,9 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, orgID str
 	if acl.CanAccessGranted(rp.ToACLResource(), subject, needWrite, granted) == nil {
 		return true
 	}
+	if s.grantAllowsRepo(r, rp, needWrite) {
+		return true
+	}
 
 	role := s.orgRoleOf(r, orgID)
 	need := org.RoleViewer

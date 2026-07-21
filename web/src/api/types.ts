@@ -502,3 +502,24 @@ export interface TagDTO {
 export interface TagsResponse {
   tags: TagDTO[];
 }
+
+/** Cross-org / per-user share on a hosted repo. */
+export interface GrantDTO {
+  subject_type: 'org' | 'user' | string;
+  subject_id: string;
+  access: 'read' | 'write' | string;
+  granted_by?: string;
+  created_at: string;
+}
+
+export interface GrantsResponse {
+  grants: GrantDTO[];
+}
+
+export interface UpsertGrantRequest {
+  subject_type?: 'org' | 'user' | string;
+  /** Org slug or id when subject_type is org. */
+  subject_id: string;
+  access?: 'read' | 'write' | string;
+}
+

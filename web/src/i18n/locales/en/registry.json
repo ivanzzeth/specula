@@ -63,6 +63,24 @@
       "nowPublicDesc": "Anonymous pull is now allowed.",
       "nowPrivateDesc": "Only org members may pull.",
       "visibilityFailed": "Could not update visibility"
+    },
+    "grants": {
+      "title": "Shared with",
+      "hint": "Cross-org pull/push grants for this repository",
+      "org": "Org slug or id",
+      "orgPlaceholder": "partner-org",
+      "access": "Access",
+      "read": "read",
+      "write": "write",
+      "add": "Share",
+      "empty": "Not shared with any other org.",
+      "colSubject": "Subject",
+      "colAccess": "Access",
+      "revoke": "Revoke",
+      "added": "Share added",
+      "addFailed": "Could not add share",
+      "revoked": "Share revoked",
+      "revokeFailed": "Could not revoke share"
     }
   },
 

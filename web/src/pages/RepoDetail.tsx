@@ -2,10 +2,12 @@ import { useCallback, useEffect, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 
-import { ApiError, deleteRepoTag, getRepo, listRepoTags, patchRepo } from '@/api/client';
-import type { RepoDTO, TagDTO } from '@/api/types';
+import { ApiError, deleteRepoTag, getRepo, listRepoGrants, listRepoTags, patchRepo, upsertRepoGrant, deleteRepoGrant } from '@/api/client';
+import type { GrantDTO, RepoDTO, TagDTO } from '@/api/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { VisibilityBadge } from '@/components/ui/badge';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import {
@@ -119,6 +121,10 @@ export function RepoDetail() {
   const [loading, setLoading] = useState(true);
   const [busyTag, setBusyTag] = useState<string | null>(null);
   const [busyVis, setBusyVis] = useState(false);
+  const [grants, setGrants] = useState<GrantDTO[]>([]);
+  const [grantOrg, setGrantOrg] = useState('');
+  const [grantAccess, setGrantAccess] = useState<'read' | 'write'>('read');
+  const [busyGrant, setBusyGrant] = useState(false);
 
   const load = useCallback(() => {
     const org = activeOrg;
@@ -126,14 +132,23 @@ export function RepoDetail() {
     if (!org || !repoName) return;
     setLoading(true);
     setErr('');
-    Promise.all([getRepo(org.slug, repoName), listRepoTags(org.slug, repoName)])
-      .then(([repoData, tagsData]) => {
-        setRepo(repoData);
-        setTags(tagsData.tags ?? []);
-      })
+    const tasks: Promise<unknown>[] = [
+      getRepo(org.slug, repoName).then(setRepo),
+      listRepoTags(org.slug, repoName).then((d) => setTags(d.tags ?? [])),
+    ];
+    if (canAdminOrg) {
+      tasks.push(
+        listRepoGrants(org.slug, repoName)
+          .then((d) => setGrants(d.grants ?? []))
+          .catch(() => setGrants([])),
+      );
+    } else {
+      setGrants([]);
+    }
+    Promise.all(tasks)
       .catch((e: unknown) => setErr(errText(e)))
       .finally(() => setLoading(false));
-  }, [activeOrg, repoParam]);
+  }, [activeOrg, repoParam, canAdminOrg]);
 
   useEffect(load, [load]);
 
@@ -191,6 +206,61 @@ export function RepoDetail() {
       });
     } finally {
       setBusyVis(false);
+    }
+  };
+
+  const onAddGrant = async () => {
+    const org = activeOrg;
+    const repoName = repoParam;
+    const subject = grantOrg.trim();
+    if (!org || !repoName || !subject) return;
+    setBusyGrant(true);
+    try {
+      const g = await upsertRepoGrant(org.slug, repoName, {
+        subject_type: 'org',
+        subject_id: subject,
+        access: grantAccess,
+      });
+      setGrants((prev) => {
+        const rest = prev.filter(
+          (x) => !(x.subject_type === g.subject_type && x.subject_id === g.subject_id),
+        );
+        return [...rest, g];
+      });
+      setGrantOrg('');
+      toast({ variant: 'success', title: t('repoDetail.grants.added') });
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: t('repoDetail.grants.addFailed'),
+        description: errText(e),
+        duration: Infinity,
+      });
+    } finally {
+      setBusyGrant(false);
+    }
+  };
+
+  const onRevokeGrant = async (g: GrantDTO) => {
+    const org = activeOrg;
+    const repoName = repoParam;
+    if (!org || !repoName) return;
+    setBusyGrant(true);
+    try {
+      await deleteRepoGrant(org.slug, repoName, g.subject_type, g.subject_id);
+      setGrants((prev) =>
+        prev.filter((x) => !(x.subject_type === g.subject_type && x.subject_id === g.subject_id)),
+      );
+      toast({ variant: 'success', title: t('repoDetail.grants.revoked') });
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: t('repoDetail.grants.revokeFailed'),
+        description: errText(e),
+        duration: Infinity,
+      });
+    } finally {
+      setBusyGrant(false);
     }
   };
 
@@ -370,6 +440,82 @@ export function RepoDetail() {
           </TableBody>
         </Table>
       </Card>
+
+      {/* ── Cross-org grants (admin) ────────────────────────────────────────── */}
+      {canAdminOrg && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('repoDetail.grants.title')}</CardTitle>
+            <span className="text-data text-slate-500">{t('repoDetail.grants.hint')}</span>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-[10rem] flex-1 space-y-1">
+                <Label htmlFor="grant-org">{t('repoDetail.grants.org')}</Label>
+                <Input
+                  id="grant-org"
+                  placeholder={t('repoDetail.grants.orgPlaceholder')}
+                  value={grantOrg}
+                  onChange={(e) => setGrantOrg(e.target.value)}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="grant-access">{t('repoDetail.grants.access')}</Label>
+                <select
+                  id="grant-access"
+                  className="h-9 rounded border border-slate-800 bg-slate-950 px-2 text-data text-slate-200"
+                  value={grantAccess}
+                  onChange={(e) => setGrantAccess(e.target.value as 'read' | 'write')}
+                >
+                  <option value="read">{t('repoDetail.grants.read')}</option>
+                  <option value="write">{t('repoDetail.grants.write')}</option>
+                </select>
+              </div>
+              <Button
+                size="sm"
+                disabled={busyGrant || !grantOrg.trim()}
+                onClick={() => void onAddGrant()}
+              >
+                {t('repoDetail.grants.add')}
+              </Button>
+            </div>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t('repoDetail.grants.colSubject')}</TableHead>
+                  <TableHead className="w-24">{t('repoDetail.grants.colAccess')}</TableHead>
+                  <TableHead className="w-24" />
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {grants.length === 0 ? (
+                  <EmptyRow colSpan={3}>{t('repoDetail.grants.empty')}</EmptyRow>
+                ) : (
+                  grants.map((g) => (
+                    <TableRow key={`${g.subject_type}:${g.subject_id}`}>
+                      <TableCell className="tnum text-slate-300">
+                        {g.subject_type}:{g.subject_id}
+                      </TableCell>
+                      <TableCell className="text-slate-400">{g.access}</TableCell>
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busyGrant}
+                          className="text-slate-500 hover:text-destructive"
+                          onClick={() => void onRevokeGrant(g)}
+                        >
+                          {t('repoDetail.grants.revoke')}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

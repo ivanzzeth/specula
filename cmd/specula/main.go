@@ -198,7 +198,7 @@ func run() error {
 	// downgrades /v2/ to pull-through-only (registryEnabled=false) rather than
 	// crashing, so the cache keeps serving reads.
 	regTokenSvc, registryEnabled := buildRegistryTokenService(ctx, resolver, regKeyPath, log)
-	regAuthz := registryauthz.New(orgStore, repoStore)
+	regAuthz := registryauthz.New(orgStore, repoStore).WithGrants(grantStore)
 
 	// ── Protocol-native signed verifiers ────────────────────────────────────
 	// Each is built from config paths and self-gates by ref.Protocol (like the Go
