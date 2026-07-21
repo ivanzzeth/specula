@@ -169,15 +169,27 @@ jobs:
           HOSTED_TAG: ${{ steps.ver.outputs.version }}
         run: bash scripts/publish-image-smoke.sh
 
+      - name: Detect Docker Hub credentials
+        id: hub
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "${DOCKERHUB_TOKEN}" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+            echo "DOCKERHUB_TOKEN not set — smoke passed; skipping Hub push."
+          fi
+
       - name: Log in to Docker Hub
-        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        if: steps.hub.outputs.push == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push multi-arch to Docker Hub
-        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        if: steps.hub.outputs.push == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -188,9 +200,3 @@ jobs:
             VERSION=${{ steps.ver.outputs.version }}
             COMMIT=${{ steps.ver.outputs.commit }}
             DATE=${{ steps.ver.outputs.date }}
-
-      - name: Skip Docker Hub push (secrets not configured)
-        if: ${{ secrets.DOCKERHUB_TOKEN == '' }}
-        run: |
-          echo "DOCKERHUB_TOKEN not set — smoke passed; skipping Hub push."
-          echo "Add DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repo secrets to enable."
