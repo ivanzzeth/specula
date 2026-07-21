@@ -51,12 +51,15 @@ func xfetchDelta(ttlSec int64) time.Duration {
 	return d
 }
 
+// xfetchUniform draws U ~ Uniform(0,1) for XFetch; tests replace it.
+var xfetchUniform = rand.Float64
+
 // isMutableFresh reports whether the mutable entry's TTL window has not
 // expired. Sentinels: -1 = never expire, 0 = always expired. Positive TTLs
 // apply XFetch soft-expiry so a fraction of requests revalidate before the
 // hard cliff (ARCHITECTURE: probabilistic early refresh).
 func isMutableFresh(e *artifact.MutableEntry) bool {
-	return isMutableFreshAt(e, time.Now(), rand.Float64())
+	return isMutableFreshAt(e, time.Now(), xfetchUniform())
 }
 
 func isMutableFreshAt(e *artifact.MutableEntry, now time.Time, u float64) bool {
@@ -70,5 +73,24 @@ func isMutableFreshAt(e *artifact.MutableEntry, now time.Time, u float64) bool {
 			return false
 		}
 		return true
+	}
+}
+
+// isHardExpired reports whether the mutable entry is past its absolute TTL
+// cliff (no XFetch). Soft-expired-but-not-hard entries are still served via
+// Lookup with SoftExpired=true (stale-while-revalidate).
+func isHardExpired(e *artifact.MutableEntry) bool {
+	return isHardExpiredAt(e, time.Now())
+}
+
+func isHardExpiredAt(e *artifact.MutableEntry, now time.Time) bool {
+	switch e.TTLSeconds {
+	case ttlNeverRevalidate:
+		return false
+	case ttlAlwaysRevalidate:
+		return true
+	default:
+		expiry := e.FetchedAt.Add(time.Duration(e.TTLSeconds) * time.Second)
+		return !now.Before(expiry)
 	}
 }

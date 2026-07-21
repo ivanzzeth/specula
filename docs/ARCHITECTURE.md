@@ -337,7 +337,9 @@ graph TB
   多副本是真实拓扑而非假设 —— 所以这是一个**真实缺口**，只是范围大于本次修复：
   正确的跨实例合并需要「拿到锁后**重新查缓存**」（否则第二个副本在第一个释放后照样回源，
   等于白锁），这会改动每个 handler 的冷取路径签名。**在它被接线之前，本节不应再声称它存在。**
-- **可选（未实现）**：可变元数据用 XFetch 概率提前刷新（避免同步过期悬崖）+ stale-while-revalidate（RFC 5861）。
+- **已实现**：可变元数据用 XFetch 概率提前刷新（避免同步过期悬崖）+ stale-while-revalidate（RFC 5861）：
+  soft-expiry 时 `Lookup` 仍返回条目并设 `SoftExpired`，handler 立即响应并后台 coalesced 重验；
+  hard-TTL 过期仍走既有同步 revalidate / serve-stale-on-failure。
 
 ---
 

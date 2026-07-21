@@ -53,6 +53,10 @@ export interface StatsResponse {
   per_protocol: ProtocolStat[];
   total_bytes: number;
   total_objects: number;
+  hosted_bytes: number;
+  hosted_objects: number;
+  cached_bytes: number;
+  cached_objects: number;
   backend_disk_free: number;
   backend_disk_used: number;
 }

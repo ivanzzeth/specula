@@ -226,8 +226,11 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		return
 	}
 	if entry != nil {
-		// Fresh cache hit: the body comes from cache, no upstream body transfer.
+		// Fresh or soft-expired (SWR) cache hit: body from cache, no blocking upstream.
 		metrics.MarkHit(ctx)
+		if entry.SoftExpired {
+			h.swrRefreshAsync(ref, ups)
+		}
 		h.serveFromCache(w, r, ref, entry, ct)
 		return
 	}
@@ -535,6 +538,37 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref art
 // --------------------------------------------------------------------------
 // Mutable revalidation helpers (mirror gomod handler pattern)
 // --------------------------------------------------------------------------
+
+// swrRefreshAsync kicks a coalesced background revalidation for an XFetch
+// soft-expired hit (RFC 5861 stale-while-revalidate).
+func (h *Handler) swrRefreshAsync(ref artifact.ArtifactRef, ups []upstream.Upstream) {
+	if h.upstreamClt == nil || len(ups) == 0 {
+		return
+	}
+	key := coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest) + "|swr"
+	cache.StartBackgroundRefresh(key, func(ctx context.Context) error {
+		if prevMeta, hasPrev := h.getMutableUpstreamMeta(ctx, ref); hasPrev {
+			body, umeta, notModified, err := h.upstreamClt.Revalidate(ctx, ref, prevMeta, ups)
+			if err != nil {
+				return err
+			}
+			if notModified {
+				h.extendMutableTTL(ctx, ref, umeta)
+				return nil
+			}
+			defer body.Close()
+			_, err = h.fetchBodyAndStore(ctx, ref, body, umeta)
+			return err
+		}
+		body, umeta, err := h.upstreamClt.Fetch(ctx, ref, ups)
+		if err != nil {
+			return err
+		}
+		defer body.Close()
+		_, err = h.fetchBodyAndStore(ctx, ref, body, umeta)
+		return err
+	})
+}
 
 // getMutableUpstreamMeta returns ETag/LastModified for a mutable entry from
 // the MetadataStore (used for conditional-GET revalidation). Returns (zero,

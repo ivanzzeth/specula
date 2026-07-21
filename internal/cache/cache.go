@@ -49,7 +49,9 @@ const (
 type CacheManager interface {
 	// Lookup returns the verified CacheEntry for ref if present and the blob
 	// exists (treats "meta hit but blob missing" as a miss, fix M1).
-	// For mutable refs it checks TTL freshness; stale entries return nil.
+	// For mutable refs: hard-TTL-expired entries return nil; XFetch soft-expired
+	// entries return with SoftExpired=true so callers can serve immediately and
+	// refresh in the background (RFC 5861 stale-while-revalidate).
 	//
 	// Digest pin: entries are keyed by (protocol, name, version) — ref.Digest is
 	// NOT part of the key — so an entry found by name may hold a different
@@ -269,8 +271,16 @@ func (m *manager) lookupMutable(ctx context.Context, ref artifact.ArtifactRef, a
 	if me == nil {
 		return nil, nil
 	}
-	if !allowStale && !isMutableFresh(me) {
-		return nil, nil
+	softExpired := false
+	if !allowStale {
+		if isHardExpired(me) {
+			return nil, nil
+		}
+		// XFetch soft-expiry: still return the entry (SWR) but flag SoftExpired
+		// so handlers can kick a background revalidate without blocking the client.
+		if !isMutableFresh(me) {
+			softExpired = true
+		}
 	}
 	// For entries that resolve to an immutable CAS blob, ensure the blob exists.
 	if me.Digest != "" {
@@ -290,13 +300,14 @@ func (m *manager) lookupMutable(ctx context.Context, ref artifact.ArtifactRef, a
 	}
 	// Synthesize a CacheEntry from the MutableEntry metadata.
 	return &artifact.CacheEntry{
-		Ref:        ref,
-		Digest:     me.Digest,
-		Protocol:   me.Protocol,
-		Upstream:   me.Upstream,
-		ETag:       me.ETag,
-		VerifiedAt: me.FetchedAt,
-		CreatedAt:  me.FetchedAt,
+		Ref:         ref,
+		Digest:      me.Digest,
+		Protocol:    me.Protocol,
+		Upstream:    me.Upstream,
+		ETag:        me.ETag,
+		VerifiedAt:  me.FetchedAt,
+		CreatedAt:   me.FetchedAt,
+		SoftExpired: softExpired,
 	}, nil
 }
 

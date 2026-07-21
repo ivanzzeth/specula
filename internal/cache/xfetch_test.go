@@ -1,6 +1,8 @@
 package cache
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -10,49 +12,64 @@ import (
 	"github.com/ivanzzeth/specula/internal/artifact"
 )
 
-// TestXFetch_LookupMiss_LookupStaleHit proves the SWR seam handlers already
-// use: when XFetch soft-expires an entry, Lookup misses (caller revalidates)
-// while LookupStale still returns the bytes so serve-stale / conditional GET
-// can proceed (ARCHITECTURE: XFetch + stale-while-revalidate).
-func TestXFetch_LookupMiss_LookupStaleHit(t *testing.T) {
-	m, fb, fm := newTestManager(t, nil)
-	_ = fb
-
+// TestLookup_SoftExpired_SWRHit proves XFetch soft-expiry returns the entry
+// with SoftExpired=true (serve immediately) while hard expiry still misses.
+func TestLookup_SoftExpired_SWRHit(t *testing.T) {
+	m, _, fm := newTestManager(t, nil)
 	ref := artifact.ArtifactRef{Protocol: "oci", Name: "idx", Version: "latest", Mutable: true}
 	now := time.Now()
-	require.NoError(t, fm.PutMutable(contextBackground(), artifact.MutableEntry{
+
+	old := xfetchUniform
+	xfetchUniform = func() float64 { return 1e-12 }
+	t.Cleanup(func() { xfetchUniform = old })
+
+	require.NoError(t, fm.PutMutable(context.Background(), artifact.MutableEntry{
 		Key:        mutableKey(ref),
 		Protocol:   "oci",
 		Payload:    []byte("index"),
 		TTLSeconds: 3600,
-		FetchedAt:  now.Add(-59 * time.Minute), // near expiry
+		FetchedAt:  now.Add(-59 * time.Minute),
 	}))
 
-	// Force soft-expire via deterministic U.
-	me, err := fm.GetMutable(contextBackground(), mutableKey(ref))
+	entry, err := m.Lookup(context.Background(), ref)
 	require.NoError(t, err)
-	require.False(t, isMutableFreshAt(me, now, 1e-12), "XFetch must soft-expire")
+	require.NotNil(t, entry, "soft-expired must SWR-serve via Lookup")
+	assert.True(t, entry.SoftExpired)
 
-	hit, err := m.Lookup(contextBackground(), ref)
+	// Hard-expired: past absolute TTL.
+	require.NoError(t, fm.PutMutable(context.Background(), artifact.MutableEntry{
+		Key:        mutableKey(ref),
+		Protocol:   "oci",
+		Payload:    []byte("index"),
+		TTLSeconds: 60,
+		FetchedAt:  now.Add(-2 * time.Minute),
+	}))
+	entry, err = m.Lookup(context.Background(), ref)
 	require.NoError(t, err)
-	// Probabilistic: Lookup uses rand — may still hit. Soft-expire is tested
-	// above; LookupStale must always return the entry for SWR.
-	_ = hit
+	assert.Nil(t, entry, "hard-expired must miss")
 
-	stale, err := m.LookupStale(contextBackground(), ref)
+	stale, err := m.LookupStale(context.Background(), ref)
 	require.NoError(t, err)
-	require.NotNil(t, stale, "LookupStale must keep soft/hard-expired entries for SWR")
-	assert.Equal(t, "index", string(mustReadPayload(t, fm, ref)))
+	require.NotNil(t, stale)
 }
 
-func contextBackground() context.Context {
-	return context.Background()
-}
-
-func mustReadPayload(t *testing.T, fm *fakeMetaStore, ref artifact.ArtifactRef) []byte {
-	t.Helper()
-	me, err := fm.GetMutable(contextBackground(), mutableKey(ref))
-	require.NoError(t, err)
-	require.NotNil(t, me)
-	return me.Payload
+func TestStartBackgroundRefresh_RunsOnce(t *testing.T) {
+	var n atomic.Int32
+	done := make(chan struct{}, 1)
+	fn := func(ctx context.Context) error {
+		if n.Add(1) == 1 {
+			close(done)
+		}
+		time.Sleep(30 * time.Millisecond) // hold singleflight so the second call coalesces
+		return nil
+	}
+	StartBackgroundRefresh("swr-test-key-"+t.Name(), fn)
+	StartBackgroundRefresh("swr-test-key-"+t.Name(), fn)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("refresh did not run")
+	}
+	time.Sleep(80 * time.Millisecond)
+	assert.Equal(t, int32(1), n.Load())
 }

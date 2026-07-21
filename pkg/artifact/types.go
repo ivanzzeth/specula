@@ -154,6 +154,10 @@ type CacheEntry struct {
 	// Origin distinguishes authoritative hosted content from pull-through cache.
 	// Empty means cached (legacy rows). Hosted entries are never GC-evicted.
 	Origin string
+	// SoftExpired is set by cache.Lookup when a mutable entry is past XFetch
+	// soft-expiry but before the hard TTL cliff. Not persisted. Callers should
+	// serve immediately and revalidate in the background (RFC 5861 SWR).
+	SoftExpired bool
 }
 
 // Cache entry origin values (REGISTRY-DESIGN: hosted vs cached lifecycle).
