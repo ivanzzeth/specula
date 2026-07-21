@@ -79,6 +79,10 @@ func (f *fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artif
 	return nil, nil
 }
 
+func (f *fakeMetaStore) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
+
 func (f *fakeMetaStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
 	return meta.EntryPage{}, nil
 }

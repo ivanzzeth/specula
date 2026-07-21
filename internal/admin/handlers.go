@@ -13,6 +13,7 @@ import (
 	diskutil "github.com/shirou/gopsutil/v3/disk"
 
 	"github.com/ivanzzeth/specula/internal/apikey"
+	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/org"
@@ -216,13 +217,26 @@ func (s *Server) collectCacheStats(ctx context.Context) (StatsResponse, error) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Protocol < rows[j].Protocol })
 
-	return StatsResponse{
+	resp := StatsResponse{
 		PerProtocol:     rows,
 		TotalBytes:      total.Bytes,
 		TotalObjects:    total.Objects,
 		BackendDiskFree: free,
 		BackendDiskUsed: used,
-	}, nil
+	}
+	if s.meta != nil {
+		if byOrigin, oerr := s.meta.CacheSizeByOrigin(ctx); oerr == nil {
+			if h, ok := byOrigin[artifact.OriginHosted]; ok {
+				resp.HostedBytes = h.Bytes
+				resp.HostedObjects = h.Objects
+			}
+			if c, ok := byOrigin[artifact.OriginCached]; ok {
+				resp.CachedBytes = c.Bytes
+				resp.CachedObjects = c.Objects
+			}
+		}
+	}
+	return resp, nil
 }
 
 // handleStats → GET /api/v1/admin/stats. Returns StatsResponse with per-protocol

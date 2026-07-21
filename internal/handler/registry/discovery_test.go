@@ -94,6 +94,10 @@ func (m *memMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifa
 	return map[string]artifact.SizeStat{}, nil
 }
 
+func (m *memMetaStore) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
+
 // ListEntries / SetPinned are part of meta.MetadataStore but unused by the
 // registry discovery path; stubbed to satisfy the interface.
 func (m *memMetaStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {

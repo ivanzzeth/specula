@@ -765,6 +765,7 @@ func (h *Handler) recordHostedBlob(ctx context.Context, name, digest string, siz
 		Tier:       artifact.TierChecksum,
 		VerifiedAt: now,
 		CreatedAt:  now,
+		Origin:     artifact.OriginHosted,
 	}
 	if err := h.meta.Put(ctx, entry); err != nil {
 		h.log.Warn("registry: record hosted blob metadata", "name", name, "digest", digest, "err", err)

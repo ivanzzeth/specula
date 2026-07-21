@@ -91,6 +91,10 @@ func (m *fakeMetaStore) PutMutable(_ context.Context, e artifact.MutableEntry) e
 func (*fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	return map[string]artifact.SizeStat{}, nil
 }
+
+func (*fakeMetaStore) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
 func (*fakeMetaStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
 	return meta.EntryPage{}, nil
 }

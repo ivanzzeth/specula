@@ -151,6 +151,23 @@ type CacheEntry struct {
 	ETag       string      // upstream ETag at fetch time
 	VerifiedAt time.Time   // when verification passed
 	CreatedAt  time.Time   // when the entry was first written
+	// Origin distinguishes authoritative hosted content from pull-through cache.
+	// Empty means cached (legacy rows). Hosted entries are never GC-evicted.
+	Origin string
+}
+
+// Cache entry origin values (REGISTRY-DESIGN: hosted vs cached lifecycle).
+const (
+	OriginCached = "cached" // pull-through / mirror cache — evictable
+	OriginHosted = "hosted" // org-owned push — never evicted
+)
+
+// NormalizeOrigin maps empty/unknown to OriginCached.
+func NormalizeOrigin(o string) string {
+	if o == OriginHosted {
+		return OriginHosted
+	}
+	return OriginCached
 }
 
 // MutableEntry is the short-TTL record for the mutable tier: tag->digest maps,

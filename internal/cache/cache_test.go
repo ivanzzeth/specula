@@ -245,6 +245,12 @@ func (f *fakeMetaStore) ListEntries(_ context.Context, protocol string, filter m
 		if filter.Pinned != nil && f.pinned[k] != *filter.Pinned {
 			continue
 		}
+		if filter.Origin != "" {
+			orig := artifact.NormalizeOrigin(e.Origin)
+			if orig != artifact.NormalizeOrigin(filter.Origin) {
+				continue
+			}
+		}
 		if filter.NameContains != "" && !strings.Contains(e.Ref.Name, filter.NameContains) {
 			continue
 		}
@@ -328,6 +334,20 @@ func (f *fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artif
 			s.Newest = e.CreatedAt
 		}
 		stats[e.Protocol] = s
+	}
+	return stats, nil
+}
+
+func (f *fakeMetaStore) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	stats := make(map[string]artifact.SizeStat)
+	for _, e := range f.entries {
+		o := artifact.NormalizeOrigin(e.Origin)
+		s := stats[o]
+		s.Bytes += e.Size
+		s.Objects++
+		stats[o] = s
 	}
 	return stats, nil
 }

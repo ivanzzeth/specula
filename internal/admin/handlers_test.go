@@ -346,6 +346,10 @@ func (m *fakeMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artif
 	return map[string]artifact.SizeStat{}, nil
 }
 
+func (m *fakeMetaStore) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
+
 // ListEntries mirrors the drivers' contract: filter, then order, then window,
 // reporting Total against the filter (not the window).
 func (m *fakeMetaStore) ListEntries(_ context.Context, protocol string, f meta.EntryFilter, p meta.Page) (meta.EntryPage, error) {

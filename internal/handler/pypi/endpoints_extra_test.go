@@ -69,6 +69,10 @@ func (f *fakePypiMetaStore) DeleteMutable(_ context.Context, key string) error {
 func (f *fakePypiMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	return nil, nil
 }
+
+func (f *fakePypiMetaStore) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
 func (f *fakePypiMetaStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
 	return meta.EntryPage{}, nil
 }

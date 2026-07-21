@@ -43,8 +43,14 @@ type StatsResponse struct {
 	PerProtocol     []ProtocolStat `json:"per_protocol"`
 	TotalBytes      int64          `json:"total_bytes"`
 	TotalObjects    int64          `json:"total_objects"`
-	BackendDiskFree int64          `json:"backend_disk_free"`
-	BackendDiskUsed int64          `json:"backend_disk_used"`
+	// HostedBytes/Objects are authoritative org-owned content (never GC'd).
+	HostedBytes   int64 `json:"hosted_bytes"`
+	HostedObjects int64 `json:"hosted_objects"`
+	// CachedBytes/Objects are pull-through cache (evictable under max_bytes).
+	CachedBytes   int64 `json:"cached_bytes"`
+	CachedObjects int64 `json:"cached_objects"`
+	BackendDiskFree int64 `json:"backend_disk_free"`
+	BackendDiskUsed int64 `json:"backend_disk_used"`
 }
 
 // InstanceStatsResponse is GET /api/v1/stats: cache occupancy plus live traffic.

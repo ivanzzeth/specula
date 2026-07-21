@@ -39,11 +39,15 @@ func (m *manager) enforceCapacity(ctx context.Context, protect artifact.Artifact
 		"total_bytes", total, "max_bytes", m.maxBytes, "need_bytes", need)
 
 	unpinned := false
+	cachedOnly := artifact.OriginCached
 	evicted := 0
 	var freed int64
 
 	for need > 0 {
-		page, listErr := m.meta.ListEntries(ctx, "", meta.EntryFilter{Pinned: &unpinned}, meta.Page{
+		page, listErr := m.meta.ListEntries(ctx, "", meta.EntryFilter{
+			Pinned: &unpinned,
+			Origin: cachedOnly,
+		}, meta.Page{
 			Limit:  evictBatch,
 			Sort:   meta.SortCreatedAt,
 			Desc:   false, // oldest first
@@ -103,6 +107,17 @@ func (m *manager) enforceCapacity(ctx context.Context, protect artifact.Artifact
 }
 
 func (m *manager) totalCachedBytes(ctx context.Context) (int64, error) {
+	// Capacity pressure applies only to pull-through cache. Hosted content is
+	// authoritative and never counted toward the eviction budget.
+	if sizer, ok := m.meta.(interface {
+		CacheSizeByOrigin(context.Context) (map[string]artifact.SizeStat, error)
+	}); ok {
+		byOrigin, err := sizer.CacheSizeByOrigin(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("cache size by origin: %w", err)
+		}
+		return byOrigin[artifact.OriginCached].Bytes, nil
+	}
 	stats, err := m.meta.CacheSizeByProtocol(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("cache size: %w", err)

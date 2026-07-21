@@ -35,6 +35,10 @@ type MetadataStore interface {
 	// CacheSizeByProtocol returns SUM(size),COUNT(*),MIN/MAX(created_at)
 	// grouped by protocol.
 	CacheSizeByProtocol(ctx context.Context) (map[string]artifact.SizeStat, error)
+	// CacheSizeByOrigin returns SUM(size),COUNT(*) grouped by origin
+	// (hosted|cached). Powers capacity dashboards that split authoritative
+	// hosted content from pull-through cache.
+	CacheSizeByOrigin(ctx context.Context) (map[string]artifact.SizeStat, error)
 	// ListEntries returns one page of immutable cache entries for protocol,
 	// narrowed by filter and ordered/sliced by page. It powers the WebUI cache
 	// browser (REGISTRY-DESIGN §5.2): every protocol must be able to answer
@@ -65,6 +69,8 @@ type EntryFilter struct {
 	// Pinned, when non-nil, matches only pinned (true) or unpinned (false)
 	// entries.
 	Pinned *bool
+	// Origin, when non-empty, matches only that origin (hosted|cached).
+	Origin string
 }
 
 // SortField names a ListEntries ordering column. Unknown values fall back to

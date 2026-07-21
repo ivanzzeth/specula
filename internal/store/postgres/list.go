@@ -49,6 +49,10 @@ func listWhere(protocol string, f meta.EntryFilter) (string, []any) {
 		conds = append(conds, "pinned = ?")
 		args = append(args, *f.Pinned)
 	}
+	if f.Origin != "" {
+		conds = append(conds, "origin = ?")
+		args = append(args, artifact.NormalizeOrigin(f.Origin))
+	}
 	if len(conds) == 0 {
 		return "", nil
 	}
@@ -115,7 +119,7 @@ func (s *PostgresStore) ListEntries(
 
 	q := dbx.Rebind(dbx.Postgres, `
 		SELECT protocol, name, version, digest, size, tier,
-		       upstream, etag, verified_at, created_at, pinned
+		       upstream, etag, verified_at, created_at, pinned, origin
 		FROM   cache_entries`+where+orderClause(page)+` LIMIT ? OFFSET ?`)
 
 	rows, err := s.pool.Query(ctx, q, append(args, page.Limit, page.Offset)...)
@@ -130,16 +134,18 @@ func (s *PostgresStore) ListEntries(
 			e                     meta.Entry
 			tier                  int
 			verifiedAt, createdAt time.Time
+			origin                string
 		)
 		if err := rows.Scan(
 			&e.Ref.Protocol, &e.Ref.Name, &e.Ref.Version,
 			&e.Digest, &e.Size, &tier, &e.Upstream, &e.ETag,
-			&verifiedAt, &createdAt, &e.Pinned,
+			&verifiedAt, &createdAt, &e.Pinned, &origin,
 		); err != nil {
 			return meta.EntryPage{}, fmt.Errorf("postgres: scan entry: %w", err)
 		}
 		e.Protocol = e.Ref.Protocol
 		e.Tier = artifact.Tier(tier)
+		e.Origin = artifact.NormalizeOrigin(origin)
 		e.Ref.Digest = e.Digest
 		e.Ref.Upstream = e.Upstream
 		e.VerifiedAt = verifiedAt.UTC()

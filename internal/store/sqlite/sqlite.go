@@ -102,7 +102,7 @@ var _ meta.MetadataStore = (*SQLiteStore)(nil)
 func (s *SQLiteStore) Get(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
 	const q = `
 		SELECT protocol, name, version, ref_digest, ref_upstream, mutable,
-		       digest, size, tier, upstream, etag, verified_at, created_at
+		       digest, size, tier, upstream, etag, verified_at, created_at, origin
 		FROM   cache_entries
 		WHERE  protocol = ? AND name = ? AND version = ?`
 
@@ -111,12 +111,13 @@ func (s *SQLiteStore) Get(ctx context.Context, ref artifact.ArtifactRef) (*artif
 	var e artifact.CacheEntry
 	var mutableInt int
 	var verifiedAt, createdAt int64
+	var origin string
 
 	err := row.Scan(
 		&e.Ref.Protocol, &e.Ref.Name, &e.Ref.Version,
 		&e.Ref.Digest, &e.Ref.Upstream, &mutableInt,
 		&e.Digest, &e.Size, &e.Tier, &e.Upstream, &e.ETag,
-		&verifiedAt, &createdAt,
+		&verifiedAt, &createdAt, &origin,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -128,6 +129,7 @@ func (s *SQLiteStore) Get(ctx context.Context, ref artifact.ArtifactRef) (*artif
 
 	e.Ref.Mutable = mutableInt != 0
 	e.Protocol = e.Ref.Protocol
+	e.Origin = artifact.NormalizeOrigin(origin)
 	e.VerifiedAt = time.Unix(verifiedAt, 0).UTC()
 	e.CreatedAt = time.Unix(createdAt, 0).UTC()
 	return &e, nil
@@ -155,12 +157,13 @@ func (s *SQLiteStore) Put(ctx context.Context, entry artifact.CacheEntry) error 
 	if entry.Ref.Mutable {
 		mutableInt = 1
 	}
+	origin := artifact.NormalizeOrigin(entry.Origin)
 
 	const q = `
 		INSERT INTO cache_entries
 		    (protocol, name, version, ref_digest, ref_upstream, mutable,
-		     digest, size, tier, upstream, etag, verified_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		     digest, size, tier, upstream, etag, verified_at, created_at, origin)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(protocol, name, version) DO UPDATE SET
 		    ref_digest   = excluded.ref_digest,
 		    ref_upstream = excluded.ref_upstream,
@@ -170,14 +173,18 @@ func (s *SQLiteStore) Put(ctx context.Context, entry artifact.CacheEntry) error 
 		    tier         = excluded.tier,
 		    upstream     = excluded.upstream,
 		    etag         = excluded.etag,
-		    verified_at  = excluded.verified_at`
+		    verified_at  = excluded.verified_at,
+		    origin       = CASE
+		                     WHEN cache_entries.origin = 'hosted' THEN 'hosted'
+		                     ELSE excluded.origin
+		                   END`
 
 	_, err := s.db.ExecContext(ctx, q,
 		proto, entry.Ref.Name, entry.Ref.Version,
 		entry.Ref.Digest, entry.Ref.Upstream, mutableInt,
 		entry.Digest, entry.Size, int(entry.Tier),
 		entry.Upstream, entry.ETag,
-		entry.VerifiedAt.Unix(), entry.CreatedAt.Unix(),
+		entry.VerifiedAt.Unix(), entry.CreatedAt.Unix(), origin,
 	)
 	if err != nil {
 		return fmt.Errorf("sqlite: put cache entry (%s/%s@%s): %w",
@@ -304,6 +311,46 @@ func (s *SQLiteStore) CacheSizeByProtocol(ctx context.Context) (map[string]artif
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite: iterate size stats: %w", err)
+	}
+	return result, nil
+}
+
+// CacheSizeByOrigin returns SUM(size), COUNT(*) grouped by origin (hosted|cached).
+func (s *SQLiteStore) CacheSizeByOrigin(ctx context.Context) (map[string]artifact.SizeStat, error) {
+	const q = `
+		SELECT COALESCE(NULLIF(origin, ''), 'cached') AS origin,
+		       COALESCE(SUM(size),  0) AS bytes,
+		       COUNT(*)                AS objects,
+		       COALESCE(MIN(created_at), 0) AS oldest,
+		       COALESCE(MAX(created_at), 0) AS newest
+		FROM   cache_entries
+		GROUP  BY COALESCE(NULLIF(origin, ''), 'cached')`
+
+	rows, err := s.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: cache size by origin: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]artifact.SizeStat)
+	for rows.Next() {
+		var origin string
+		var stat artifact.SizeStat
+		var oldest, newest int64
+		if err := rows.Scan(&origin, &stat.Bytes, &stat.Objects, &oldest, &newest); err != nil {
+			return nil, fmt.Errorf("sqlite: scan origin size stat: %w", err)
+		}
+		origin = artifact.NormalizeOrigin(origin)
+		if oldest != 0 {
+			stat.Oldest = time.Unix(oldest, 0).UTC()
+		}
+		if newest != 0 {
+			stat.Newest = time.Unix(newest, 0).UTC()
+		}
+		result[origin] = stat
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: iterate origin size stats: %w", err)
 	}
 	return result, nil
 }

@@ -80,6 +80,10 @@ func (m *fakeAptMetaStore) Delete(_ context.Context, _ artifact.ArtifactRef) err
 func (m *fakeAptMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	return nil, nil
 }
+
+func (m *fakeAptMetaStore) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
 func (m *fakeAptMetaStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
 	return meta.EntryPage{}, nil
 }

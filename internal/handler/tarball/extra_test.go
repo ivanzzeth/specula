@@ -43,6 +43,10 @@ func (f *fakeMetaStoreTarball) DeleteMutable(_ context.Context, _ string) error 
 func (f *fakeMetaStoreTarball) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	return nil, nil
 }
+
+func (f *fakeMetaStoreTarball) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
 func (f *fakeMetaStoreTarball) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
 	return meta.EntryPage{}, nil
 }

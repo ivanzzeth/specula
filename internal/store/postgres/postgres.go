@@ -54,7 +54,7 @@ func (s *PostgresStore) Get(ctx context.Context, ref artifact.ArtifactRef) (*art
 			protocol, name, version,
 			digest, size, tier,
 			upstream, etag,
-			verified_at, created_at
+			verified_at, created_at, origin
 		FROM cache_entries
 		WHERE protocol = $1 AND name = $2 AND version = $3
 		LIMIT 1`
@@ -62,6 +62,7 @@ func (s *PostgresStore) Get(ctx context.Context, ref artifact.ArtifactRef) (*art
 	var e artifact.CacheEntry
 	var tier int
 	var verifiedAt, createdAt time.Time
+	var origin string
 
 	err := s.pool.QueryRow(ctx, q, ref.Protocol, ref.Name, ref.Version).Scan(
 		&e.Ref.Protocol,
@@ -74,6 +75,7 @@ func (s *PostgresStore) Get(ctx context.Context, ref artifact.ArtifactRef) (*art
 		&e.ETag,
 		&verifiedAt,
 		&createdAt,
+		&origin,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -86,6 +88,7 @@ func (s *PostgresStore) Get(ctx context.Context, ref artifact.ArtifactRef) (*art
 	e.Tier = artifact.Tier(tier)
 	e.Protocol = e.Ref.Protocol
 	e.Ref.Upstream = e.Upstream
+	e.Origin = artifact.NormalizeOrigin(origin)
 	e.VerifiedAt = verifiedAt
 	e.CreatedAt = createdAt
 	return &e, nil
@@ -93,20 +96,25 @@ func (s *PostgresStore) Get(ctx context.Context, ref artifact.ArtifactRef) (*art
 
 // Put upserts an immutable CacheEntry (ON CONFLICT updates all fields except
 // created_at so first-write wins on creation time). Written AFTER the blob
-// lands in CAS (architecture M1 write ordering).
+// lands in CAS (architecture M1 write ordering). Hosted origin is sticky:
+// a later cached Put cannot demote a hosted row.
 func (s *PostgresStore) Put(ctx context.Context, entry artifact.CacheEntry) error {
 	const q = `
 		INSERT INTO cache_entries
 			(protocol, name, version, digest, size, tier,
-			 upstream, etag, verified_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			 upstream, etag, verified_at, created_at, origin)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (protocol, name, version) DO UPDATE SET
 			digest      = EXCLUDED.digest,
 			size        = EXCLUDED.size,
 			tier        = EXCLUDED.tier,
 			upstream    = EXCLUDED.upstream,
 			etag        = EXCLUDED.etag,
-			verified_at = EXCLUDED.verified_at`
+			verified_at = EXCLUDED.verified_at,
+			origin      = CASE
+			                WHEN cache_entries.origin = 'hosted' THEN 'hosted'
+			                ELSE EXCLUDED.origin
+			              END`
 
 	createdAt := entry.CreatedAt.UTC()
 	if createdAt.IsZero() {
@@ -116,6 +124,7 @@ func (s *PostgresStore) Put(ctx context.Context, entry artifact.CacheEntry) erro
 	if verifiedAt.IsZero() {
 		verifiedAt = time.Now().UTC()
 	}
+	origin := artifact.NormalizeOrigin(entry.Origin)
 
 	_, err := s.pool.Exec(ctx, q,
 		entry.Ref.Protocol,
@@ -128,6 +137,7 @@ func (s *PostgresStore) Put(ctx context.Context, entry artifact.CacheEntry) erro
 		entry.ETag,
 		verifiedAt,
 		createdAt,
+		origin,
 	)
 	if err != nil {
 		return fmt.Errorf("postgres: put(%s/%s@%s): %w",
@@ -286,6 +296,39 @@ func (s *PostgresStore) CacheSizeByProtocol(ctx context.Context) (map[string]art
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("postgres: cache_size_by_protocol rows: %w", err)
+	}
+	return result, nil
+}
+
+// CacheSizeByOrigin returns SUM(size), COUNT(*) grouped by origin (hosted|cached).
+func (s *PostgresStore) CacheSizeByOrigin(ctx context.Context) (map[string]artifact.SizeStat, error) {
+	const q = `
+		SELECT
+			COALESCE(NULLIF(origin, ''), 'cached') AS origin,
+			COALESCE(SUM(size), 0) AS bytes,
+			COUNT(*)               AS objects,
+			MIN(created_at)        AS oldest,
+			MAX(created_at)        AS newest
+		FROM cache_entries
+		GROUP BY COALESCE(NULLIF(origin, ''), 'cached')`
+
+	rows, err := s.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("postgres: cache_size_by_origin: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]artifact.SizeStat)
+	for rows.Next() {
+		var origin string
+		var stat artifact.SizeStat
+		if err := rows.Scan(&origin, &stat.Bytes, &stat.Objects, &stat.Oldest, &stat.Newest); err != nil {
+			return nil, fmt.Errorf("postgres: scan origin size stat: %w", err)
+		}
+		result[artifact.NormalizeOrigin(origin)] = stat
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres: cache_size_by_origin rows: %w", err)
 	}
 	return result, nil
 }

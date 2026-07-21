@@ -146,6 +146,10 @@ func (m *memMeta) Delete(context.Context, artifact.ArtifactRef) error {
 func (m *memMeta) CacheSizeByProtocol(context.Context) (map[string]artifact.SizeStat, error) {
 	panic("memMeta.CacheSizeByProtocol: unused by git")
 }
+
+func (m *memMeta) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
 func (m *memMeta) ListEntries(context.Context, string, meta.EntryFilter, meta.Page) (meta.EntryPage, error) {
 	panic("memMeta.ListEntries: unused by git")
 }

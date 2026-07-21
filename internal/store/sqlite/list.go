@@ -46,6 +46,10 @@ func listWhere(protocol string, f meta.EntryFilter) (string, []any) {
 		conds = append(conds, "pinned = ?")
 		args = append(args, boolToInt(*f.Pinned))
 	}
+	if f.Origin != "" {
+		conds = append(conds, "origin = ?")
+		args = append(args, artifact.NormalizeOrigin(f.Origin))
+	}
 	if len(conds) == 0 {
 		return "", nil
 	}
@@ -115,7 +119,7 @@ func (s *SQLiteStore) ListEntries(
 
 	q := `
 		SELECT protocol, name, version, ref_digest, ref_upstream, mutable,
-		       digest, size, tier, upstream, etag, verified_at, created_at, pinned
+		       digest, size, tier, upstream, etag, verified_at, created_at, pinned, origin
 		FROM   cache_entries` + where + orderClause(page) + ` LIMIT ? OFFSET ?`
 
 	rows, err := s.db.QueryContext(ctx, q, append(args, page.Limit, page.Offset)...)
@@ -131,18 +135,20 @@ func (s *SQLiteStore) ListEntries(
 			tier                  int
 			mutable, pinned       int
 			verifiedAt, createdAt int64
+			origin                string
 		)
 		if err := rows.Scan(
 			&e.Ref.Protocol, &e.Ref.Name, &e.Ref.Version,
 			&e.Ref.Digest, &e.Ref.Upstream, &mutable,
 			&e.Digest, &e.Size, &tier, &e.Upstream, &e.ETag,
-			&verifiedAt, &createdAt, &pinned,
+			&verifiedAt, &createdAt, &pinned, &origin,
 		); err != nil {
 			return meta.EntryPage{}, fmt.Errorf("sqlite: scan entry: %w", err)
 		}
 		e.Ref.Mutable = mutable != 0
 		e.Protocol = e.Ref.Protocol
 		e.Tier = artifact.Tier(tier)
+		e.Origin = artifact.NormalizeOrigin(origin)
 		e.Pinned = pinned != 0
 		if verifiedAt != 0 {
 			e.VerifiedAt = time.Unix(verifiedAt, 0).UTC()

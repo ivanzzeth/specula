@@ -235,6 +235,10 @@ func (m *fakeHelmMetaStore) Delete(_ context.Context, _ artifact.ArtifactRef) er
 func (m *fakeHelmMetaStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.SizeStat, error) {
 	return nil, nil
 }
+
+func (m *fakeHelmMetaStore) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
 func (m *fakeHelmMetaStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
 	return meta.EntryPage{}, nil
 }

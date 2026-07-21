@@ -30,4 +30,10 @@ const (
 	StatusWarn = pkg.StatusWarn
 	StatusFail = pkg.StatusFail
 	StatusSkip = pkg.StatusSkip
+
+	OriginCached = pkg.OriginCached
+	OriginHosted = pkg.OriginHosted
 )
+
+// NormalizeOrigin maps empty/unknown origin to OriginCached.
+func NormalizeOrigin(o string) string { return pkg.NormalizeOrigin(o) }

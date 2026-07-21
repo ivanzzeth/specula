@@ -51,6 +51,10 @@ func (f *fakeStore) CacheSizeByProtocol(_ context.Context) (map[string]artifact.
 	return f.stats, nil
 }
 
+func (f *fakeStore) CacheSizeByOrigin(_ context.Context) (map[string]artifact.SizeStat, error) {
+	return map[string]artifact.SizeStat{}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
