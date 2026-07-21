@@ -15,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	// Blank imports register sha384 and sha512 with the crypto package so that
 	// go-digest's Algorithm.Available() returns true for all three OCI-registered
@@ -275,12 +274,12 @@ func (d *LocalDiskDriver) UsageBytes(ctx context.Context) (int64, error) {
 			return err
 		}
 
-		// Dedup by inode so external hardlinks are counted once.
-		if sys, ok := info.Sys().(*syscall.Stat_t); ok {
-			if _, already := seen[sys.Ino]; already {
+		// Dedup by inode so external hardlinks are counted once (Unix only).
+		if ino, ok := fileIno(info); ok {
+			if _, already := seen[ino]; already {
 				return nil
 			}
-			seen[sys.Ino] = struct{}{}
+			seen[ino] = struct{}{}
 		}
 		total += info.Size()
 		return nil
