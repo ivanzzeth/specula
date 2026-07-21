@@ -1,0 +1,35 @@
+# Specula systemd unit — system-wide daemon, starts on boot.
+#
+# Prefer:  sudo ./bin/specula service install
+# Or:      make install
+#
+# Manual:
+#   sudo install -m 755 bin/specula /usr/local/bin/specula
+#   sudo install -d /etc/specula /var/lib/specula
+#   sudo cp specula.example.yaml /etc/specula/specula.yaml   # edit paths → /var/lib/specula
+#   sudo cp contrib/systemd/specula.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now specula
+
+[Unit]
+Description=Specula multi-protocol artifact proxy
+Documentation=https://github.com/ivanzzeth/specula
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=specula
+Group=specula
+ExecStart=/usr/local/bin/specula --config /etc/specula/specula.yaml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/specula /etc/specula
+AmbientCapabilities=
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

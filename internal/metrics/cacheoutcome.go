@@ -2,8 +2,10 @@ package metrics
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"sync/atomic"
+	"time"
 )
 
 // # Why hit/miss is bound to the request, not to the cache lookup
@@ -133,11 +135,13 @@ func MarkMiss(ctx context.Context) {
 	}
 }
 
-// statusRecorder captures the response status for specula_requests_total.
+// statusRecorder captures the response status and body byte count for
+// specula_requests_total / specula_response_bytes_total.
 type statusRecorder struct {
 	http.ResponseWriter
 	status      int
 	wroteHeader bool
+	bytes       int64
 }
 
 func (r *statusRecorder) WriteHeader(code int) {
@@ -154,7 +158,25 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 		r.status = http.StatusOK
 		r.wroteHeader = true
 	}
-	return r.ResponseWriter.Write(b)
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += int64(n)
+	return n, err
+}
+
+// ReadFrom counts sendfile/zero-copy paths that bypass Write.
+func (r *statusRecorder) ReadFrom(src io.Reader) (int64, error) {
+	if !r.wroteHeader {
+		r.status = http.StatusOK
+		r.wroteHeader = true
+	}
+	if rf, ok := r.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(src)
+		r.bytes += n
+		return n, err
+	}
+	n, err := io.Copy(r.ResponseWriter, src)
+	r.bytes += n
+	return n, err
 }
 
 // Unwrap lets http.ResponseController reach the underlying writer, preserving
@@ -162,7 +184,8 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 // Middleware instruments a protocol handler: it counts every request into
-// specula_requests_total{protocol,method,status} and flushes exactly one
+// specula_requests_total{protocol,method,status}, records response body bytes +
+// end-to-end duration for runtime throughput, and flushes exactly one
 // specula_cache_hits_total / _misses_total observation for the request, based on
 // whatever the handler marked via MarkHit/MarkMiss.
 func Middleware(protocol string, next http.Handler) http.Handler {
@@ -171,9 +194,19 @@ func Middleware(protocol string, next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), scopeKey, scope)
 
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		// Identify Specula on every data-plane response so operators can prove
+		// the client hit Specula and not an ambient HTTP_PROXY / upstream CDN.
+		// Set before the handler runs so the header is present even on early 4xx.
+		w.Header().Set("X-Specula-Protocol", protocol)
+		w.Header().Add("Via", "1.1 specula")
+		start := time.Now()
 		next.ServeHTTP(rec, r.WithContext(ctx))
+		elapsed := time.Since(start)
 
 		RecordRequest(protocol, r.Method, rec.status)
+		ResponseBytesTotal.WithLabelValues(protocol).Add(float64(rec.bytes))
+		RequestDurationSeconds.WithLabelValues(protocol).Observe(elapsed.Seconds())
+		recordTraffic(protocol, rec.bytes, elapsed)
 		scope.flush()
 	})
 }

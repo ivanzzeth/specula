@@ -76,6 +76,12 @@ const CheckChain = "chain"
 // lands in a real bucket instead of +Inf.
 var cnLatencyBuckets = []float64{0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2.5, 5, 7.5, 10, 20, 30}
 
+// requestDurationBuckets cover LAN cache hits (sub-ms–ms) through multi-minute
+// large artifact pulls on slow links.
+var requestDurationBuckets = []float64{
+	0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300,
+}
+
 var (
 	// RequestsTotal counts data-plane requests that reached a protocol handler.
 	//
@@ -128,6 +134,9 @@ var (
 	// (measured on a real aliyun link) — a 50 MB .deb would take half an hour
 	// and this histogram would still report 0.25s. It answers exactly one
 	// question: how long does this upstream take to start responding.
+	//
+	// For end-to-end "how many MB did we serve, how long did the response take"
+	// use ResponseBytesTotal + RequestDurationSeconds (and GET /api/v1/traffic).
 	UpstreamLatencySeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "specula_upstream_latency_seconds",
@@ -135,6 +144,29 @@ var (
 			Buckets: cnLatencyBuckets,
 		},
 		[]string{"protocol", "upstream"},
+	)
+
+	// ResponseBytesTotal counts response body bytes written to clients on the
+	// data plane (runtime throughput numerator). Label: protocol only.
+	ResponseBytesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "specula_response_bytes_total",
+			Help: "Response body bytes written to data-plane clients, by protocol. Use with specula_request_duration_seconds for transfer MB/s.",
+		},
+		[]string{"protocol"},
+	)
+
+	// RequestDurationSeconds observes full request wall time (headers + body
+	// stream to the client). This IS client-link-sensitive; that is intentional
+	// for "pulled X MB in Y seconds" operator questions. Upstream TTFB alone is
+	// UpstreamLatencySeconds.
+	RequestDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "specula_request_duration_seconds",
+			Help:    "End-to-end data-plane request duration including body transfer to the client, by protocol.",
+			Buckets: requestDurationBuckets,
+		},
+		[]string{"protocol"},
 	)
 
 	// UpstreamBlocked reports whether an upstream is currently inside its
@@ -257,6 +289,8 @@ func init() {
 		VerificationTotal,
 		CacheBytes,
 		CacheObjects,
+		ResponseBytesTotal,
+		RequestDurationSeconds,
 	)
 	// Pre-initialise every bounded label set that is knowable without traffic.
 	// Counters and gauges here report a true zero on a fresh headless process,
@@ -265,6 +299,8 @@ func init() {
 	for _, p := range AllProtocols {
 		CacheHitsTotal.WithLabelValues(p)
 		CacheMissesTotal.WithLabelValues(p)
+		ResponseBytesTotal.WithLabelValues(p)
+		RequestDurationSeconds.WithLabelValues(p)
 		// cache_bytes is pre-initialised too: bytes are ALWAYS measurable, so 0 on
 		// a cold cache is a real "measured, nothing cached", identical in kind to a
 		// hit counter reading 0 — not the fabricated zero e181e5a forbids (that rule

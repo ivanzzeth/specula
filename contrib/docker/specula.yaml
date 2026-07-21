@@ -1,0 +1,69 @@
+# Default config baked into the Specula container image.
+# Override by mounting a file and passing --config, or via SPECULA_* env vars.
+#
+# Data lives under /var/lib/specula (declare a volume for persistence).
+
+server:
+  data_plane_addr: ":7732"
+  control_plane_addr: ":7733"
+
+storage:
+  blob:
+    driver: local
+    local:
+      root: /var/lib/specula/blobs
+  meta:
+    driver: sqlite
+    dsn: /var/lib/specula/meta.db
+
+cache:
+  default_mutable_ttl_seconds: 300
+  negative_ttl_seconds: 1800
+  max_bytes: 0
+
+auth:
+  config_secret: ""
+  jwt_secret: ""
+  cookie_secure: false
+
+protocols:
+  oci:
+    mutable_ttl_seconds: 300
+    upstreams:
+      - name: dockerhub
+        base_url: https://registry-1.docker.io
+        priority: 1
+        official: true
+  go:
+    mutable_ttl_seconds: -1
+    upstreams:
+      - name: proxy.golang.org
+        base_url: https://proxy.golang.org
+        priority: 1
+        official: true
+  pypi:
+    mutable_ttl_seconds: 300
+    upstreams:
+      - name: pypi.org
+        base_url: https://pypi.org
+        priority: 1
+        official: true
+  npm:
+    mutable_ttl_seconds: 300
+    upstreams:
+      - name: npmjs
+        base_url: https://registry.npmjs.org
+        priority: 1
+        official: true
+  helm:
+    mutable_ttl_seconds: 300
+    upstreams: []
+  apt:
+    mutable_ttl_seconds: 300
+    upstreams: []
+  tarball:
+    mutable_ttl_seconds: 300
+    upstreams: []
+  git:
+    mutable_ttl_seconds: 300
+    upstreams: []

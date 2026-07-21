@@ -84,12 +84,22 @@ const (
 const defaultScheme = "https"
 
 // defaultHTTPTimeout is the per-request deadline for the package-level HTTP
-// client used when no upstream.Client is configured.
-const defaultHTTPTimeout = 30 * time.Second
+// client used when no upstream.Client is configured. Large release assets and
+// slow GitHub/CDN paths need more than a short deadline — EOF under 30s was
+// observed on cold pulls of modest archives.
+const defaultHTTPTimeout = 120 * time.Second
+
+// tarballFetchAttempts is how many times fetchFromURL retries transient
+// upstream failures (EOF, timeout, 5xx) before surfacing 502 to the client.
+const tarballFetchAttempts = 3
 
 // pkgHTTPClient is the package-level client for direct tarball fetches. Using
 // a package-level client reuses connection pools across requests.
 var pkgHTTPClient = &http.Client{Timeout: defaultHTTPTimeout}
+
+// tarballUserAgent identifies Specula to upstreams that reject empty/default Go UAs.
+const tarballUserAgent = "specula-tarball/1 (+https://github.com/ivanzzeth/specula)"
+
 
 // Handler serves the generic tarball data-plane API. All bytes served are
 // guaranteed to have passed the verify-on-write chain inside the CacheManager
@@ -150,8 +160,43 @@ func WithLogger(l *slog.Logger) Option {
 
 // WithAllowedHosts sets the upstream host allowlist (SSRF guard). A request whose
 // host is not listed is rejected with 403. An empty list denies all hosts.
+// Known CDN aliases for configured forges (e.g. github.com → codeload.github.com)
+// are expanded so path hosts that match the forge still succeed after redirects
+// land on sibling hostnames (allowlist is checked on the request path host only;
+// expansion keeps intentional CDN hosts usable if callers encode them).
 func WithAllowedHosts(hosts []string) Option {
-	return func(h *Handler) { h.allowedHosts = hosts }
+	return func(h *Handler) { h.allowedHosts = expandTarballAllowedHosts(hosts) }
+}
+
+// expandTarballAllowedHosts adds well-known CDN siblings for forge hosts.
+func expandTarballAllowedHosts(hosts []string) []string {
+	seen := make(map[string]struct{}, len(hosts)*2)
+	out := make([]string, 0, len(hosts)*2)
+	add := func(h string) {
+		h = strings.ToLower(strings.TrimSpace(h))
+		if h == "" {
+			return
+		}
+		if _, ok := seen[h]; ok {
+			return
+		}
+		seen[h] = struct{}{}
+		out = append(out, h)
+	}
+	for _, h := range hosts {
+		add(h)
+		switch strings.ToLower(h) {
+		case "github.com":
+			add("codeload.github.com")
+			add("objects.githubusercontent.com")
+			add("release-assets.githubusercontent.com")
+			add("github-releases.githubusercontent.com")
+			add("raw.githubusercontent.com")
+		case "gitlab.com":
+			add("cdn.artifacts.gitlab-static.net")
+		}
+	}
+	return out
 }
 
 // WithScheme sets the URL scheme used when constructing upstream fetch URLs.
@@ -332,8 +377,9 @@ func (h *Handler) serveTarball(w http.ResponseWriter, r *http.Request, host, key
 // --------------------------------------------------------------------------
 
 // fetchFromURL reconstructs the upstream URL as <scheme>://<key>/<file> and
-// performs a direct HTTP GET. The response body is returned as a streaming
-// io.ReadCloser; the caller is responsible for closing it.
+// performs a direct HTTP GET (with short retries on transient failures). The
+// response body is returned as a streaming io.ReadCloser; the caller is
+// responsible for closing it.
 //
 // "https" is used by default; override with WithScheme("http") for tests.
 func (h *Handler) fetchFromURL(ctx context.Context, key, file string) (io.ReadCloser, artifact.UpstreamMeta, error) {
@@ -343,10 +389,34 @@ func (h *Handler) fetchFromURL(ctx context.Context, key, file string) (io.ReadCl
 	}
 	rawURL := scheme + "://" + key + "/" + file
 
+	var lastErr error
+	for attempt := 1; attempt <= tarballFetchAttempts; attempt++ {
+		rc, umeta, err := h.doFetchOnce(ctx, rawURL, key)
+		if err == nil {
+			return rc, umeta, nil
+		}
+		lastErr = err
+		if !isTransientTarballFetchErr(err) || attempt == tarballFetchAttempts {
+			break
+		}
+		h.log.Warn("tarball: transient upstream fetch, retrying",
+			"url", rawURL, "attempt", attempt, "err", err)
+		select {
+		case <-ctx.Done():
+			return nil, artifact.UpstreamMeta{}, ctx.Err()
+		case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+		}
+	}
+	return nil, artifact.UpstreamMeta{}, lastErr
+}
+
+func (h *Handler) doFetchOnce(ctx context.Context, rawURL, key string) (io.ReadCloser, artifact.UpstreamMeta, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, artifact.UpstreamMeta{}, fmt.Errorf("tarball: build request %q: %w", rawURL, err)
 	}
+	req.Header.Set("User-Agent", tarballUserAgent)
+	req.Header.Set("Accept", "*/*")
 
 	resp, err := pkgHTTPClient.Do(req)
 	if err != nil {
@@ -357,6 +427,11 @@ func (h *Handler) fetchFromURL(ctx context.Context, key, file string) (io.ReadCl
 	case resp.StatusCode == http.StatusNotFound:
 		_ = resp.Body.Close()
 		return nil, artifact.UpstreamMeta{}, fmt.Errorf("tarball: %q: not found (404)", rawURL)
+	case resp.StatusCode == http.StatusBadGateway ||
+		resp.StatusCode == http.StatusServiceUnavailable ||
+		resp.StatusCode == http.StatusGatewayTimeout:
+		_ = resp.Body.Close()
+		return nil, artifact.UpstreamMeta{}, fmt.Errorf("tarball: %q: HTTP %d", rawURL, resp.StatusCode)
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
 		_ = resp.Body.Close()
 		return nil, artifact.UpstreamMeta{}, fmt.Errorf("tarball: %q: HTTP %d", rawURL, resp.StatusCode)
@@ -370,6 +445,25 @@ func (h *Handler) fetchFromURL(ctx context.Context, key, file string) (io.ReadCl
 		Upstream:     key,
 	}
 	return resp.Body, umeta, nil
+}
+
+func isTransientTarballFetchErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "eof"),
+		strings.Contains(msg, "timeout"),
+		strings.Contains(msg, "temporar"),
+		strings.Contains(msg, "connection reset"),
+		strings.Contains(msg, "http 502"),
+		strings.Contains(msg, "http 503"),
+		strings.Contains(msg, "http 504"):
+		return true
+	default:
+		return false
+	}
 }
 
 // --------------------------------------------------------------------------

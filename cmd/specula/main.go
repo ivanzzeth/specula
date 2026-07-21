@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -45,6 +46,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/store/postgres"
 	"github.com/ivanzzeth/specula/internal/store/s3"
 	"github.com/ivanzzeth/specula/internal/store/sqlite"
+	"github.com/ivanzzeth/specula/internal/version"
 	webui "github.com/ivanzzeth/specula/web"
 
 	// Public library surface — data plane is assembled from pkg/* (docs/LIBRARY.md).
@@ -78,6 +80,50 @@ const banner = `
 const shutdownTimeout = 10 * time.Second
 
 func main() {
+	// Subcommands (before daemon flag.Parse) so they work without a config file.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "integrate":
+			if err := runIntegrate(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula integrate: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "service":
+			if err := runService(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula service: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "bench":
+			if err := runBench(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula bench: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "stats":
+			if err := runStats(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula stats: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "login":
+			if err := runLogin(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula login: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "logout":
+			if err := runLogout(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula logout: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "version", "--version", "-V":
+			fmt.Println(version.String())
+			return
+		}
+	}
 	if err := run(); err != nil {
 		slog.Error("specula: fatal", "err", err)
 		os.Exit(1)
@@ -94,8 +140,12 @@ func run() error {
 	slog.SetDefault(log)
 
 	fmt.Fprint(os.Stdout, banner)
-	log.Info("specula: starting", "config", configPath,
-		"data_plane", cfg.Server.DataPlaneAddr, "control_plane", cfg.Server.ControlPlaneAddr)
+	log.Info("specula: starting",
+		"version", version.Version,
+		"commit", version.Commit,
+		"config", configPath,
+		"data_plane", cfg.Server.DataPlaneAddr,
+		"control_plane", cfg.Server.ControlPlaneAddr)
 
 	// Root context cancelled on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -212,11 +262,22 @@ func run() error {
 
 	chain := verify.NewChain(verifiers...)
 
-	// ── Cache manager: two-tier CAS + verify-on-write quarantine ─────────────
-	cm := cache.New(blobs, metaStore, chain)
-
 	// ── Stats collector (metadata-backed, powers /metrics + Admin API) ───────
 	collector := stats.NewCollectorWithStore(metaStore)
+
+	// ── Cache manager: two-tier CAS + verify-on-write quarantine ─────────────
+	cmOpts := []cache.Option{cache.WithLogger(log)}
+	if cfg.Cache.MaxBytes > 0 {
+		cmOpts = append(cmOpts,
+			cache.WithMaxBytes(cfg.Cache.MaxBytes),
+			cache.WithEvictHook(func(ctx context.Context, protocol string, size int64) {
+				_ = collector.RecordEvict(ctx, protocol, size)
+			}),
+		)
+		log.Info("specula: cache capacity limit enabled", "max_bytes", cfg.Cache.MaxBytes)
+	}
+	cm := cache.New(blobs, metaStore, chain, cmOpts...)
+
 	// Background refresh loop: periodically re-aggregates per-protocol usage into
 	// Prometheus gauges. Stops when ctx is cancelled (SIGINT/SIGTERM).
 	go collector.Run(ctx)
@@ -250,6 +311,12 @@ func run() error {
 	ctrlMux.HandleFunc("/healthz", healthz)
 	ctrlMux.HandleFunc("/readyz", readyz(ctx, blobs, metaStore))
 	ctrlMux.Handle("/metrics", promhttp.Handler())
+	// Live per-protocol throughput (bytes + duration). No auth — same trust
+	// posture as /metrics scrapes on the control plane.
+	ctrlMux.HandleFunc("/api/v1/traffic", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(metrics.SnapshotTraffic())
+	})
 
 	// Admin API (ARCHITECTURE §11): the concrete metadata store also implements
 	// the control-plane UserStore (shared users table), so a single value backs

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/auth"
+	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/org"
 )
 
@@ -167,23 +168,17 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 // ---- stats (admin) -----------------------------------------------------------
 
-// handleStats → GET /api/v1/admin/stats. Returns StatsResponse with per-protocol
-// capacity rows, grand totals, and the blob backend's disk footprint.
-func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
+// collectCacheStats builds the cache-capacity StatsResponse shared by the
+// admin dashboard and the CLI-oriented /api/v1/stats endpoint.
+func (s *Server) collectCacheStats(ctx context.Context) (StatsResponse, error) {
 	byProto, err := s.stats.ByProtocol(ctx)
 	if err != nil {
-		s.log.Error("admin: stats by protocol", "err", err)
-		writeError(w, http.StatusInternalServerError, "failed to retrieve stats")
-		return
+		return StatsResponse{}, err
 	}
 
 	total, err := s.stats.Total(ctx)
 	if err != nil {
-		s.log.Error("admin: stats total", "err", err)
-		writeError(w, http.StatusInternalServerError, "failed to retrieve stats")
-		return
+		return StatsResponse{}, err
 	}
 
 	var used int64
@@ -221,12 +216,40 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Protocol < rows[j].Protocol })
 
-	writeJSON(w, http.StatusOK, StatsResponse{
+	return StatsResponse{
 		PerProtocol:     rows,
 		TotalBytes:      total.Bytes,
 		TotalObjects:    total.Objects,
 		BackendDiskFree: free,
 		BackendDiskUsed: used,
+	}, nil
+}
+
+// handleStats → GET /api/v1/admin/stats. Returns StatsResponse with per-protocol
+// capacity rows, grand totals, and the blob backend's disk footprint.
+func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
+	resp, err := s.collectCacheStats(r.Context())
+	if err != nil {
+		s.log.Error("admin: stats", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve stats")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleInstanceStats → GET /api/v1/stats.
+// Cache occupancy + live traffic for CLI/automation. Accepts session JWT or
+// API key (Authorization: Bearer spck_…).
+func (s *Server) handleInstanceStats(w http.ResponseWriter, r *http.Request) {
+	cache, err := s.collectCacheStats(r.Context())
+	if err != nil {
+		s.log.Error("admin: instance stats", "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to retrieve stats")
+		return
+	}
+	writeJSON(w, http.StatusOK, InstanceStatsResponse{
+		Cache:   cache,
+		Traffic: metrics.SnapshotTraffic(),
 	})
 }
 

@@ -50,6 +50,13 @@ func TestValidate_Valid(t *testing.T) {
 	}
 }
 
+func TestValidate_MaxBytesNegative(t *testing.T) {
+	cfg := validCfg()
+	cfg.Cache.MaxBytes = -1
+	err := config.Validate(cfg)
+	assertValidationErr(t, err, "cache.max_bytes")
+}
+
 // TestValidate_UpstreamNameEmpty covers the
 // "protocols.<name>.upstreams[N].name: must not be empty" rule.
 func TestValidate_UpstreamNameEmpty(t *testing.T) {

@@ -48,6 +48,11 @@ type Options struct {
 	// If empty, Get() only serves cache hits (no fetch).
 	Upstreams map[string][]upstream.Upstream
 
+	// MaxBytes is the immutable-cache capacity ceiling (0 = unlimited).
+	// When exceeded after a Store/Get promote, oldest unpinned entries are
+	// evicted. See cache.WithMaxBytes.
+	MaxBytes int64
+
 	// Verifiers, when non-nil, replaces the default checksum+tofu chain.
 	Verifiers []verify.Verifier
 
@@ -134,7 +139,11 @@ func New(ctx context.Context, opts Options) (*Server, error) {
 		}
 	}
 	chain := verify.NewChain(verifiers...)
-	cm := cache.New(blobs, metaStore, chain)
+	cmOpts := []cache.Option{cache.WithLogger(log)}
+	if opts.MaxBytes > 0 {
+		cmOpts = append(cmOpts, cache.WithMaxBytes(opts.MaxBytes))
+	}
+	cm := cache.New(blobs, metaStore, chain, cmOpts...)
 
 	return &Server{
 		opts:          opts,

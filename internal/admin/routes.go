@@ -89,6 +89,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// other endpoint disagreed.
 	mux.Handle("GET /api/v1/me", requireSubject(s.handleMe))
 
+	// Instance stats for CLI (cache + traffic). Any API key or session works;
+	// admin-only /admin/stats remains the WebUI capacity endpoint.
+	mux.Handle("GET /api/v1/stats", requireSubject(s.handleInstanceStats))
+
 	// Keys (org-scoped, any authenticated principal).
 	mux.Handle("POST /api/v1/keys", requireSubject(s.handleCreateKey))
 	mux.Handle("GET /api/v1/keys", requireSubject(s.handleListKeys))

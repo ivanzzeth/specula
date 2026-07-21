@@ -132,6 +132,11 @@ func Validate(cfg *Config) error {
 			cfg.Cache.NegativeTTLSeconds)
 	}
 
+	// max_bytes: must be >= 0 (0 = unlimited).
+	if cfg.Cache.MaxBytes < 0 {
+		add("cache.max_bytes: must be >= 0 (0 = unlimited); got %d", cfg.Cache.MaxBytes)
+	}
+
 	// ── Protocols ─────────────────────────────────────────────────────────
 	for name, proto := range cfg.Protocols {
 		if len(proto.Upstreams) == 0 {

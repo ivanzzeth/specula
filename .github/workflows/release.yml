@@ -1,0 +1,196 @@
+# Release Specula binaries and container image when a version tag is pushed (e.g. v0.4.0).
+# Version identity is the git tag, injected via -ldflags into internal/version.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build WebUI
+        run: |
+          cd web
+          npm ci
+          npm run build
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "version=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "Building Specula ${TAG}"
+
+      - name: Cross-compile binaries
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          COMMIT: ${{ steps.ver.outputs.commit }}
+          DATE: ${{ steps.ver.outputs.date }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          VERSION_PKG=github.com/ivanzzeth/specula/internal/version
+          LDFLAGS="-s -w -X ${VERSION_PKG}.Version=${VERSION} -X ${VERSION_PKG}.Commit=${COMMIT} -X ${VERSION_PKG}.BuildDate=${DATE}"
+          mkdir -p dist
+          targets=(
+            "linux amd64"
+            "linux arm64"
+            "darwin amd64"
+            "darwin arm64"
+            "windows amd64"
+          )
+          for pair in "${targets[@]}"; do
+            set -- $pair
+            GOOS=$1 GOARCH=$2
+            ext=""
+            if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
+            out="dist/specula_${VERSION}_${GOOS}_${GOARCH}${ext}"
+            echo "==> $out"
+            GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags "$LDFLAGS" -o "$out" ./cmd/specula
+          done
+          # Sanity: linux/amd64 reports the tag.
+          chmod +x dist/specula_${VERSION}_linux_amd64
+          got="$(dist/specula_${VERSION}_linux_amd64 version)"
+          echo "version output: $got"
+          echo "$got" | grep -F "$VERSION"
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum specula_* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: Specula ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          append_body: true
+          body: |
+            ### Container image
+            ```
+            docker pull ivanzz/specula:${{ steps.ver.outputs.version }}
+            ```
+            Multi-arch (`linux/amd64`, `linux/arm64`) — published when Docker Hub secrets are configured.
+          files: |
+            dist/specula_*
+            dist/SHA256SUMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  image:
+    name: Build, smoke & publish image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "version=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          # latest only for stable vX.Y.Z (no -rc / -beta / -alpha suffix)
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          fi
+          tags="ivanzz/specula:${TAG}"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            tags="${tags}"$'\n'"ivanzz/specula:latest"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "$tags"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (linux/amd64) for smoke
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          platforms: linux/amd64
+          tags: |
+            specula:${{ steps.ver.outputs.version }}
+            specula:local
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+            COMMIT=${{ steps.ver.outputs.commit }}
+            DATE=${{ steps.ver.outputs.date }}
+
+      - name: Hosted OCI smoke (push product image into ephemeral Specula)
+        env:
+          IMAGE: specula:${{ steps.ver.outputs.version }}
+          HOSTED_TAG: ${{ steps.ver.outputs.version }}
+        run: bash scripts/publish-image-smoke.sh
+
+      - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push multi-arch to Docker Hub
+        if: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.ver.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.ver.outputs.version }}
+            COMMIT=${{ steps.ver.outputs.commit }}
+            DATE=${{ steps.ver.outputs.date }}
+
+      - name: Skip Docker Hub push (secrets not configured)
+        if: ${{ secrets.DOCKERHUB_TOKEN == '' }}
+        run: |
+          echo "DOCKERHUB_TOKEN not set — smoke passed; skipping Hub push."
+          echo "Add DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repo secrets to enable."

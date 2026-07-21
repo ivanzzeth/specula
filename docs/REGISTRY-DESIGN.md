@@ -67,6 +67,9 @@ system role：`''|viewer|editor|admin`（跨 org 隐式只读 viewer）。
 - 格式 `spck_`+base64url(18B)；**仅存 SHA-256**；明文仅创建时返回一次。
 - 绑定 `org_id`(+可选 `user_id`)；`LookupSubject(token)→(orgID, subject="apikey:<id>", ok)`。
 - 用户自建：`POST /api/v1/keys`（needOrgRole editor），`GET/DELETE`。WebUI Settings 页创建。
+- **CLI 凭证**：同一 `spck_` key 经 `specula login` 写入 `~/.config/specula/credentials.json`
+  （或 `SPECULA_TOKEN`），供 `specula stats` 调 `GET /api/v1/stats`（`Authorization: Bearer`）。
+  优先级：`--token`/`--addr` > 环境变量 > 凭证文件。详见 README「CLI API key」。
 - **Registry 用途扩展**：key 作为 `docker login` 的密码；其 org 决定可访问的 hosted repo。
 - **per-key scope（build-fresh）**：ai-sandbox 无 scope（key=org-admin-in-org）。Registry 需 `pull`/`push`
   粒度 → apikey 增可选 `scopes` 列（默认 push+pull within org）；MVP 可先用"org 成员即可 push"。

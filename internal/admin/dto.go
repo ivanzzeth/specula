@@ -8,7 +8,11 @@
 // the source of truth the WebUI codes against; keep them stable.
 package admin
 
-import "time"
+import (
+	"time"
+
+	"github.com/ivanzzeth/specula/internal/metrics"
+)
 
 // ---- capacity statistics (GET /api/v1/admin/stats) ---------------------------
 
@@ -41,6 +45,13 @@ type StatsResponse struct {
 	TotalObjects    int64          `json:"total_objects"`
 	BackendDiskFree int64          `json:"backend_disk_free"`
 	BackendDiskUsed int64          `json:"backend_disk_used"`
+}
+
+// InstanceStatsResponse is GET /api/v1/stats: cache occupancy plus live traffic.
+// Authenticated via PrincipalMiddleware (session JWT or API key Bearer).
+type InstanceStatsResponse struct {
+	Cache   StatsResponse           `json:"cache"`
+	Traffic metrics.TrafficSnapshot `json:"traffic"`
 }
 
 // ---- time-series (GET /api/v1/admin/stats/series) ----------------------------

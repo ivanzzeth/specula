@@ -4,6 +4,7 @@ package cache
 import (
 	"context"
 	"io"
+	"log/slog"
 
 	intcache "github.com/ivanzzeth/specula/internal/cache"
 
@@ -18,13 +19,25 @@ type (
 	EntryServer      = intcache.EntryServer
 	VerifyError      = intcache.VerifyError
 	PinMismatchError = intcache.PinMismatchError
+	Option           = intcache.Option
 )
 
 var ErrCacheMiss = intcache.ErrCacheMiss
 
 // New constructs a CacheManager wiring CAS blob store, metadata, and verify chain.
-func New(blobs blob.BlobStore, metaStore meta.MetadataStore, chain *verify.Chain) CacheManager {
-	return intcache.New(blobs, metaStore, chain)
+func New(blobs blob.BlobStore, metaStore meta.MetadataStore, chain *verify.Chain, opts ...Option) CacheManager {
+	return intcache.New(blobs, metaStore, chain, opts...)
+}
+
+// WithMaxBytes sets the immutable-cache capacity ceiling in bytes (0 = unlimited).
+func WithMaxBytes(n int64) Option { return intcache.WithMaxBytes(n) }
+
+// WithLogger sets the structured logger used for capacity-eviction messages.
+func WithLogger(l *slog.Logger) Option { return intcache.WithLogger(l) }
+
+// WithEvictHook registers a callback invoked after each successful eviction.
+func WithEvictHook(fn func(ctx context.Context, protocol string, size int64)) Option {
+	return intcache.WithEvictHook(fn)
 }
 
 // Quarantine streams r into a temp file under dir, computing sha256 while writing.

@@ -442,6 +442,8 @@ graph TB
   in httpOnly + SameSite=Lax + Secure(HTTPS) cookie；`token_gen` 快照入 claims → logout 服务端 bump 撤销所有会话。
 - **中间件双通道**：Bearer API key（`spck_` 前缀）→ 本地 session（JWT cookie/Bearer）。cookie+改状态+跨源 → 403。
   （无独立 admin-key 破窗通道：静态密钥旁路会绕过多租户 RBAC、`token_gen` 撤销与按用户审计；恢复走首用户引导/运维层，见 PRD §G6。）
+  CLI 把同一 `spck_` key 存到 `~/.config/specula/credentials.json`（`specula login`），供 `specula stats` 调
+  `GET /api/v1/stats`；也可用 `SPECULA_TOKEN` / `SPECULA_ADDR` 覆盖。
 - **WebUI**：React18 + Vite + Tailwind"工程控制台"暗色（IBM Plex Mono + 琥珀 #ffb02e + 发丝线 + 近直角）。
   页面：缓存统计仪表盘、验签/告警、策略配置、上游健康、GC 操作、用户管理。
 - **构建**：Makefile `ui` 先 `vite build`→`web/dist`，再 `go build` 嵌入；`web/dist/.gitkeep` 让裸 clone 可编译。

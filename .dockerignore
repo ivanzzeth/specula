@@ -1,0 +1,26 @@
+# Keep the build context small and free of local secrets / runtime state.
+.git
+.github
+.bin
+bin
+data
+var
+*.db
+*.db-shm
+*.db-wal
+specula.yaml
+**/node_modules
+web/dist
+web/node_modules
+results
+coverage.out
+*.test
+.cursor
+agent-transcripts
+**/__pycache__
+*.md
+!README.md
+docs
+scripts
+test
+contrib/systemd

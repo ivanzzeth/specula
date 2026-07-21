@@ -25,7 +25,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
@@ -107,20 +109,66 @@ type manager struct {
 	chain     *verify.Chain
 	coalescer coalesce.Coalescer
 
+	// maxBytes is the hard ceiling on SUM(cache_entries.size). 0 = unlimited.
+	maxBytes int64
+	// evictMu serialises capacity enforcement so concurrent Stores do not
+	// over-evict under a stampede of promotions.
+	evictMu sync.Mutex
+	log     *slog.Logger
+	// onEvict is an optional hook (e.g. stats.RecordEvict) fired after each
+	// successful entry eviction. Failures from the hook are ignored.
+	onEvict func(ctx context.Context, protocol string, size int64)
+
 	// verifyFn is an internal test hook that replaces chain.Verify.
 	// Production code never sets this field.
 	verifyFn func(context.Context, artifact.ArtifactRef, *artifact.Artifact) (artifact.Result, error)
 }
 
+// Option configures optional CacheManager behaviour.
+type Option func(*manager)
+
+// WithMaxBytes sets the immutable-cache capacity ceiling in bytes.
+// 0 (default) means unlimited. When a Store pushes total usage above this
+// value, the oldest unpinned entries are evicted until usage is at or below
+// the ceiling (or no more unpinned candidates remain).
+func WithMaxBytes(n int64) Option {
+	return func(m *manager) {
+		if n < 0 {
+			n = 0
+		}
+		m.maxBytes = n
+	}
+}
+
+// WithLogger sets the structured logger used for capacity-eviction messages.
+func WithLogger(l *slog.Logger) Option {
+	return func(m *manager) {
+		if l != nil {
+			m.log = l
+		}
+	}
+}
+
+// WithEvictHook registers a callback invoked after each successful eviction
+// (meta deleted). Used to keep Prometheus capacity gauges current.
+func WithEvictHook(fn func(ctx context.Context, protocol string, size int64)) Option {
+	return func(m *manager) { m.onEvict = fn }
+}
+
 // New constructs the default CacheManager wiring the CAS BlobStore, the
 // MetadataStore, and the verification Chain.
-func New(blobs blob.BlobStore, metaStore meta.MetadataStore, chain *verify.Chain) CacheManager {
-	return &manager{
+func New(blobs blob.BlobStore, metaStore meta.MetadataStore, chain *verify.Chain, opts ...Option) CacheManager {
+	m := &manager{
 		blobs:     blobs,
 		meta:      metaStore,
 		chain:     chain,
 		coalescer: coalesce.NewLocalCoalescer(),
+		log:       slog.Default(),
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // Compile-time assertions. The EntryServer assertion matters: handlers reach
@@ -356,6 +404,13 @@ func (m *manager) storeOnce(ctx context.Context, ref artifact.ArtifactRef, art *
 		if err := m.meta.PutMutable(ctx, me); err != nil {
 			return nil, fmt.Errorf("cache: mutable meta put: %w", err)
 		}
+	}
+
+	// 4. Capacity enforcement: may evict older unpinned entries so total usage
+	// stays at or below maxBytes. Failures are logged but do not fail Store —
+	// the just-promoted artifact is already verified and must remain servable.
+	if err := m.enforceCapacity(ctx, entry.Ref); err != nil {
+		m.log.Warn("cache: capacity enforcement", "err", err, "max_bytes", m.maxBytes)
 	}
 
 	return &entry, nil

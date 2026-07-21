@@ -365,7 +365,9 @@ registry —— **注册不得依赖于构造某个对象或某次请求**（`sp
 | `specula_cache_hits_total` / `_misses_total` | counter | `protocol` |
 | `specula_cache_bytes` | gauge | `protocol`（total = `sum()`）【新】 |
 | `specula_cache_objects` | gauge | `protocol`【新】 |
-| `specula_upstream_latency_seconds` | histogram | `protocol, upstream` |
+| `specula_upstream_latency_seconds` | histogram | `protocol, upstream` | TTFB only |
+| `specula_response_bytes_total` | counter | `protocol` | body bytes to clients |
+| `specula_request_duration_seconds` | histogram | `protocol` | e2e request time incl. body |
 | `specula_verification_total` | counter | `protocol, check, tier, result`（tier=signed/consensus/tofu/checksum）【改】 |
 | `specula_upstream_blocked` | **gauge** | `protocol, upstream`（auto-block 状态）【新】 |
 

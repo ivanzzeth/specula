@@ -249,6 +249,8 @@ func TestMiddlewareCountsRequestAndFlushesOutcome(t *testing.T) {
 
 	assert.Equal(t, hitsBefore+1, testutil.ToFloat64(CacheHitsTotal.WithLabelValues("oci")))
 	assert.Equal(t, reqBefore+1, testutil.ToFloat64(RequestsTotal.WithLabelValues("oci", "GET", "200")))
+	assert.Equal(t, "oci", resp.Header.Get("X-Specula-Protocol"))
+	assert.Contains(t, resp.Header.Get("Via"), "specula")
 }
 
 // TestMiddlewareUnmarkedRequestMovesNeitherCounter proves the hit/miss

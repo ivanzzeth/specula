@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -147,6 +148,7 @@ type fakeMetaStore struct {
 	mu      sync.Mutex
 	entries map[string]*artifact.CacheEntry   // keyed by entryKey (protocol:name:version)
 	mutable map[string]*artifact.MutableEntry // keyed by mutableKey
+	pinned  map[string]bool                   // keyed by entryKey
 	log     *callLog
 	putErr  error
 }
@@ -155,6 +157,7 @@ func newFakeMeta(log *callLog) *fakeMetaStore {
 	return &fakeMetaStore{
 		entries: make(map[string]*artifact.CacheEntry),
 		mutable: make(map[string]*artifact.MutableEntry),
+		pinned:  make(map[string]bool),
 		log:     log,
 	}
 }
@@ -189,7 +192,9 @@ func (f *fakeMetaStore) Put(_ context.Context, entry artifact.CacheEntry) error 
 func (f *fakeMetaStore) Delete(_ context.Context, ref artifact.ArtifactRef) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	delete(f.entries, entryKey(ref))
+	k := entryKey(ref)
+	delete(f.entries, k)
+	delete(f.pinned, k)
 	return nil
 }
 
@@ -225,13 +230,86 @@ func (f *fakeMetaStore) DeleteMutable(_ context.Context, key string) error {
 	return nil
 }
 
-// ListEntries / SetPinned are part of meta.MetadataStore but unused by the
-// cache read/write path; stubbed to satisfy the interface.
-func (f *fakeMetaStore) ListEntries(_ context.Context, _ string, _ meta.EntryFilter, _ meta.Page) (meta.EntryPage, error) {
-	return meta.EntryPage{}, nil
+// ListEntries / SetPinned implement enough of meta.MetadataStore for capacity
+// eviction tests (oldest-unpinned ordering + pin filter).
+func (f *fakeMetaStore) ListEntries(_ context.Context, protocol string, filter meta.EntryFilter, page meta.Page) (meta.EntryPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	page = page.Normalize()
+
+	var all []meta.Entry
+	for k, e := range f.entries {
+		if protocol != "" && e.Protocol != protocol {
+			continue
+		}
+		if filter.Pinned != nil && f.pinned[k] != *filter.Pinned {
+			continue
+		}
+		if filter.NameContains != "" && !strings.Contains(e.Ref.Name, filter.NameContains) {
+			continue
+		}
+		if filter.Tier != nil && e.Tier != *filter.Tier {
+			continue
+		}
+		if filter.Upstream != "" && e.Upstream != filter.Upstream {
+			continue
+		}
+		cp := *e
+		all = append(all, meta.Entry{CacheEntry: cp, Pinned: f.pinned[k]})
+	}
+
+	switch page.Sort {
+	case meta.SortSize:
+		sort.Slice(all, func(i, j int) bool {
+			if page.Desc {
+				return all[i].Size > all[j].Size
+			}
+			return all[i].Size < all[j].Size
+		})
+	case meta.SortName:
+		sort.Slice(all, func(i, j int) bool {
+			if page.Desc {
+				return all[i].Ref.Name > all[j].Ref.Name
+			}
+			return all[i].Ref.Name < all[j].Ref.Name
+		})
+	default: // created_at / verified_at
+		sort.Slice(all, func(i, j int) bool {
+			ai, aj := all[i].CreatedAt, all[j].CreatedAt
+			if page.Sort == meta.SortVerifiedAt {
+				ai, aj = all[i].VerifiedAt, all[j].VerifiedAt
+			}
+			if page.Desc {
+				return ai.After(aj)
+			}
+			return ai.Before(aj)
+		})
+	}
+
+	total := int64(len(all))
+	if page.Offset >= len(all) {
+		return meta.EntryPage{Entries: nil, Total: total, Limit: page.Limit, Offset: page.Offset}, nil
+	}
+	end := page.Offset + page.Limit
+	if end > len(all) {
+		end = len(all)
+	}
+	return meta.EntryPage{
+		Entries: all[page.Offset:end],
+		Total:   total,
+		Limit:   page.Limit,
+		Offset:  page.Offset,
+	}, nil
 }
 
-func (f *fakeMetaStore) SetPinned(_ context.Context, _ artifact.ArtifactRef, _ bool) error {
+func (f *fakeMetaStore) SetPinned(_ context.Context, ref artifact.ArtifactRef, pinned bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := entryKey(ref)
+	if _, ok := f.entries[k]; !ok {
+		return nil
+	}
+	f.pinned[k] = pinned
 	return nil
 }
 

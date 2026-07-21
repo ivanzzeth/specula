@@ -119,6 +119,13 @@ type CacheConfig struct {
 	// 0 disables negative caching; positive values are seconds.
 	// Default matches Artifactory's 1800s (30 min) to absorb miss stampedes.
 	NegativeTTLSeconds int64 `koanf:"negative_ttl_seconds"`
+
+	// MaxBytes is the hard ceiling on total immutable cache size
+	// (SUM of cache_entries.size across all protocols). 0 = unlimited
+	// (default). When exceeded after a Store, Specula evicts the oldest
+	// unpinned entries (and their CAS blobs) until usage is at or below
+	// MaxBytes. Pinned entries are never evicted.
+	MaxBytes int64 `koanf:"max_bytes"`
 }
 
 // AuthConfig configures control-plane authentication (ARCHITECTURE §11).

@@ -73,6 +73,15 @@ cache:
   # Matches Artifactory default (1800s) to absorb miss-stampedes.
   negative_ttl_seconds: 1800
 
+  # Hard ceiling on total immutable cache bytes (SUM of verified CAS entries).
+  # 0 = unlimited (default). When a Store would push usage above this, Specula
+  # evicts the oldest unpinned entries (meta + blob) until under the limit.
+  # Pinned entries (Admin API / WebUI) are never evicted. A single artifact
+  # larger than max_bytes is still stored; the cache may remain over-cap until
+  # enough other entries become evictable.
+  # Example: 10737418240  # 10 GiB
+  max_bytes: 0
+
 # ── Auth (control plane) ──────────────────────────────────────────────────────
 auth:
   # AES-256-GCM master key for the encrypted runtime-settings store: base64 of
@@ -313,8 +322,10 @@ protocols:
         official: true
 
     verification:
-      tiers: [consensus, tofu, checksum]
-      quorum: 2
+      # tarball upstreams rarely advertise digests for cross-mirror consensus —
+      # prefer tofu (immutable pin) unless you configure multiple digest-capable mirrors.
+      tiers: [tofu, checksum]
+      quorum: 1
       tofu: enforce   # tarball content is immutable once cached; pin its digest
 
   # ── git ───────────────────────────────────────────────────────────────────

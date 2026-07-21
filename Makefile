@@ -1,17 +1,32 @@
 # Specula — build & test orchestration
 BINARY := specula
 PKG := ./cmd/specula
+VERSION_PKG := github.com/ivanzzeth/specula/internal/version
+
+# Version identity comes from git tags (exact tag on a release commit, else describe).
+VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w \
+	-X $(VERSION_PKG).Version=$(VERSION) \
+	-X $(VERSION_PKG).Commit=$(COMMIT) \
+	-X $(VERSION_PKG).BuildDate=$(DATE)
 
 # Ship builds are pure-Go/static: sqlite uses the modernc pure-Go driver, so CGO is off by
 # default for reproducible static/cross builds. test-unit overrides this to 1 — see there.
 export CGO_ENABLED := 0
 
-.PHONY: all ui build build-go run clean vet fmt cover \
+.PHONY: all ui build build-go run clean vet fmt cover install bench \
+        image image-smoke \
         test test-unit test-integration test-postgres test-conformance \
         test-trust-oracle test-trust-oracle-mutations test-trust-oracle-signed \
         test-groundtruth test-groundtruth-meta \
         test-mutation \
         test-realclient test-e2e test-ui test-all
+
+# Container image (Docker Hub: ivanzz/specula)
+IMAGE_NAME ?= specula
+IMAGE_REPO ?= ivanzz/specula
 
 all: build
 
@@ -23,11 +38,33 @@ ui:
 
 ## build: WebUI + the single static binary with the WebUI embedded (needs: node + npm)
 build: ui
-	go build -o bin/$(BINARY) $(PKG)
+	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) $(PKG)
 
 ## build-go: only the Go binary; assumes web/dist already exists (needs: nothing)
 build-go:
-	go build -o bin/$(BINARY) $(PKG)
+	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) $(PKG)
+
+## bench: throughput table against a running data plane (needs: daemon on --addr)
+bench: build-go
+	./bin/$(BINARY) bench --addr http://127.0.0.1:7732
+
+## install: build-go then install systemd service (needs: root for service install)
+install: build-go
+	sudo ./bin/$(BINARY) service install --example specula.example.yaml
+
+## image: build the Specula container image (needs: docker; node+go inside Dockerfile)
+image:
+	docker build \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg DATE="$(DATE)" \
+		-t "$(IMAGE_NAME):$(VERSION)" \
+		-t "$(IMAGE_NAME):local" \
+		.
+
+## image-smoke: build image, push to ephemeral Specula hosted OCI, pull back (needs: docker)
+image-smoke: image
+	IMAGE="$(IMAGE_NAME):$(VERSION)" HOSTED_TAG="$(VERSION)" bash scripts/publish-image-smoke.sh
 
 ## vet: go vet over everything, including the tagged suites (needs: nothing)
 # The tagged files are invisible to a bare `go vet ./...`, so vet them explicitly —

@@ -1197,6 +1197,47 @@ func TestHandleStats(t *testing.T) {
 	assert.Equal(t, int64(2048), resp.PerProtocol[0].Bytes)
 }
 
+func TestHandleInstanceStats(t *testing.T) {
+	h, orgStore, _ := newHarnessWithMT(t)
+	adminUser, adminTok := h.mustCreateAdmin(t)
+	_ = orgStore.CreateOrg(context.Background(), &org.Org{
+		ID: org.DefaultOrgID, Name: org.DefaultOrgName, Slug: org.DefaultOrgSlug,
+		Status: org.StatusActive,
+	})
+	_ = orgStore.AddOrgMember(context.Background(), &org.Member{
+		OrgID: org.DefaultOrgID, Email: adminUser.Email, Role: org.RoleOwner,
+	})
+
+	t.Run("session jwt", func(t *testing.T) {
+		rr := h.do("GET", "/api/v1/stats", adminTok, nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		var resp InstanceStatsResponse
+		decodeJSON(t, rr, &resp)
+		assert.Equal(t, int64(2048), resp.Cache.TotalBytes)
+		assert.NotNil(t, resp.Traffic.Protocols)
+	})
+
+	t.Run("api key bearer", func(t *testing.T) {
+		createRR := h.do("POST", "/api/v1/keys", adminTok, jsonBody(CreateKeyRequest{Label: "stats-cli"}))
+		require.Equal(t, http.StatusCreated, createRR.Code)
+		var key KeyDTO
+		decodeJSON(t, createRR, &key)
+		require.NotEmpty(t, key.RawKey)
+
+		rr := h.doWithBearer("GET", "/api/v1/stats", key.RawKey, nil)
+		assert.Equal(t, http.StatusOK, rr.Code)
+		var resp InstanceStatsResponse
+		decodeJSON(t, rr, &resp)
+		assert.Equal(t, int64(2048), resp.Cache.TotalBytes)
+		assert.Equal(t, int64(999), resp.Cache.BackendDiskUsed)
+	})
+
+	t.Run("anonymous rejected", func(t *testing.T) {
+		rr := h.do("GET", "/api/v1/stats", "", nil)
+		assert.Equal(t, http.StatusUnauthorized, rr.Code)
+	})
+}
+
 func TestHandleStatsSeries(t *testing.T) {
 	h := newHarness(t)
 	_, tok := h.mustCreateAdmin(t)
