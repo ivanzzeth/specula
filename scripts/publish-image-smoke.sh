@@ -90,6 +90,13 @@ rm -f /tmp/specula-image-ver.$$
 step "building ephemeral Specula daemon"
 mkdir -p "${WORK}/blobs"
 if [ -z "${SKIP_BUILD_DAEMON:-}" ]; then
+  if [ ! -f "$REPO/web/dist/index.html" ]; then
+    step "building WebUI (web/dist missing — required for //go:embed)"
+    if [ ! -d "$REPO/web/node_modules" ]; then
+      (cd "$REPO/web" && npm ci)
+    fi
+    (cd "$REPO/web" && npm run build)
+  fi
   go -C "$REPO" build -o "${WORK}/specula" ./cmd/specula
 fi
 [ -x "${WORK}/specula" ] || fail "missing ${WORK}/specula"
