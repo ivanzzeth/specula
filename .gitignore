@@ -22,6 +22,9 @@
 /web/dist/*
 !/web/dist/.gitkeep
 
+# Helm dependency packages (run: helm dependency update deploy/helm/specula)
+/deploy/helm/specula/charts/
+
 # OCI conformance suite run artifacts (scripts/oci-conformance.sh writes these
 # under $WORK; this guards against the binary being run from the repo root).
 /results/

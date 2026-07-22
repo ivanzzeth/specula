@@ -8,6 +8,7 @@ import (
 	intgomod "github.com/ivanzzeth/specula/internal/handler/gomod"
 
 	"github.com/ivanzzeth/specula/pkg/cache"
+	"github.com/ivanzzeth/specula/pkg/coalesce"
 	"github.com/ivanzzeth/specula/pkg/store/meta"
 	"github.com/ivanzzeth/specula/pkg/upstream"
 	"github.com/ivanzzeth/specula/pkg/verify"
@@ -34,6 +35,7 @@ func WithPathPrefix(prefix string) Option { return intgomod.WithPathPrefix(prefi
 func WithMutableTTL(secs int64) Option    { return intgomod.WithMutableTTL(secs) }
 func WithQuarantineDir(dir string) Option { return intgomod.WithQuarantineDir(dir) }
 func WithLogger(l *slog.Logger) Option    { return intgomod.WithLogger(l) }
+func WithLocker(l coalesce.Locker) Option { return intgomod.WithLocker(l) }
 
 // NewSumDBHandler constructs the /sumdb/ passthrough handler.
 func NewSumDBHandler(upstreamURL string, opts ...SumDBOption) *SumDBHandler {

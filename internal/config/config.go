@@ -36,6 +36,7 @@ type Config struct {
 	Server    ServerConfig              `koanf:"server"`
 	Storage   StorageConfig             `koanf:"storage"`
 	Cache     CacheConfig               `koanf:"cache"`
+	Coalesce  CoalesceConfig            `koanf:"coalesce"`
 	Auth      AuthConfig                `koanf:"auth"`
 	Protocols map[string]ProtocolConfig `koanf:"protocols"`
 }
@@ -61,6 +62,34 @@ type ServerConfig struct {
 	// for a local single-binary run and wrong the moment a proxy is involved.
 	// Set it explicitly for any real deployment. Example: "registry.example.com"
 	RegistryPublicHost string `koanf:"registry_public_host"`
+
+	// HA enables multi-replica mode checks: meta must be postgres, coalesce
+	// lock_driver must be redis (cross-replica stampede lock via redsync), and
+	// CAS must be shared — blob.driver=s3 (any S3-compatible endpoint) OR
+	// blob.driver=local with local.shared=true (PVC/NFS). Production does not
+	// require MinIO/AWS specifically.
+	HA bool `koanf:"ha"`
+}
+
+// CoalesceConfig selects the cross-instance stampede lock backend
+// (ARCHITECTURE §7 tier 2). Empty lock_driver means in-process only (nil
+// Locker): same-replica singleflight still applies. HA requires "redis".
+type CoalesceConfig struct {
+	// LockDriver is "local" (nil / in-process only), "redis" (redsync), or "" (same as local).
+	LockDriver string      `koanf:"lock_driver"`
+	Redis      RedisConfig `koanf:"redis"`
+}
+
+// RedisConfig configures the go-redis client used by redsync (HA stampede lock).
+type RedisConfig struct {
+	// Addr is host:port (required when lock_driver=redis).
+	Addr string `koanf:"addr"`
+	// Password is optional.
+	Password string `koanf:"password"`
+	// DB is the Redis logical database index.
+	DB int `koanf:"db"`
+	// KeyPrefix is prepended to lock keys. Empty defaults to "specula:lock:".
+	KeyPrefix string `koanf:"key_prefix"`
 }
 
 // StorageConfig selects the blob (CAS) and metadata backends.
@@ -84,6 +113,11 @@ type LocalBlobConfig struct {
 	// Root is the directory where blobs are stored in a content-addressed
 	// layout (first two hex chars of digest as subdir).
 	Root string `koanf:"root"`
+	// Shared must be true when server.ha is set and blob.driver is local: the
+	// root must be a multi-replica shared volume (PVC/NFS), not per-pod emptyDir.
+	// Specula cannot prove the mount is shared; this is the operator attestation
+	// that chart/values enforce.
+	Shared bool `koanf:"shared"`
 }
 
 // S3BlobConfig configures the S3-compatible CAS driver.

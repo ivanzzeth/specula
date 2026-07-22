@@ -1,0 +1,17 @@
+{{- if and (eq .Values.blob.driver "local") .Values.blob.local.shared (not .Values.blob.local.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "specula.blob.pvcName" . }}
+  labels:
+    {{- include "specula.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.blob.local.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.blob.local.size | quote }}
+  {{- if .Values.blob.local.storageClass }}
+  storageClassName: {{ .Values.blob.local.storageClass | quote }}
+  {{- end }}
+{{- end }}

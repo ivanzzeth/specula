@@ -1,0 +1,123 @@
+# Default values for Specula HA.
+# Bitnami subcharts (postgresql, redis, minio) are configured under their own keys.
+
+replicaCount: 3
+
+image:
+  repository: ivanzz/specula
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+# Kubernetes service-link env vars ({SVCNAME}_SERVICE_HOST, etc.) for any
+# "specula-*" service collide with Specula's SPECULA_ config env prefix and
+# crash the strict config loader. Keep disabled unless you know you need them.
+enableServiceLinks: false
+
+podAnnotations: {}
+podLabels: {}
+
+resources: {}
+
+# Horizontal Pod Autoscaler (metrics-server required). When enabled, Deployment
+# omits replicas — HPA owns the replica count between min/max.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 0
+  behavior: {}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+service:
+  type: ClusterIP
+  dataPort: 7732
+  controlPort: 7733
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: specula.local
+      paths:
+        - path: /
+          pathType: Prefix
+          port: control
+  tls: []
+
+# auth.configSecret must be base64 of exactly 32 raw bytes (openssl rand -base64 32).
+# Required for HA: encrypted runtime settings and shared JWT across replicas.
+auth:
+  configSecret: ""
+  jwtSecret: ""
+  cookieSecure: false
+
+# Blob storage: "s3" (MinIO subchart or external S3-compatible) OR "local" with shared PVC.
+blob:
+  driver: s3
+  local:
+    root: /var/lib/specula/blobs
+    shared: false
+    # When shared=true, mount an RWX PVC at blob.local.root (ReadWriteMany / NFS).
+    existingClaim: ""
+    storageClass: ""
+    size: 50Gi
+    accessModes:
+      - ReadWriteMany
+  s3:
+    bucket: specula-blobs
+    # Empty + minio.enabled → in-cluster MinIO service URL.
+    endpoint: ""
+    region: us-east-1
+    usePathStyle: true
+    # When set, read access_key_id and secret_access_key from this secret.
+    existingSecret: ""
+    accessKeySecretKey: access-key-id
+    secretKeySecretKey: secret-access-key
+
+cache:
+  defaultMutableTTLSeconds: 300
+  negativeTTLSeconds: 1800
+  maxBytes: 0
+
+# ── Bitnami PostgreSQL (metadata store) ───────────────────────────────────────
+postgresql:
+  enabled: true
+  auth:
+    username: specula
+    password: ""
+    database: specula
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+# ── Bitnami Redis (redsync stampede lock) ─────────────────────────────────────
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 2Gi
+
+# ── Bitnami MinIO (optional in-cluster S3; disable for external object store) ─
+minio:
+  enabled: true
+  auth:
+    rootUser: minioadmin
+    rootPassword: minioadmin
+  defaultBuckets: specula-blobs
+  persistence:
+    enabled: true
+    size: 20Gi

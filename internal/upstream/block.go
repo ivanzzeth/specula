@@ -1,6 +1,7 @@
 package upstream
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -15,6 +16,20 @@ const (
 	defaultBlockDuration = 30 * time.Second
 )
 
+// BlockState is persisted auto-block circuit breaker state for one upstream mirror.
+type BlockState struct {
+	Failures     int
+	BlockedUntil time.Time // zero when not blocked
+}
+
+// BlockPersister stores auto-block state keyed by upstream mirror name within one
+// protocol namespace. When nil on a blockTracker, state stays in-memory.
+type BlockPersister interface {
+	Load(ctx context.Context, upstream string) (BlockState, error)
+	Save(ctx context.Context, upstream string, state BlockState) error
+	Delete(ctx context.Context, upstream string) error
+}
+
 // blockTracker counts consecutive transient failures per upstream name and
 // temporarily blocks upstreams that exceed the failure threshold.
 // All methods are safe for concurrent use.
@@ -22,6 +37,7 @@ type blockTracker struct {
 	mu           sync.Mutex
 	failures     map[string]int
 	blockedUntil map[string]time.Time
+	persister    BlockPersister
 	maxFailures  int
 	blockDur     time.Duration
 }
@@ -31,9 +47,14 @@ func newBlockTracker() *blockTracker {
 }
 
 func newBlockTrackerWith(maxFailures int, blockDur time.Duration) *blockTracker {
+	return newBlockTrackerWithPersister(nil, maxFailures, blockDur)
+}
+
+func newBlockTrackerWithPersister(persister BlockPersister, maxFailures int, blockDur time.Duration) *blockTracker {
 	return &blockTracker{
 		failures:     make(map[string]int),
 		blockedUntil: make(map[string]time.Time),
+		persister:    persister,
 		maxFailures:  maxFailures,
 		blockDur:     blockDur,
 	}
@@ -45,6 +66,9 @@ func newBlockTrackerWith(maxFailures int, blockDur time.Duration) *blockTracker 
 func (b *blockTracker) isBlocked(name string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.persister != nil {
+		return b.isBlockedPersisted(name)
+	}
 	until, ok := b.blockedUntil[name]
 	if !ok {
 		return false
@@ -58,12 +82,28 @@ func (b *blockTracker) isBlocked(name string) bool {
 	return false
 }
 
+func (b *blockTracker) isBlockedPersisted(name string) bool {
+	ctx := context.Background()
+	st, err := b.persister.Load(ctx, name)
+	if err != nil || st.BlockedUntil.IsZero() {
+		return false
+	}
+	if time.Now().Before(st.BlockedUntil) {
+		return true
+	}
+	_ = b.persister.Delete(ctx, name)
+	return false
+}
+
 // recordFailure increments the consecutive-transient-failure counter for name.
 // When the counter reaches maxFailures the upstream is blocked for blockDur.
 // Returns true when name transitions to blocked.
 func (b *blockTracker) recordFailure(name string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.persister != nil {
+		return b.recordFailurePersisted(name)
+	}
 	b.failures[name]++
 	if b.failures[name] >= b.maxFailures {
 		if _, already := b.blockedUntil[name]; !already {
@@ -74,10 +114,32 @@ func (b *blockTracker) recordFailure(name string) bool {
 	return false
 }
 
+func (b *blockTracker) recordFailurePersisted(name string) bool {
+	ctx := context.Background()
+	st, err := b.persister.Load(ctx, name)
+	if err != nil {
+		return false
+	}
+	st.Failures++
+	blocked := false
+	if st.Failures >= b.maxFailures {
+		if st.BlockedUntil.IsZero() {
+			st.BlockedUntil = time.Now().Add(b.blockDur)
+			blocked = true
+		}
+	}
+	_ = b.persister.Save(ctx, name, st)
+	return blocked
+}
+
 // recordSuccess clears any failure state and removes any block for name.
 func (b *blockTracker) recordSuccess(name string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.persister != nil {
+		_ = b.persister.Delete(context.Background(), name)
+		return
+	}
 	delete(b.failures, name)
 	delete(b.blockedUntil, name)
 }
@@ -86,6 +148,13 @@ func (b *blockTracker) recordSuccess(name string) {
 func (b *blockTracker) failureCount(name string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.persister != nil {
+		st, err := b.persister.Load(context.Background(), name)
+		if err != nil {
+			return 0
+		}
+		return st.Failures
+	}
 	return b.failures[name]
 }
 
@@ -97,5 +166,12 @@ func (b *blockTracker) failureCount(name string) int {
 func (b *blockTracker) blockedUntilTime(name string) time.Time {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.persister != nil {
+		st, err := b.persister.Load(context.Background(), name)
+		if err != nil {
+			return time.Time{}
+		}
+		return st.BlockedUntil
+	}
 	return b.blockedUntil[name]
 }

@@ -7,6 +7,7 @@ import (
 	intoci "github.com/ivanzzeth/specula/internal/handler/oci"
 
 	"github.com/ivanzzeth/specula/pkg/cache"
+	"github.com/ivanzzeth/specula/pkg/coalesce"
 	"github.com/ivanzzeth/specula/pkg/store/meta"
 	"github.com/ivanzzeth/specula/pkg/upstream"
 )
@@ -26,6 +27,7 @@ func WithUpstream(c upstream.Client, ups []upstream.Upstream) Option {
 func WithMutableTTL(secs int64) Option                 { return intoci.WithMutableTTL(secs) }
 func WithQuarantineDir(dir string) Option              { return intoci.WithQuarantineDir(dir) }
 func WithLogger(l *slog.Logger) Option                 { return intoci.WithLogger(l) }
+func WithLocker(l coalesce.Locker) Option              { return intoci.WithLocker(l) }
 
 // Hosted registry options (daemon multi-tenant write path).
 func WithHostedResolver(r intoci.HostedResolver) Option {

@@ -326,14 +326,27 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, escMod,
 // The key is the request (protocol|name|version|digest), not the content digest:
 // the digest cache.Store coalesces on is only known once the download has
 // finished, so it can never prevent one. See coalesce.Fetch for the failure and
-// bounded-wait semantics.
+// bounded-wait semantics. When a cross-replica locker is configured, FetchLocked
+// re-checks the shared cache after Acquire so waiters do not double-fetch.
 func (h *Handler) coalescedFetch(
 	ctx context.Context,
 	ref artifact.ArtifactRef,
 	fn func() (*artifact.CacheEntry, error),
 ) (*artifact.CacheEntry, error) {
 	key := coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest)
-	return coalesce.Fetch(ctx, h.fetchSF, key, fn)
+	return coalesce.FetchLocked(ctx, h.fetchSF, h.locker, key, 0,
+		func(ctx context.Context) (*artifact.CacheEntry, bool, error) {
+			e, err := h.cache.Lookup(ctx, ref)
+			if err != nil {
+				return nil, false, err
+			}
+			if e != nil {
+				return e, true, nil
+			}
+			return nil, false, nil
+		},
+		fn,
+	)
 }
 
 // fetchAndStoreImmutable fetches an immutable artifact (one of .info/.mod/.zip)

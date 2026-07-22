@@ -88,6 +88,13 @@ type Collector interface {
 	AddOpaquePath(path, protocol string)
 }
 
+// SeriesBackend persists capacity time-series samples. Protocol "" is the grand
+// total. When nil on a collector, an in-memory ring buffer is used instead.
+type SeriesBackend interface {
+	Record(ctx context.Context, protocol string, bytes int64, unix int64) error
+	Snapshot(ctx context.Context, protocol string, limit int) ([]SeriesPoint, error)
+}
+
 // inmemStat holds in-memory byte and object counters for standalone mode.
 type inmemStat struct {
 	bytes   int64
@@ -109,9 +116,10 @@ type collector struct {
 	cfg          CollectorConfig
 	mu           sync.Mutex
 	// inmem tracks per-protocol bytes/objects when store == nil.
-	inmem   map[string]inmemStat
-	duPaths []duEntry // opaque-cache roots for du-sb fallback
-	series  *seriesStore
+	inmem         map[string]inmemStat
+	duPaths       []duEntry // opaque-cache roots for du-sb fallback
+	series        *seriesStore
+	seriesBackend SeriesBackend
 
 	// tickCh, when non-nil, replaces time.NewTicker inside Run.
 	// Intended only for unit tests that drive refresh ticks deterministically.
@@ -125,26 +133,39 @@ var _ Collector = (*collector)(nil)
 // registry, with no MetadataStore (standalone / Prometheus-gauge-only mode).
 // ByProtocol and Total reflect in-memory counters kept by RecordPut/RecordEvict.
 func NewCollector() Collector {
-	return newCollectorWithGauges(nil, metrics.CacheBytes, metrics.CacheObjects, DefaultCollectorConfig())
+	return newCollectorWithGauges(nil, metrics.CacheBytes, metrics.CacheObjects, DefaultCollectorConfig(), nil)
 }
 
 // NewCollectorWithStore constructs a Collector that reads authoritative
 // per-protocol and total cache sizes from the MetadataStore (O(1) SUM GROUP BY)
 // and keeps Prometheus gauges in sync on every ByProtocol call.
 func NewCollectorWithStore(store meta.MetadataStore) Collector {
-	return newCollectorWithGauges(store, metrics.CacheBytes, metrics.CacheObjects, DefaultCollectorConfig())
+	return newCollectorWithGauges(store, metrics.CacheBytes, metrics.CacheObjects, DefaultCollectorConfig(), nil)
+}
+
+// NewCollectorWithStoreAndSeries constructs a store-backed Collector whose
+// capacity time series are persisted via backend (HA Postgres). When backend is
+// nil the in-memory ring buffer is used.
+func NewCollectorWithStoreAndSeries(store meta.MetadataStore, backend SeriesBackend) Collector {
+	return newCollectorWithGauges(store, metrics.CacheBytes, metrics.CacheObjects, DefaultCollectorConfig(), backend)
 }
 
 // NewCollectorWithConfig constructs a standalone Collector (no MetadataStore)
 // with caller-supplied configuration.
 func NewCollectorWithConfig(cfg CollectorConfig) Collector {
-	return newCollectorWithGauges(nil, metrics.CacheBytes, metrics.CacheObjects, cfg)
+	return newCollectorWithGauges(nil, metrics.CacheBytes, metrics.CacheObjects, cfg, nil)
 }
 
 // NewCollectorWithStoreAndConfig constructs a store-backed Collector with
 // caller-supplied configuration.
 func NewCollectorWithStoreAndConfig(store meta.MetadataStore, cfg CollectorConfig) Collector {
-	return newCollectorWithGauges(store, metrics.CacheBytes, metrics.CacheObjects, cfg)
+	return newCollectorWithGauges(store, metrics.CacheBytes, metrics.CacheObjects, cfg, nil)
+}
+
+// NewCollectorWithStoreAndSeriesAndConfig combines store-backed aggregation,
+// persisted series, and caller-supplied refresh configuration.
+func NewCollectorWithStoreAndSeriesAndConfig(store meta.MetadataStore, backend SeriesBackend, cfg CollectorConfig) Collector {
+	return newCollectorWithGauges(store, metrics.CacheBytes, metrics.CacheObjects, cfg, backend)
 }
 
 // newCollectorWithGauges is the real constructor: it writes THROUGH the supplied
@@ -153,18 +174,22 @@ func NewCollectorWithStoreAndConfig(store meta.MetadataStore, cfg CollectorConfi
 // package init — so the series exist on /metrics before any Collector is built or
 // any request arrives (PRD §7; the 7600a0e bug class). Registration is no longer
 // a side effect of construction.
-func newCollectorWithGauges(store meta.MetadataStore, cacheBytes, cacheObjects *prometheus.GaugeVec, cfg CollectorConfig) *collector {
+func newCollectorWithGauges(store meta.MetadataStore, cacheBytes, cacheObjects *prometheus.GaugeVec, cfg CollectorConfig, seriesBackend SeriesBackend) *collector {
 	if cfg.RefreshInterval <= 0 {
 		cfg.RefreshInterval = 30 * time.Second
 	}
-	return &collector{
-		store:        store,
-		cacheBytes:   cacheBytes,
-		cacheObjects: cacheObjects,
-		cfg:          cfg,
-		inmem:        make(map[string]inmemStat),
-		series:       newSeriesStore(DefaultSeriesCapacity),
+	c := &collector{
+		store:         store,
+		cacheBytes:    cacheBytes,
+		cacheObjects:  cacheObjects,
+		cfg:           cfg,
+		inmem:         make(map[string]inmemStat),
+		seriesBackend: seriesBackend,
 	}
+	if seriesBackend == nil {
+		c.series = newSeriesStore(DefaultSeriesCapacity)
+	}
+	return c
 }
 
 // newCollector accepts a Registerer so tests can inject a fresh
@@ -189,7 +214,7 @@ func newCollector(store meta.MetadataStore, reg prometheus.Registerer, cfg Colle
 	)
 	bytesVec = registerOrExisting(reg, bytesVec)
 	objectsVec = registerOrExisting(reg, objectsVec)
-	return newCollectorWithGauges(store, bytesVec, objectsVec, cfg)
+	return newCollectorWithGauges(store, bytesVec, objectsVec, cfg, nil)
 }
 
 // registerOrExisting registers c with reg and returns it. On
@@ -297,11 +322,8 @@ func (c *collector) refreshOnce(ctx context.Context) {
 	c.sampleSeries(ctx)
 }
 
-// sampleSeries appends one point per protocol (and the grand total) to the ring.
+// sampleSeries appends one point per protocol (and the grand total) to the series backend.
 func (c *collector) sampleSeries(ctx context.Context) {
-	if c.series == nil {
-		return
-	}
 	byProto, err := c.ByProtocol(ctx)
 	if err != nil {
 		return
@@ -309,14 +331,27 @@ func (c *collector) sampleSeries(ctx context.Context) {
 	now := time.Now().UTC().Unix()
 	var total int64
 	for proto, s := range byProto {
-		c.series.record(proto, s.Bytes, now)
+		c.recordSeries(ctx, proto, s.Bytes, now)
 		total += s.Bytes
 	}
-	c.series.record("", total, now)
+	c.recordSeries(ctx, "", total, now)
+}
+
+func (c *collector) recordSeries(ctx context.Context, protocol string, bytes int64, unix int64) {
+	if c.seriesBackend != nil {
+		_ = c.seriesBackend.Record(ctx, protocol, bytes, unix)
+		return
+	}
+	if c.series != nil {
+		c.series.record(protocol, bytes, unix)
+	}
 }
 
 // Series returns oldest→newest capacity samples for protocol ("" = grand total).
-func (c *collector) Series(_ context.Context, protocol string) ([]SeriesPoint, error) {
+func (c *collector) Series(ctx context.Context, protocol string) ([]SeriesPoint, error) {
+	if c.seriesBackend != nil {
+		return c.seriesBackend.Snapshot(ctx, protocol, DefaultSeriesCapacity)
+	}
 	if c.series == nil {
 		return nil, nil
 	}

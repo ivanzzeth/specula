@@ -1,0 +1,59 @@
+{{- if .Values.mirror.enabled }}
+# Phase 1 — node mirror config.
+#
+# Privileged DaemonSet that runs `specula bootstrap-mirror write` (same Specula
+# image as the bootstrap Deployment — no busybox). Writes containerd registry
+# hosts.d drop-ins on every node pointing configured registries at the NodePort.
+# containerd 1.7+ hot-reloads certs.d — no runtime restart required.
+#
+# SECURITY: runs privileged with a hostPath mount of {{ .Values.mirror.certsDir }}.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}-mirror
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mirror-config
+spec:
+  selector:
+    matchLabels:
+      {{- include "specula-bootstrap.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: mirror-config
+  template:
+    metadata:
+      labels:
+        {{- include "specula-bootstrap.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: mirror-config
+    spec:
+      enableServiceLinks: false
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: write-hostsd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsNonRoot: false
+          args:
+            - bootstrap-mirror
+            - write
+            - --endpoint={{ .Values.mirror.endpoint }}
+            - --certs-dir=/host-certs.d
+            - --registries={{ .Values.mirror.registries | join "," }}
+            {{- if .Values.mirror.skipVerify }}
+            - --skip-verify
+            {{- else }}
+            - --skip-verify=false
+            {{- end }}
+            - --hold
+          volumeMounts:
+            - name: certs-d
+              mountPath: /host-certs.d
+      volumes:
+        - name: certs-d
+          hostPath:
+            path: {{ .Values.mirror.certsDir }}
+            type: DirectoryOrCreate
+{{- end }}

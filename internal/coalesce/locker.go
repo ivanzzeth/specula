@@ -25,8 +25,7 @@ type lockEntry struct {
 }
 
 // localLocker is a functional in-process Locker. It is not safe for
-// cross-process use; a Redis SET NX or PG advisory lock implementation
-// should be used in multi-instance deployments.
+// cross-process use; use NewRedsyncLocker (Redis / redsync) for HA.
 //
 // Semantics:
 //   - Acquire blocks until the lock is free (or ctx is cancelled).

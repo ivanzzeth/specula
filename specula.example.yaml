@@ -31,6 +31,23 @@ server:
   # Control plane: embedded WebUI + Admin API (email auth, first user = admin).
   control_plane_addr: ":7733"
 
+  # Multi-replica HA mode: requires postgres meta, redis stampede lock
+  # (coalesce.lock_driver=redis), and shared CAS (blob.driver=s3 OR
+  # blob.driver=local with local.shared=true on a PVC/NFS). Git stays
+  # single-node (node-local mirrors) — disable git in HA Deployment values.
+  # ha: false
+
+# ── Coalesce (cross-replica cold-fetch stampede lock) ─────────────────────────
+# Empty / omitted = in-process singleflight only (fine for DaemonSet / single node).
+# HA deployments must set lock_driver: redis (go-redsync/redsync over go-redis).
+# coalesce:
+#   lock_driver: redis
+#   redis:
+#     addr: redis.internal:6379
+#     password: ""
+#     db: 0
+#     key_prefix: "specula:lock:"
+
 # ── Storage ───────────────────────────────────────────────────────────────────
 storage:
   blob:
@@ -40,6 +57,8 @@ storage:
       # Content-addressed directory tree.  Specula writes blobs as
       # <root>/<first2hex>/<digest_hex> and hard-links duplicates.
       root: /var/lib/specula/blobs
+      # Set true when server.ha and this root is a shared PVC/NFS (not emptyDir).
+      # shared: false
 
     # Uncomment and set driver: s3 to use S3-compatible object storage.
     # s3:
@@ -53,7 +72,7 @@ storage:
   meta:
     # Metadata store driver: "sqlite" (single-node) or "postgres" (HA).
     # SQLite: WAL mode; use only for DaemonSet / single-instance deployments.
-    # Postgres: concurrent-safe ON CONFLICT upsert; recommended for HA.
+    # Postgres: concurrent-safe ON CONFLICT upsert; required when server.ha.
     driver: sqlite
     dsn: /var/lib/specula/meta.db
 

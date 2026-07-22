@@ -7,6 +7,7 @@ import (
 	intpypi "github.com/ivanzzeth/specula/internal/handler/pypi"
 
 	"github.com/ivanzzeth/specula/pkg/cache"
+	"github.com/ivanzzeth/specula/pkg/coalesce"
 	"github.com/ivanzzeth/specula/pkg/store/meta"
 	"github.com/ivanzzeth/specula/pkg/upstream"
 )
@@ -29,6 +30,7 @@ func WithMutableTTL(secs int64) Option       { return intpypi.WithMutableTTL(sec
 func WithPathPrefix(prefix string) Option    { return intpypi.WithPathPrefix(prefix) }
 func WithQuarantineDir(dir string) Option    { return intpypi.WithQuarantineDir(dir) }
 func WithLogger(l *slog.Logger) Option       { return intpypi.WithLogger(l) }
+func WithLocker(l coalesce.Locker) Option    { return intpypi.WithLocker(l) }
 func WithPrivateNames(names []string) Option { return intpypi.WithPrivateNames(names) }
 func WithPrivateUpstream(up upstream.Upstream) Option {
 	return intpypi.WithPrivateUpstream(up)

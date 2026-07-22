@@ -36,16 +36,21 @@ make run                               # or: go run ./cmd/specula -config specul
 - Data plane (protocols): `http://127.0.0.1:7732`
 - Control plane (WebUI): `http://127.0.0.1:7733`
 
-**One-click client wiring** (additive — does not wipe your existing mirrors):
+**One-click client wiring** — a single command wires **all** supported protocols
+(`go`, `npm`, `pypi`, `oci`, `helm`, `git`, `apt`). Additive only: it does not wipe
+existing mirrors.
 
 ```bash
 make build-go
 ./bin/specula integrate --addr http://127.0.0.1:7732
-# preview only:  ./bin/specula integrate --dry-run
-# check state:   ./bin/specula integrate status
+# preview only:     ./bin/specula integrate --dry-run
+# check state:      ./bin/specula integrate status
+# subset only:      ./bin/specula integrate --protocols go,npm
+# docker needs sudo: sudo ./bin/specula integrate --protocols oci   # then restart dockerd
 ```
 
-This prepends Specula to `GOPROXY`, sets npm/pip indexes while keeping other keys, adds a Docker `registry-mirrors` entry, etc. Manual per-protocol snippets are below.
+That is the local/dev path. The per-protocol snippets further down are for CI images,
+Kubernetes, or full manual control — not required when `integrate` works for you.
 
 ### Install as a system daemon (starts on boot)
 
@@ -276,7 +281,16 @@ Full reference: [`specula.example.yaml`](specula.example.yaml). Env overrides: `
 
 ## Point clients at Specula
 
-Prefer **`specula integrate`** for local/dev machines (see Quick start). It only **adds** Specula: prepends to lists, uses drop-in files (`/etc/apt/sources.list.d/specula.list`), and preserves unrelated keys. Use the snippets below for CI images, Kubernetes, or when you want full manual control.
+**Local/dev: one command for every protocol** (see Quick start):
+
+```bash
+./bin/specula integrate --addr http://127.0.0.1:7732
+```
+
+It only **adds** Specula: prepends to lists, uses drop-in files
+(`/etc/apt/sources.list.d/specula.list`), preserves unrelated keys, and never
+requires running the sections below one-by-one. Use those snippets for CI images,
+Kubernetes, or when you want full manual control.
 
 Assume data plane `http://127.0.0.1:7732` (DaemonSet / localhost). Replace with your Specula host in real deployments. Data plane has **no consumer auth** — put it on a trusted network / mTLS perimeter.
 
@@ -421,12 +435,28 @@ git config --global url."http://127.0.0.1:7732/git/github.com/".insteadOf "https
 
 Host must be in `protocols.git.git.allowed_upstreams`. Private / push traffic is passed through and not cached.
 
+## HA (multi-replica)
+
+Mature-library stack only: Postgres meta + Redis (redsync) stampede lock + shared CAS
+(S3-compatible **or** shared PVC). Chart: [`deploy/helm/specula`](deploy/helm/specula).
+Local smoke: `./scripts/ha-minikube.sh`. Details: [ARCHITECTURE §12](docs/ARCHITECTURE.md).
+
+## Bootstrap (China / air-gapped)
+
+When `docker.io` / `registry.k8s.io` are unreachable, land Specula first (offline tar /
+ACR / `docker load`), then pull **everything else through Specula**. Chart:
+[`deploy/helm/specula-bootstrap`](deploy/helm/specula-bootstrap) (SQLite + local blob,
+NodePort, containerd `certs.d` DaemonSet — no busybox). Local smoke (containerd):
+`./scripts/bootstrap-minikube.sh`.
+
 ## Docs
 
 | Doc | Contents |
 |-----|----------|
 | [docs/LIBRARY.md](docs/LIBRARY.md) | Public `pkg/` API, stability, error contract |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Two-plane design, cache, verify pipeline |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Two-plane design, cache, verify, **HA matrix** |
+| [deploy/helm/specula/README.md](deploy/helm/specula/README.md) | Helm install (Bitnami PG/Redis, optional MinIO) |
+| [deploy/helm/specula-bootstrap/README.md](deploy/helm/specula-bootstrap/README.md) | China / air-gapped self-bootstrap |
 | [docs/PRD.md](docs/PRD.md) | Product requirements |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 

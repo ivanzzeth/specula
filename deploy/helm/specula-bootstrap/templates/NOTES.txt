@@ -1,0 +1,38 @@
+Specula bootstrap mirror installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+This breaks the chicken-and-egg of deploying an image cache in a censored/air-gapped
+cluster: a zero-dependency Specula (SQLite + local blob) comes up first and serves as a
+pull-through mirror so the full HA stack's images can be fetched THROUGH it.
+
+Bring-up sequence
+─────────────────
+Phase 0  Land Specula's own image (docker save/load, offline tar, or a reachable registry).
+Phase 1  Node mirror config:  mirror.enabled={{ .Values.mirror.enabled }}
+{{- if .Values.mirror.enabled }}
+         DaemonSet runs `specula bootstrap-mirror write` (same Specula image) writing
+         {{ .Values.mirror.registries | join ", " }} → {{ .Values.mirror.endpoint }}.
+{{- else }}
+         Disabled. Enable with --set mirror.enabled=true (containerd nodes).
+{{- end }}
+Phase 2  Prefetch dependency images:  prefetch.enabled={{ .Values.prefetch.enabled }}
+Phase 3  Promote to HA:  installer.enabled={{ .Values.installer.enabled }}
+
+IMPORTANT — the mirror needs a REACHABLE upstream
+──────────────────────────────────────────────────
+Defaults use DaoCloud (https://docker.m.daocloud.io). Override if needed:
+
+  helm upgrade {{ .Release.Name }} <chart> \
+    --set-string upstreams.oci[0].base_url=https://docker.m.daocloud.io
+
+Verify pull-through
+───────────────────
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "specula-bootstrap.fullname" . }} 7732:{{ .Values.service.dataPort }}
+  # /v2/ returns 401 (Docker token handshake) — correct.
+  # Or: specula bootstrap-prefetch --addr http://127.0.0.1:7732 --images docker.io/library/hello-world:latest
+
+SECURITY
+────────
+mirror.enabled=true runs a privileged DaemonSet with a hostPath mount of
+{{ .Values.mirror.certsDir }}. Review before applying to shared/production nodes.
+
+Docs: deploy/helm/specula-bootstrap/README.md

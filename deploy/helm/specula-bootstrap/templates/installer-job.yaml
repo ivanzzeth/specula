@@ -1,0 +1,65 @@
+{{- if .Values.installer.enabled }}
+# Phase 3 — upgrade to the full HA Specula once dependency images are reachable
+# through the bootstrap mirror. Runs `helm upgrade --install` of the sibling
+# `specula` chart using an in-cluster ServiceAccount.
+#
+# Disabled by default: promoting to HA is often a deliberate human gate. When you
+# do enable it, review the RBAC below — it grants broad namespaced install rights.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}-installer
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}-installer
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.installer.clusterRole | default "cluster-admin" }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "specula-bootstrap.fullname" . }}-installer
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}-installer
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+    app.kubernetes.io/component: installer
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        {{- include "specula-bootstrap.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: installer
+    spec:
+      enableServiceLinks: false
+      serviceAccountName: {{ include "specula-bootstrap.fullname" . }}-installer
+      restartPolicy: Never
+      containers:
+        - name: installer
+          image: "{{ .Values.installer.image.repository }}:{{ .Values.installer.image.tag }}"
+          imagePullPolicy: {{ .Values.installer.image.pullPolicy | default "IfNotPresent" }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              echo "Phase 3: helm upgrade --install {{ .Values.installer.release }} -> HA Specula"
+              helm upgrade --install "{{ .Values.installer.release }}" "{{ .Values.installer.chart }}" \
+                --namespace "{{ .Values.installer.targetNamespace }}" --create-namespace \
+                {{- range .Values.installer.extraArgs }}
+                {{ . }} \
+                {{- end }}
+                --wait --timeout "{{ .Values.installer.timeout | default "15m" }}"
+              echo "HA Specula installed."
+{{- end }}

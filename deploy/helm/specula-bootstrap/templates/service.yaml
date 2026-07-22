@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+spec:
+  # NodePort: the node container runtime reaches the mirror at 127.0.0.1:<nodePort>.
+  type: NodePort
+  selector:
+    {{- include "specula-bootstrap.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: data
+      port: {{ .Values.service.dataPort }}
+      targetPort: data
+      nodePort: {{ .Values.service.dataNodePort }}
+      protocol: TCP
+    - name: control
+      port: {{ .Values.service.controlPort }}
+      targetPort: control
+      nodePort: {{ .Values.service.controlNodePort }}
+      protocol: TCP

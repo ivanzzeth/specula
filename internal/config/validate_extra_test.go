@@ -304,6 +304,58 @@ func TestValidate_ConsensusBlockQuorumZero(t *testing.T) {
 	assertValidationErr(t, err, "verification.consensus.quorum: must be >= 1")
 }
 
+func TestValidate_HA_RequiresPostgresRedisSharedCAS(t *testing.T) {
+	t.Run("rejects sqlite meta", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Server.HA = true
+		cfg.Coalesce.LockDriver = "redis"
+		cfg.Coalesce.Redis.Addr = "127.0.0.1:6379"
+		err := config.Validate(cfg)
+		assertValidationErr(t, err, `storage.meta.driver must be "postgres"`)
+	})
+	t.Run("rejects local blob without shared", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Server.HA = true
+		cfg.Storage.Meta.Driver = "postgres"
+		cfg.Storage.Meta.DSN = "postgres://x"
+		cfg.Coalesce.LockDriver = "redis"
+		cfg.Coalesce.Redis.Addr = "127.0.0.1:6379"
+		err := config.Validate(cfg)
+		assertValidationErr(t, err, "storage.blob.local.shared must be true")
+	})
+	t.Run("rejects postgres lock_driver", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Coalesce.LockDriver = "postgres"
+		err := config.Validate(cfg)
+		assertValidationErr(t, err, `coalesce.lock_driver: "postgres" is not supported`)
+	})
+	t.Run("accepts s3 + postgres + redis", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Server.HA = true
+		cfg.Storage.Meta.Driver = "postgres"
+		cfg.Storage.Meta.DSN = "postgres://x"
+		cfg.Storage.Blob.Driver = "s3"
+		cfg.Storage.Blob.S3.Bucket = "specula"
+		cfg.Coalesce.LockDriver = "redis"
+		cfg.Coalesce.Redis.Addr = "127.0.0.1:6379"
+		if err := config.Validate(cfg); err != nil {
+			t.Fatalf("valid HA config: %v", err)
+		}
+	})
+	t.Run("accepts shared local + postgres + redis", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Server.HA = true
+		cfg.Storage.Meta.Driver = "postgres"
+		cfg.Storage.Meta.DSN = "postgres://x"
+		cfg.Storage.Blob.Local.Shared = true
+		cfg.Coalesce.LockDriver = "redis"
+		cfg.Coalesce.Redis.Addr = "127.0.0.1:6379"
+		if err := config.Validate(cfg); err != nil {
+			t.Fatalf("valid HA shared-local config: %v", err)
+		}
+	})
+}
+
 // assertValidationErr fails t if err is nil or if its message does not contain
 // the expected substring. All Validate errors are multi-line diagnostic strings;
 // substring matching is intentional.

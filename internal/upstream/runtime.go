@@ -140,6 +140,17 @@ func NewRuntime(protocol string) *Runtime {
 	}
 }
 
+// NewRuntimeWithBlockPersister constructs a Runtime whose auto-block state is
+// persisted via persister (shared across HA replicas when backed by Postgres).
+func NewRuntimeWithBlockPersister(protocol string, persister BlockPersister) *Runtime {
+	return &Runtime{
+		protocol:  protocol,
+		blocker:   newBlockTrackerWithPersister(persister, defaultMaxFailures, defaultBlockDuration),
+		stats:     make(map[string]*mirrorStat),
+		overrides: make(map[string]*override),
+	}
+}
+
 // Protocol returns the protocol this Runtime is scoped to.
 func (r *Runtime) Protocol() string { return r.protocol }
 
@@ -376,13 +387,23 @@ func deriveHealth(s MirrorState) Health {
 //
 // All methods are safe for concurrent use.
 type Registry struct {
-	mu      sync.Mutex
-	byProto map[string]*Runtime
+	mu              sync.Mutex
+	byProto         map[string]*Runtime
+	blockPersister  func(protocol string) BlockPersister // nil = in-memory per Runtime
 }
 
 // NewRegistry constructs an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{byProto: make(map[string]*Runtime)}
+}
+
+// NewRegistryWithBlockPersister constructs a Registry whose Runtimes share
+// persisted auto-block state via persisterForProtocol.
+func NewRegistryWithBlockPersister(persisterForProtocol func(protocol string) BlockPersister) *Registry {
+	return &Registry{
+		byProto:        make(map[string]*Runtime),
+		blockPersister: persisterForProtocol,
+	}
 }
 
 // Runtime returns the Runtime for protocol, creating it on first use so that
@@ -392,7 +413,11 @@ func (reg *Registry) Runtime(protocol string) *Runtime {
 	defer reg.mu.Unlock()
 	rt, ok := reg.byProto[protocol]
 	if !ok {
-		rt = NewRuntime(protocol)
+		if reg.blockPersister != nil {
+			rt = NewRuntimeWithBlockPersister(protocol, reg.blockPersister(protocol))
+		} else {
+			rt = NewRuntime(protocol)
+		}
 		reg.byProto[protocol] = rt
 	}
 	return rt

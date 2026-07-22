@@ -36,16 +36,20 @@ make run                               # 或: go run ./cmd/specula -config specu
 - 数据面（协议）：`http://127.0.0.1:7732`
 - 管理面（WebUI）：`http://127.0.0.1:7733`
 
-**一键接入客户端**（增量写入，不覆盖已有镜像配置）：
+**一键接入客户端** — **一条命令接齐全部协议**（`go` / `npm` / `pypi` / `oci` /
+`helm` / `git` / `apt`）。只做增量写入，不覆盖已有镜像配置。
 
 ```bash
 make build-go
 ./bin/specula integrate --addr http://127.0.0.1:7732
-# 仅预览：  ./bin/specula integrate --dry-run
-# 查看状态： ./bin/specula integrate status
+# 仅预览：          ./bin/specula integrate --dry-run
+# 查看状态：        ./bin/specula integrate status
+# 只接部分协议：    ./bin/specula integrate --protocols go,npm
+# Docker 需 sudo：  sudo ./bin/specula integrate --protocols oci   # 然后重启 dockerd
 ```
 
-会把 Specula 前置到 `GOPROXY`、改写 npm/pip 主源并保留其它键、追加 Docker `registry-mirrors` 等。下方仍提供各协议的手动片段。
+本机 / 开发机用上面这一条即可。下文各协议手动片段是给 CI 镜像、Kubernetes
+或完全手控用的——能跑 `integrate` 时不必逐段照抄。
 
 ### 安装为系统守护进程（开机自启）
 
@@ -276,7 +280,14 @@ cache:
 
 ## 把客户端接到 Specula
 
-本机 / 开发机优先用 **`specula integrate`**（见快速开始）：只**新增** Specula（列表前置、apt drop-in、保留无关配置键）。CI 镜像、Kubernetes 或需要完全手控时，用下面的片段。
+**本机 / 开发机：一条命令接齐全部协议**（见快速开始）：
+
+```bash
+./bin/specula integrate --addr http://127.0.0.1:7732
+```
+
+只**新增** Specula（列表前置、apt drop-in、保留无关配置键），不必再按协议
+逐段配置。下面的片段留给 CI 镜像、Kubernetes 或完全手控。
 
 以下默认数据面为 `http://127.0.0.1:7732`（本机 / DaemonSet）。生产请换成实际 Specula 地址。数据面**无消费者认证**——放在可信网段或用 mTLS/网络策略挡边界。
 
@@ -417,12 +428,28 @@ git config --global url."http://127.0.0.1:7732/git/github.com/".insteadOf "https
 
 主机须在 `protocols.git.git.allowed_upstreams` 中。私有仓 / push 会透传、不缓存。
 
+## HA（多副本）
+
+只用成熟库：Postgres 元数据 + Redis（redsync）跨副本锁 + 共享 CAS
+（S3 兼容 **或** 共享 PVC）。Chart：[`deploy/helm/specula`](deploy/helm/specula)。
+本机验收：`./scripts/ha-minikube.sh`。细节见 [ARCHITECTURE §12](docs/ARCHITECTURE.md)。
+
+## 自举（中国 / 离线）
+
+当 `docker.io` / `registry.k8s.io` 不可达时：先落地 Specula（离线 tar / ACR /
+`docker load`），再让其它镜像**透过 Specula** 进来。Chart：
+[`deploy/helm/specula-bootstrap`](deploy/helm/specula-bootstrap)（SQLite + 本地盘、
+NodePort、containerd `certs.d` DaemonSet，无 busybox）。本机验收（containerd）：
+`./scripts/bootstrap-minikube.sh`。
+
 ## 文档
 
 | 文档 | 内容 |
 |------|------|
 | [docs/LIBRARY.md](docs/LIBRARY.md) | 公开 `pkg/` API、稳定性、错误契约 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 双平面、缓存、验证管线 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 双平面、缓存、验证、**HA 矩阵** |
+| [deploy/helm/specula/README.md](deploy/helm/specula/README.md) | Helm 安装（Bitnami PG/Redis，可选 MinIO） |
+| [deploy/helm/specula-bootstrap/README.md](deploy/helm/specula-bootstrap/README.md) | 中国 / 离线自举 |
 | [docs/PRD.md](docs/PRD.md) | 产品需求 |
 | [CHANGELOG.md](CHANGELOG.md) | 变更记录 |
 

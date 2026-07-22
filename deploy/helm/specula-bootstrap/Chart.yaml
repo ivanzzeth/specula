@@ -1,0 +1,12 @@
+apiVersion: v2
+name: specula-bootstrap
+description: >-
+  Zero-dependency bootstrap Specula for censored / air-gapped clusters. Runs a
+  single replica on SQLite + local blob (no PostgreSQL/Redis/MinIO images), then
+  configures the node container runtime to use it as a pull-through mirror so the
+  full HA stack's images can be fetched THROUGH Specula. Breaks the chicken-and-egg
+  of deploying an image cache when the registry it needs is the one being blocked.
+type: application
+version: 0.1.0
+appVersion: "0.2"
+kubeVersion: ">=1.24.0-0"

@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+data:
+  specula.yaml: |
+    server:
+      data_plane_addr: ":{{ .Values.service.dataPort }}"
+      control_plane_addr: ":{{ .Values.service.controlPort }}"
+      # Bootstrap is single-replica: no cross-replica stampede lock needed.
+      ha: false
+
+    storage:
+      blob:
+        driver: local
+        local:
+          root: /var/lib/specula/blobs
+      meta:
+        driver: sqlite
+        dsn: /var/lib/specula/meta.db
+
+    cache:
+      default_mutable_ttl_seconds: {{ .Values.cache.defaultMutableTTLSeconds }}
+      negative_ttl_seconds: {{ .Values.cache.negativeTTLSeconds }}
+      max_bytes: {{ .Values.cache.maxBytes }}
+
+    auth:
+      # Empty → Specula auto-generates and persists in the SQLite settings store.
+      # Anonymous pull-through of public upstream repos still works (that is the
+      # whole point of a bootstrap mirror).
+      config_secret: ""
+      cookie_secure: false
+
+    protocols:
+      oci:
+        mutable_ttl_seconds: 300
+        upstreams:
+          {{- toYaml .Values.upstreams.oci | nindent 10 }}
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce

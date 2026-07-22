@@ -92,6 +92,9 @@ type Handler struct {
 	// leaving it to wiring is precisely how the coalescer came to exist while
 	// nothing collapsed.
 	fetchSF coalesce.Coalescer
+	// locker is the optional cross-replica stampede lock (redsync in HA).
+	// Nil keeps same-process singleflight only via FetchLocked fallback.
+	locker coalesce.Locker
 }
 
 // Option is a functional option applied to Handler during construction.
@@ -137,6 +140,12 @@ func WithQuarantineDir(dir string) Option {
 // WithLogger injects a structured logger.
 func WithLogger(l *slog.Logger) Option {
 	return func(h *Handler) { h.log = l }
+}
+
+// WithLocker injects a cross-replica Locker for cold-fetch stampede protection.
+// Nil (default) keeps in-process singleflight only.
+func WithLocker(l coalesce.Locker) Option {
+	return func(h *Handler) { h.locker = l }
 }
 
 // NewHandler constructs a GOPROXY Handler backed by the given CacheManager.

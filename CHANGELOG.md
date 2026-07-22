@@ -5,29 +5,30 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+## [0.5.0] — HA & China bootstrap — 2026-07-22
+
 ### Added
 
-- **Runtime traffic stats**: `specula_response_bytes_total` + `specula_request_duration_seconds`
-  (Prometheus), `GET /api/v1/traffic`, and `specula stats [--watch]` for live
-  per-protocol bytes / seconds / MB/s (lifetime + last 60s window).
-- **`GET /api/v1/stats`**: authenticated cache occupancy + traffic (session JWT or
-  API key `Bearer spck_…`). CLI: `specula login` / `logout` persists the key in
-  `~/.config/specula/credentials.json`; `specula stats` reads it (or `SPECULA_TOKEN`).
-- **`specula bench`**: one-shot cold/warm pull probe (not a substitute for runtime stats).
-- **`specula integrate`**: additive one-click client wiring (go/npm/pypi/oci/helm/git/apt)
-  without destroying existing mirrors.
-- **`specula service install`**: systemd unit under `multi-user.target` (boot start),
-  plus `contrib/systemd/specula.service`.
-- **Version from git tags**: `internal/version` via `-ldflags`; `specula version` /
-  Makefile / `.github/workflows/release.yml` (publishes multi-arch binaries on `v*` tags).
-- **Container image**: `Dockerfile` + `make image` / `make image-smoke` (push the
-  product image into an ephemeral Specula hosted OCI, pull + digest check). On `v*`
-  tags, release CI publishes `ivanzz/specula` to Docker Hub (`linux/amd64` +
-  `linux/arm64`) when `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets are set.
-- **Cache capacity limit**: `cache.max_bytes` (0 = unlimited). After each successful
-  Store, Specula evicts the oldest unpinned immutable entries (meta + CAS blob)
-  until total `SUM(size)` is at or below the ceiling. Pinned entries are never
-  evicted. Wire via daemon YAML or `specula.Options.MaxBytes` / `cache.WithMaxBytes`.
+- **HA multi-replica**: `server.ha` requires Postgres meta + Redis (redsync)
+  stampede lock + shared CAS (S3-compatible or `local.shared=true`). Helm chart
+  `deploy/helm/specula` (Bitnami PG/Redis, optional MinIO, HPA). Smoke:
+  `./scripts/ha-minikube.sh`.
+- **China / air-gapped self-bootstrap**: chart `deploy/helm/specula-bootstrap`
+  (SQLite + local blob, NodePort). CLI `specula bootstrap-mirror write` and
+  `specula bootstrap-prefetch` run from the Specula image (no busybox). Default
+  OCI upstream DaoCloud. Smoke: `./scripts/bootstrap-minikube.sh` (containerd).
+- **Runtime state persistence** (HA): series + upstream blocks via
+  `internal/store/runtimestate` + migration `009_runtime_state`.
+- **`FetchLocked`**: cross-replica coalesce via redsync; wired into OCI / Go /
+  npm / PyPI / apt / Helm handlers (`WithLocker`).
+- **Runtime traffic stats**: Prometheus + `GET /api/v1/traffic` + `specula stats`.
+- **`specula integrate`**: one-click client wiring for all protocols.
+- **`specula service install`**, **`specula bench`**, version ldflags, container
+  image release CI, `cache.max_bytes` eviction.
+
+### Docs
+
+- README (EN/ZH): HA + China bootstrap entry points; ARCHITECTURE §12 bootstrap.
 
 ## [0.3.0] — Library Preview — 2026-07-20
 

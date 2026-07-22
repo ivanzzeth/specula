@@ -1,0 +1,106 @@
+# Bootstrap Specula: single replica, zero external image dependencies beyond
+# Specula itself. Land the image via `docker save/load`, offline tar, or a
+# China-reachable registry (Aliyun ACR, etc.). Every other image then flows
+# THROUGH this instance once the mirror DaemonSet runs.
+#
+# Critical: OCI upstreams must be REACHABLE from the cluster. In China do NOT
+# point at registry-1.docker.io — use a domestic mirror (DaoCloud default below).
+
+image:
+  repository: ivanzz/specula
+  tag: latest
+  # Bootstrap images are usually side-loaded, so default to not re-pulling.
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+# See deploy/helm/specula chart: {SVCNAME}_* env vars collide with the SPECULA_
+# config prefix. Always keep off.
+enableServiceLinks: false
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+service:
+  dataPort: 7732
+  controlPort: 7733
+  # NodePort so the node's container runtime (containerd/docker) can reach the
+  # mirror at 127.0.0.1:<nodePort> — cluster DNS is NOT resolvable by the runtime.
+  dataNodePort: 30732
+  controlNodePort: 30733
+
+persistence:
+  enabled: true
+  size: 20Gi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+
+# Upstreams the bootstrap mirror proxies. Defaults target China-reachable
+# endpoints (DaoCloud). Override for other regions.
+upstreams:
+  oci:
+    - name: daocloud
+      base_url: https://docker.m.daocloud.io
+      priority: 1
+      official: false
+    - name: dockerhub
+      base_url: https://registry-1.docker.io
+      priority: 10
+      official: true
+
+cache:
+  defaultMutableTTLSeconds: 300
+  negativeTTLSeconds: 1800
+  maxBytes: 0
+
+# ── Phase 1: node mirror config (privileged DaemonSet) ────────────────────────
+# Runs `specula bootstrap-mirror write` from the SAME Specula image (no busybox).
+# Writes containerd hosts.d drop-ins pointing registries at the NodePort.
+# SECURITY: mounts a host path and runs privileged — review before use.
+mirror:
+  enabled: true
+  # containerd certs.d root. k3s: /var/lib/rancher/k3s/agent/etc/containerd/certs.d
+  certsDir: /etc/containerd/certs.d
+  registries:
+    - docker.io
+    - registry.k8s.io
+  # The mirror endpoint the node dials. Defaults to the host's own NodePort.
+  endpoint: "http://127.0.0.1:30732"
+  skipVerify: true
+
+# ── Phase 2: warm HA dependency manifests through the mirror ──────────────────
+# Runs `specula bootstrap-prefetch` from the SAME Specula image.
+prefetch:
+  enabled: false
+  images:
+    - docker.io/bitnami/postgresql:latest
+    - docker.io/bitnami/redis:latest
+    - registry.k8s.io/metrics-server/metrics-server:v0.8.1
+
+# ── Phase 3: upgrade to the full HA Specula (installer Job) ────────────────────
+# Opt-in. Needs a reachable Helm chart (OCI / packaged). Defaults off.
+installer:
+  enabled: false
+  image:
+    repository: alpine/helm
+    tag: "3.16.3"
+    pullPolicy: IfNotPresent
+  clusterRole: cluster-admin
+  release: specula
+  chart: oci://ghcr.io/ivanzzeth/charts/specula
+  targetNamespace: specula
+  timeout: 15m
+  extraArgs: []

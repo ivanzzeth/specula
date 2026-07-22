@@ -1,0 +1,33 @@
+{{- if .Values.prefetch.enabled }}
+# Phase 2 — warm HA stack dependency manifests through the bootstrap mirror.
+# Runs `specula bootstrap-prefetch` from the SAME Specula image (no busybox).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}-prefetch
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prefetch
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        {{- include "specula-bootstrap.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: prefetch
+    spec:
+      enableServiceLinks: false
+      restartPolicy: Never
+      containers:
+        - name: prefetch
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - bootstrap-prefetch
+            - --addr=http://{{ include "specula-bootstrap.fullname" . }}:{{ .Values.service.dataPort }}
+            - --images={{ .Values.prefetch.images | join "," }}
+{{- end }}

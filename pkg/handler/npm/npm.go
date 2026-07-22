@@ -7,6 +7,7 @@ import (
 	intnpm "github.com/ivanzzeth/specula/internal/handler/npm"
 
 	"github.com/ivanzzeth/specula/pkg/cache"
+	"github.com/ivanzzeth/specula/pkg/coalesce"
 	"github.com/ivanzzeth/specula/pkg/store/meta"
 	"github.com/ivanzzeth/specula/pkg/upstream"
 )
@@ -29,6 +30,7 @@ func WithMutableTTL(secs int64) Option          { return intnpm.WithMutableTTL(s
 func WithPathPrefix(prefix string) Option       { return intnpm.WithPathPrefix(prefix) }
 func WithQuarantineDir(dir string) Option       { return intnpm.WithQuarantineDir(dir) }
 func WithLogger(l *slog.Logger) Option          { return intnpm.WithLogger(l) }
+func WithLocker(l coalesce.Locker) Option       { return intnpm.WithLocker(l) }
 func WithPrivateScopes(scopes []string) Option  { return intnpm.WithPrivateScopes(scopes) }
 func WithPrivateUnscoped(names []string) Option { return intnpm.WithPrivateUnscoped(names) }
 func WithPrivateUpstream(up upstream.Upstream) Option {

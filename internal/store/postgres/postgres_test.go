@@ -110,9 +110,11 @@ func newTestStore(t *testing.T) *PostgresStore {
 	// before the test body (pre-test isolation) and once in t.Cleanup
 	// (post-test tidiness even on failure / panic).
 	truncateAll := func(c context.Context) {
-		store.pool.Exec(c, "DELETE FROM users")           //nolint:errcheck
-		store.pool.Exec(c, "DELETE FROM mutable_entries") //nolint:errcheck
-		store.pool.Exec(c, "DELETE FROM cache_entries")   //nolint:errcheck
+		store.pool.Exec(c, "DELETE FROM users")                  //nolint:errcheck
+		store.pool.Exec(c, "DELETE FROM mutable_entries")        //nolint:errcheck
+		store.pool.Exec(c, "DELETE FROM cache_entries")          //nolint:errcheck
+		store.pool.Exec(c, "DELETE FROM stats_series_samples")   //nolint:errcheck
+		store.pool.Exec(c, "DELETE FROM upstream_blocks")        //nolint:errcheck
 	}
 
 	// Pre-test isolation: start with a clean slate regardless of leftover rows

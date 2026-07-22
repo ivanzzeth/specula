@@ -1,0 +1,128 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "specula.configMapName" . }}
+  labels:
+    {{- include "specula.labels" . | nindent 4 }}
+data:
+  specula.yaml: |
+    server:
+      data_plane_addr: ":{{ .Values.service.dataPort }}"
+      control_plane_addr: ":{{ .Values.service.controlPort }}"
+      ha: true
+
+    coalesce:
+      lock_driver: redis
+      redis:
+        addr: {{ include "specula.redis.host" . }}:6379
+        db: 0
+        key_prefix: "specula:lock:"
+
+    storage:
+      blob:
+        driver: {{ .Values.blob.driver | quote }}
+        {{- if eq .Values.blob.driver "local" }}
+        local:
+          root: {{ .Values.blob.local.root | quote }}
+          shared: true
+        {{- else if eq .Values.blob.driver "s3" }}
+        s3:
+          bucket: {{ .Values.blob.s3.bucket | quote }}
+          endpoint: {{ include "specula.blob.s3.endpoint" . | quote }}
+          region: {{ .Values.blob.s3.region | quote }}
+          use_path_style: {{ .Values.blob.s3.usePathStyle }}
+        {{- end }}
+      meta:
+        driver: postgres
+        # Overridden at runtime by SPECULA_STORAGE__META__DSN (password from Secret).
+        dsn: "postgres://specula@postgresql:5432/specula?sslmode=disable"
+
+    cache:
+      default_mutable_ttl_seconds: {{ .Values.cache.defaultMutableTTLSeconds }}
+      negative_ttl_seconds: {{ .Values.cache.negativeTTLSeconds }}
+      max_bytes: {{ .Values.cache.maxBytes }}
+
+    auth:
+      cookie_secure: {{ .Values.auth.cookieSecure }}
+
+    # Git is omitted in HA: bare mirrors are node-local and not shared across replicas.
+    protocols:
+      oci:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: docker-hub
+            base_url: https://registry-1.docker.io
+            priority: 1
+            official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      go:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: proxy.golang.org
+            base_url: https://proxy.golang.org
+            priority: 1
+            official: true
+        verification:
+          tiers: [signed, tofu, checksum]
+          quorum: 1
+        sumdb:
+          url: https://sum.golang.org
+          policy: enforce
+      pypi:
+        mutable_ttl_seconds: 1800
+        upstreams:
+          - name: pypi-org
+            base_url: https://pypi.org
+            priority: 1
+            official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      npm:
+        mutable_ttl_seconds: 120
+        upstreams:
+          - name: npm-registry
+            base_url: https://registry.npmjs.org
+            priority: 1
+            official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      helm:
+        mutable_ttl_seconds: 1800
+        upstreams:
+          - name: bitnami
+            base_url: https://charts.bitnami.com/bitnami
+            priority: 1
+            official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      apt:
+        mutable_ttl_seconds: 0
+        upstreams:
+          - name: ubuntu-archive
+            base_url: https://archive.ubuntu.com/ubuntu
+            priority: 1
+            official: true
+        verification:
+          tiers: [signed, tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      tarball:
+        mutable_ttl_seconds: -1
+        upstreams:
+          - name: github
+            base_url: https://github.com
+            priority: 1
+            official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce

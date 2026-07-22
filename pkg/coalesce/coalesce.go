@@ -25,5 +25,13 @@ func NewLocalLocker() Locker {
 	return intcoalesce.NewLocalLocker()
 }
 
+// RedisOptions configures NewRedsyncLocker.
+type RedisOptions = intcoalesce.RedisOptions
+
+// NewRedsyncLocker builds a Locker over go-redsync/redsync (HA stampede lock).
+func NewRedsyncLocker(opts RedisOptions) (Locker, func() error, error) {
+	return intcoalesce.NewRedsyncLocker(opts)
+}
+
 // DefaultLockTTL is a reasonable default for Locker.Acquire.
 const DefaultLockTTL = 30 * time.Second

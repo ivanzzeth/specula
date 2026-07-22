@@ -80,6 +80,7 @@ type Handler struct {
 	// callers asked for — because the content digest cache.Store coalesces on is
 	// only knowable after the download it should have prevented.
 	fetchSF coalesce.Coalescer
+	locker  coalesce.Locker
 
 	log *slog.Logger
 }
@@ -115,6 +116,11 @@ func WithQuarantineDir(dir string) Option {
 // WithLogger injects a structured logger.
 func WithLogger(l *slog.Logger) Option {
 	return func(h *Handler) { h.log = l }
+}
+
+// WithLocker injects a cross-replica Locker for cold-fetch stampede protection.
+func WithLocker(l coalesce.Locker) Option {
+	return func(h *Handler) { h.locker = l }
 }
 
 // WithProvenanceVerifier injects the .prov GPG verifier used to lift charts to

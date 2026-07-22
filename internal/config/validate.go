@@ -124,6 +124,47 @@ func Validate(cfg *Config) error {
 		add("storage.meta.driver: must be \"sqlite\" or \"postgres\", got %q", cfg.Storage.Meta.Driver)
 	}
 
+	// ── Coalesce lock ─────────────────────────────────────────────────────
+	switch strings.ToLower(strings.TrimSpace(cfg.Coalesce.LockDriver)) {
+	case "", "local", "redis":
+		// ok
+	case "postgres":
+		add("coalesce.lock_driver: \"postgres\" is not supported; use \"redis\" (redsync) for HA")
+	default:
+		add("coalesce.lock_driver: must be \"local\", \"redis\", or empty, got %q", cfg.Coalesce.LockDriver)
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Coalesce.LockDriver), "redis") {
+		if strings.TrimSpace(cfg.Coalesce.Redis.Addr) == "" {
+			add("coalesce.redis.addr: must not be empty when lock_driver is \"redis\"")
+		}
+	}
+
+	// ── HA ────────────────────────────────────────────────────────────────
+	if cfg.Server.HA {
+		if !strings.EqualFold(strings.TrimSpace(cfg.Storage.Meta.Driver), "postgres") {
+			add("server.ha: storage.meta.driver must be \"postgres\" (got %q)", cfg.Storage.Meta.Driver)
+		}
+		ld := strings.ToLower(strings.TrimSpace(cfg.Coalesce.LockDriver))
+		if ld == "" {
+			ld = "redis" // HA implies redis; empty is treated as requiring redis addr below
+		}
+		if ld != "redis" {
+			add("server.ha: coalesce.lock_driver must be \"redis\" (got %q)", cfg.Coalesce.LockDriver)
+		}
+		if strings.TrimSpace(cfg.Coalesce.Redis.Addr) == "" {
+			add("server.ha: coalesce.redis.addr must not be empty")
+		}
+		switch cfg.Storage.Blob.Driver {
+		case "s3":
+			// shared by definition (any S3-compatible endpoint)
+		case "local":
+			if !cfg.Storage.Blob.Local.Shared {
+				add("server.ha: storage.blob.local.shared must be true when blob.driver is \"local\" " +
+					"(multi-replica CAS requires a shared PVC/NFS root, not per-pod disk)")
+			}
+		}
+	}
+
 	// ── Cache ─────────────────────────────────────────────────────────────
 	// default_mutable_ttl_seconds: -1/0/positive are all valid sentinels.
 	// negative_ttl_seconds: must be >= 0 (0 = disabled, positive = cache duration).

@@ -1,0 +1,20 @@
+apiVersion: v2
+name: specula
+description: Specula HA artifact cache — thin Deployment over Bitnami PostgreSQL, Redis, and optional MinIO
+type: application
+version: 0.1.0
+appVersion: "0.2"
+kubeVersion: ">=1.24.0-0"
+dependencies:
+  - name: postgresql
+    version: "18.8.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled
+  - name: redis
+    version: "27.0.15"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: redis.enabled
+  - name: minio
+    version: "17.0.21"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: minio.enabled

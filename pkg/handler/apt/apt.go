@@ -7,6 +7,7 @@ import (
 	intapt "github.com/ivanzzeth/specula/internal/handler/apt"
 
 	"github.com/ivanzzeth/specula/pkg/cache"
+	"github.com/ivanzzeth/specula/pkg/coalesce"
 	"github.com/ivanzzeth/specula/pkg/store/meta"
 	"github.com/ivanzzeth/specula/pkg/upstream"
 	"github.com/ivanzzeth/specula/pkg/verify"
@@ -30,4 +31,5 @@ func WithMutableTTL(secs int64) Option             { return intapt.WithMutableTT
 func WithPathPrefix(prefix string) Option          { return intapt.WithPathPrefix(prefix) }
 func WithQuarantineDir(dir string) Option          { return intapt.WithQuarantineDir(dir) }
 func WithLogger(l *slog.Logger) Option             { return intapt.WithLogger(l) }
+func WithLocker(l coalesce.Locker) Option          { return intapt.WithLocker(l) }
 func WithGPGVerifier(v *verify.GPGVerifier) Option { return intapt.WithGPGVerifier(v) }

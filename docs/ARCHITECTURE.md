@@ -455,19 +455,56 @@ graph TB
 
 ## 12. HA & 部署
 
+**硬约束：HA 面只用成熟库 / 成熟 chart，禁止造轮子。** 允许的代码形态只有对本仓接口的薄适配（如 `coalesce.Locker` → redsync）与对本仓已有栈的常规用法（pgx + goose、aws-sdk S3）。
+
 ```mermaid
 graph TB
     lb[L4 LB] --> s1[Specula] & s2[Specula] & s3[Specula]
-    s1 & s2 & s3 -->|CAS blobs| minio[(MinIO/S3)]
-    s1 & s2 & s3 -->|meta+users+config| pg[(PostgreSQL)]
-    s1 & s2 & s3 -.->|分布式 stampede 锁| redis[(Redis/PG advisory)]
+    s1 & s2 & s3 -->|CAS shared| cas[(S3-compatible OR shared PVC)]
+    s1 & s2 & s3 -->|meta+series+blocks| pg[(PostgreSQL)]
+    s1 & s2 & s3 -->|stampede lock| redis[(Redis / redsync)]
 ```
 
-- **无 leader election**：实例同质；写同 blob 幂等（同 digest 同字节）；MetadataStore upsert。
-- **stampede 去重**：分布式锁（§7），首个 miss 回源，others 等待/超时自行回源。
-- **DaemonSet 模式**：`hostNetwork` + 本地 SQLite + 本地盘 CAS；节点本地缓存，冷启回源。
-  统计各节点本地采集，Admin API 聚合。**修 L1**：hostNetwork 下同节点 pod 可访问 127.0.0.1，
-  记入威胁模型；可选本地 token/unix socket。
+### 成熟库矩阵
+
+| 关注点 | 选型 | 本仓动作 |
+|---|---|---|
+| 跨副本 stampede 锁 | **go-redsync/redsync/v4** + **go-redis/v9** | `coalesce.NewRedsyncLocker` → `FetchLocked` |
+| 元数据 / 多租户 / series / blocks | **jackc/pgx/v5** + **pressly/goose/v3** | HA 强制 `meta.driver=postgres`；迁移 `009_runtime_state` |
+| 共享 CAS | **aws-sdk-go-v2**（任意 S3 兼容）**或** `blob.driver=local` + `local.shared=true`（PVC/NFS） | **不**强制 AWS/MinIO |
+| 同副本合并 | **x/sync/singleflight** | 不改 |
+| K8s | **Helm 3** + Bitnami `postgresql` / `redis`；MinIO **可选** | `deploy/helm/specula`；`scripts/ha-minikube.sh` |
+
+### 配置开关（`server.ha=true`）
+
+- `storage.meta.driver=postgres`
+- `coalesce.lock_driver=redis` + `coalesce.redis.addr`
+- CAS：`blob.driver=s3` **或** `blob.driver=local` 且 `local.shared=true`
+- **git**：HA Deployment **关闭**（节点本地 bare mirror，非共享 CAS）
+
+单节点 / DaemonSet：SQLite + 本地盘 + 进程内 singleflight（`lock_driver` 空/`local`）。
+
+- **无 leader election**：实例同质；写同 blob 幂等；MetadataStore upsert。
+- **stampede**：同副本 singleflight；跨副本 redsync；`FetchLocked` 在 Acquire 后 Lookup 再回源。
+- **Helm 安装**：见 [`deploy/helm/specula/README.md`](../deploy/helm/specula/README.md)；本地验收 `./scripts/ha-minikube.sh`。
+
+### Bootstrap / 中国自举
+
+HA 多副本能跑，但在拉不到 `docker.io` / `registry.k8s.io` 的集群里，真正的缺口是：
+**先把 Specula 自己落地，再让其它镜像透过 Specula 进来**（鸡生蛋）。
+
+| Phase | 含义 |
+|-------|------|
+| 0 | 单副本 sqlite + local；镜像/二进制已在节点（离线 tar / ACR / `docker load`） |
+| 1 | Privileged DaemonSet：`specula bootstrap-mirror write` 写 containerd `certs.d` → NodePort |
+| 2 | Job：`specula bootstrap-prefetch` 预热 HA 依赖清单 |
+| 3 | `helm upgrade` 升完整 HA chart（installer Job 可选） |
+
+硬前提：引导 Specula 的 OCI upstream 必须**国内可达**（默认 DaoCloud
+`docker.m.daocloud.io`），不能写死 `registry-1.docker.io`。Phase 1/2 容器只用
+Specula 自身镜像（distroless，无 busybox）。Chart：
+[`deploy/helm/specula-bootstrap`](../deploy/helm/specula-bootstrap)；验收：
+`./scripts/bootstrap-minikube.sh`（containerd profile）。
 
 ---
 
@@ -483,9 +520,10 @@ specula/
 │   ├── cache/              — CacheManager, 二层缓存, quarantine 提升
 │   ├── store/
 │   │   ├── s3/ local/      — BlobStore CAS drivers
-│   │   └── postgres/ sqlite/ — MetadataStore
+│   │   ├── postgres/ sqlite/ — MetadataStore + goose
+│   │   └── runtimestate/   — HA series + upstream blocks (pgx)
 │   ├── upstream/           — fallback chain, retry, auto-block, 条件GET
-│   ├── coalesce/           — singleflight + 分布式锁
+│   ├── coalesce/           — singleflight + redsync Locker
 │   ├── verify/
 │   │   ├── checksum.go cosign.go gpg.go sumdb.go
 │   │   ├── helmprov.go gitsigned.go
@@ -493,12 +531,15 @@ specula/
 │   │   ├── tofu.go         — 首次锁定 + 变更告警 + anti-rollback
 │   │   └── depconfusion.go — 分生态 + fail-closed
 │   ├── policy/             — 每协议策略评估
-│   ├── stats/              — per-protocol + total 聚合, du 兜底
-│   ├── auth/               — bcrypt + HS256 JWT (复用 ai-sandbox)
+│   ├── stats/              — per-protocol + total 聚合, series backend
+│   ├── auth/               — bcrypt + HS256 JWT
 │   ├── admin/              — Admin API handlers
 │   └── metrics/            — Prometheus
-├── web/                    — React+Vite+Tailwind; embed.go //go:embed all:dist
-├── deploy/k8s/             — daemonset.yaml, deployment.yaml, configmap.yaml
+├── deploy/helm/specula/    — HA Helm chart (Bitnami PG/Redis, optional MinIO)
+├── deploy/helm/specula-bootstrap/ — 中国/离线自举 (sqlite+local, mirror DaemonSet)
+├── scripts/ha-minikube.sh  — minikube + helm HA 验收
+├── scripts/bootstrap-minikube.sh — containerd 自举 Phase 0–2 验收
+├── web/                    — React+Vite+Tailwind; embed.go
 ├── docs/                   — PRD.md, ARCHITECTURE.md, DESIGN-REVIEW.md
 ├── specula.example.yaml, Makefile, Dockerfile, LICENSE
 ```
@@ -510,19 +551,20 @@ specula/
 | Concern | Choice | Rationale |
 |---|---|---|
 | 语言 | Go 1.22+ | 单静态二进制 |
-| HTTP | `net/http`（Go 1.22 method+pattern 路由，参照 ai-sandbox） | 无魔法 |
+| HTTP | `net/http`（Go 1.22 method+pattern 路由） | 无魔法 |
 | OCI | `google/go-containerregistry` | crane/skopeo 同底座 |
-| cosign | `sigstore/cosign`（keyed，关闭 tlog） | CN 离线可验 |
+| cosign | `sigstore/sigstore`（keyed） | CN 离线可验 |
 | Go sumdb | `golang.org/x/mod/sumdb` | 签名 tree head + 证明验证 |
-| git | 移植 ai-sandbox `gitproxy`（`git http-backend` CGI + bare mirror） | 直接复用 |
-| S3 | `aws-sdk-go-v2`（参照 ai-sandbox）| R2/MinIO/OSS 通用 |
+| git | bare mirror + `git http-backend` | 公共 clone 加速 |
+| S3 | `aws-sdk-go-v2` | R2/MinIO/OSS 通用 |
 | PostgreSQL | `jackc/pgx` | 最佳 PG driver |
 | SQLite | `modernc.org/sqlite` | 纯 Go, CGO-free |
-| 迁移 | `pressly/goose`（参照 ai-sandbox） | 内嵌 SQL 迁移 |
-| stampede | `golang.org/x/sync/singleflight` + redsync/PG advisory | 两层去重 |
-| 系统统计 | `shirou/gopsutil`（参照 ai-sandbox） | statfs 容量 |
-| 认证 | `golang.org/x/crypto/bcrypt` + 手写 HS256 JWT（复用 ai-sandbox） | 无重依赖 |
-| 前端 | React18 + Vite + Tailwind（复用 ai-sandbox 风格） | 工程控制台美学 |
-| 配置 | `koanf`（YAML + env override）+ 加密配置库 | 多源 |
+| 迁移 | `pressly/goose` | 内嵌 SQL 迁移 |
+| stampede | `singleflight` + **redsync** | 同副本 + 跨副本 |
+| 系统统计 | `shirou/gopsutil` | statfs 容量 |
+| 认证 | bcrypt + JWT | 无重依赖 |
+| 前端 | React18 + Vite + Tailwind | 工程控制台 |
+| 配置 | `koanf`（YAML + env） | 多源 |
 | 日志 | `log/slog` | 结构化 JSON |
-| 测试 | `testify` + `testcontainers-go` | 真 S3/PG 集成 |
+| 测试 | `testify` + miniredis | 真 Redis 锁单测 |
+| HA 部署 | Helm + Bitnami PG/Redis | 成熟 chart，不自研 infra |

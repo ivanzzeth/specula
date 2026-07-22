@@ -4,10 +4,12 @@ go 1.25.7
 
 require (
 	github.com/ProtonMail/go-crypto v1.4.1
+	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/aws/aws-sdk-go-v2 v1.42.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.30
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.29
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.105.1
+	github.com/go-redsync/redsync/v4 v4.17.0
 	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-containerregistry v0.21.7
@@ -19,6 +21,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/pressly/goose/v3 v3.27.2
 	github.com/prometheus/client_golang v1.23.2
+	github.com/redis/go-redis/v9 v9.21.0
 	github.com/shirou/gopsutil/v3 v3.24.5
 	github.com/sigstore/sigstore v1.10.8
 	github.com/stretchr/testify v1.11.1
@@ -81,7 +84,9 @@ require (
 	github.com/sigstore/protobuf-specs v0.5.0 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect

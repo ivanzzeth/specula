@@ -7,6 +7,7 @@ import (
 	inthelm "github.com/ivanzzeth/specula/internal/handler/helm"
 
 	"github.com/ivanzzeth/specula/pkg/cache"
+	"github.com/ivanzzeth/specula/pkg/coalesce"
 	"github.com/ivanzzeth/specula/pkg/store/meta"
 	"github.com/ivanzzeth/specula/pkg/upstream"
 	"github.com/ivanzzeth/specula/pkg/verify"
@@ -30,4 +31,5 @@ func WithMutableTTL(secs int64) Option                         { return inthelm.
 func WithPathPrefix(prefix string) Option                      { return inthelm.WithPathPrefix(prefix) }
 func WithQuarantineDir(dir string) Option                      { return inthelm.WithQuarantineDir(dir) }
 func WithLogger(l *slog.Logger) Option                         { return inthelm.WithLogger(l) }
+func WithLocker(l coalesce.Locker) Option                      { return inthelm.WithLocker(l) }
 func WithProvenanceVerifier(v *verify.HelmProvVerifier) Option { return inthelm.WithProvenanceVerifier(v) }

@@ -32,6 +32,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/admin"
 	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/auth"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/grant"
 	"github.com/ivanzzeth/specula/internal/handler/registry"
@@ -44,6 +45,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/stats"
 	"github.com/ivanzzeth/specula/internal/store/aptpins"
 	"github.com/ivanzzeth/specula/internal/store/postgres"
+	"github.com/ivanzzeth/specula/internal/store/runtimestate"
 	"github.com/ivanzzeth/specula/internal/store/s3"
 	"github.com/ivanzzeth/specula/internal/store/sqlite"
 	"github.com/ivanzzeth/specula/internal/version"
@@ -86,6 +88,18 @@ func main() {
 		case "integrate":
 			if err := runIntegrate(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "specula integrate: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "bootstrap-mirror":
+			if err := runBootstrapMirror(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula bootstrap-mirror: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "bootstrap-prefetch":
+			if err := runBootstrapPrefetch(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula bootstrap-prefetch: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -263,7 +277,19 @@ func run() error {
 	chain := verify.NewChain(verifiers...)
 
 	// ── Stats collector (metadata-backed, powers /metrics + Admin API) ───────
-	collector := stats.NewCollectorWithStore(metaStore)
+	var seriesBackend stats.SeriesBackend
+	if cfg.Storage.Meta.Driver == "postgres" {
+		if pgStore, ok := metaStore.(*postgres.PostgresStore); ok {
+			seriesBackend = runtimestate.NewPostgresSeriesStore(pgStore.Pool(), stats.DefaultSeriesCapacity)
+		}
+	}
+	var collector stats.Collector
+	if seriesBackend != nil {
+		collector = stats.NewCollectorWithStoreAndSeries(metaStore, seriesBackend)
+		log.Info("specula: stats series backend enabled", "driver", "postgres")
+	} else {
+		collector = stats.NewCollectorWithStore(metaStore)
+	}
 
 	// ── Cache manager: two-tier CAS + verify-on-write quarantine ─────────────
 	cmOpts := []cache.Option{cache.WithLogger(log)}
@@ -292,15 +318,37 @@ func run() error {
 	// Admin API below, so /api/v1/admin/upstreams reports live state rather than
 	// a config echo — and an operator's change there takes effect on the very
 	// next fetch.
-	upstreams := upstream.NewRegistry()
+	var upstreams *upstream.Registry
+	if cfg.Storage.Meta.Driver == "postgres" {
+		if pgStore, ok := metaStore.(*postgres.PostgresStore); ok {
+			blockStore := runtimestate.NewPostgresBlockStore(pgStore.Pool())
+			upstreams = upstream.NewRegistryWithBlockPersister(func(protocol string) upstream.BlockPersister {
+				return runtimestate.BlockPersisterForProtocol(blockStore, protocol)
+			})
+			log.Info("specula: upstream block store enabled", "driver", "postgres")
+		}
+	}
+	if upstreams == nil {
+		upstreams = upstream.NewRegistry()
+	}
+
+	stampedeLocker, closeLocker, err := buildStampedeLocker(cfg)
+	if err != nil {
+		return fmt.Errorf("build stampede locker: %w", err)
+	}
+	defer func() { _ = closeLocker() }()
+	if stampedeLocker != nil {
+		log.Info("specula: cross-replica stampede lock ready",
+			"lock_driver", effectiveLockDriver(cfg), "redis", cfg.Coalesce.Redis.Addr)
+	}
 
 	dataMux := http.NewServeMux()
-	mountOCI(dataMux, cfg, cm, metaStore, log, upstreams, regTokenSvc, regAuthz, repoStore, blobs, registryEnabled)
-	mountGoModule(dataMux, cfg, cm, metaStore, log, upstreams)
-	mountPyPI(dataMux, cfg, cm, metaStore, log, upstreams)
-	mountNPM(dataMux, cfg, cm, metaStore, log, upstreams)
-	mountAPT(dataMux, cfg, cm, metaStore, log, upstreams, gpgV)
-	mountHelm(dataMux, cfg, cm, metaStore, log, upstreams, helmProvV)
+	mountOCI(dataMux, cfg, cm, metaStore, log, upstreams, regTokenSvc, regAuthz, repoStore, blobs, registryEnabled, stampedeLocker)
+	mountGoModule(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountPyPI(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountNPM(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountAPT(dataMux, cfg, cm, metaStore, log, upstreams, gpgV, stampedeLocker)
+	mountHelm(dataMux, cfg, cm, metaStore, log, upstreams, helmProvV, stampedeLocker)
 	mountTarball(dataMux, cfg, cm, metaStore, log, upstreams)
 	mountGit(dataMux, cfg, metaStore, log, gitSignedV)
 	// Liveness on the data plane too, so a bare data-plane LB can probe it.
@@ -430,6 +478,41 @@ func parseAndLoad() (*config.Config, string, error) {
 	return cfg, *configPath, nil
 }
 
+// effectiveLockDriver returns the lock backend name used at runtime.
+func effectiveLockDriver(cfg *config.Config) string {
+	ld := strings.ToLower(strings.TrimSpace(cfg.Coalesce.LockDriver))
+	if cfg.Server.HA && ld == "" {
+		return "redis"
+	}
+	if ld == "" {
+		return "local"
+	}
+	return ld
+}
+
+// buildStampedeLocker constructs the cross-replica coalesce.Locker from config.
+// Empty / "local" returns a nil locker (in-process singleflight only).
+func buildStampedeLocker(cfg *config.Config) (coalesce.Locker, func() error, error) {
+	nop := func() error { return nil }
+	switch effectiveLockDriver(cfg) {
+	case "local":
+		return nil, nop, nil
+	case "redis":
+		locker, closer, err := coalesce.NewRedsyncLocker(coalesce.RedisOptions{
+			Addr:      cfg.Coalesce.Redis.Addr,
+			Password:  cfg.Coalesce.Redis.Password,
+			DB:        cfg.Coalesce.Redis.DB,
+			KeyPrefix: cfg.Coalesce.Redis.KeyPrefix,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		return locker, closer, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown coalesce.lock_driver %q", cfg.Coalesce.LockDriver)
+	}
+}
+
 // buildBlobStore constructs the CAS blob store from config (local | s3).
 func buildBlobStore(ctx context.Context, cfg *config.Config) (blobstore.BlobStore, error) {
 	switch cfg.Storage.Blob.Driver {
@@ -519,11 +602,14 @@ func buildMultiTenantStores(cfg *config.Config, metaStore metastore.MetadataStor
 //     wrapped by the registry-token Bearer challenge middleware.
 //
 // The final chain at /v2/ is: Challenge → registry(write) → oci(read).
-func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, tokenSvc *registrytoken.Service, authz *registryauthz.Authz, repoStore *repo.SQLStore, blobs blobstore.BlobStore, registryEnabled bool) {
+func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, tokenSvc *registrytoken.Service, authz *registryauthz.Authz, repoStore *repo.SQLStore, blobs blobstore.BlobStore, registryEnabled bool, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["oci"]
 	opts := []oci.Option{
 		oci.WithMeta(metaStore),
 		oci.WithLogger(log.With("protocol", "oci")),
+	}
+	if locker != nil {
+		opts = append(opts, oci.WithLocker(locker))
 	}
 	if ok {
 		opts = append(opts,
@@ -627,12 +713,15 @@ const goMountPrefix = "/go"
 // handler self-strips the /go prefix (WithPathPrefix) so it can be mounted with
 // a bare ServeMux pattern. When the "go" protocol is absent the handler still
 // mounts (serving already-cached content) but has no upstream fallback.
-func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry) {
+func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols[goProtocolKey]
 	opts := []gomod.Option{
 		gomod.WithMeta(metaStore),
 		gomod.WithPathPrefix(goMountPrefix),
 		gomod.WithLogger(log.With("protocol", gomod.Protocol)),
+	}
+	if locker != nil {
+		opts = append(opts, gomod.WithLocker(locker))
 	}
 
 	sumdbEnabled := false
@@ -724,13 +813,16 @@ const (
 // mountPyPI wires the PyPI handler at /pypi/ using the "pypi" protocol config for
 // upstreams, mutable TTL and the optional dependency-confusion private guard.
 // pypi tops out at TOFU in this batch (no protocol-native signed anchor).
-func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry) {
+func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["pypi"]
 	l := log.With("protocol", pypi.Protocol)
 	opts := []pypi.Option{
 		pypi.WithMeta(metaStore),
 		pypi.WithPathPrefix(pypiPrefix),
 		pypi.WithLogger(l),
+	}
+	if locker != nil {
+		opts = append(opts, pypi.WithLocker(locker))
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
@@ -754,13 +846,16 @@ func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 // mountNPM wires the npm handler at /npm/ using the "npm" protocol config for
 // upstreams, mutable TTL and the optional dependency-confusion private guard.
 // npm tops out at TOFU in this batch (scoped names are confusion-resistant).
-func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry) {
+func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["npm"]
 	l := log.With("protocol", npm.Protocol)
 	opts := []npm.Option{
 		npm.WithMeta(metaStore),
 		npm.WithPathPrefix(npmPrefix),
 		npm.WithLogger(l),
+	}
+	if locker != nil {
+		opts = append(opts, npm.WithLocker(locker))
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
@@ -787,12 +882,15 @@ func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 // GPG chain verifier (apt's signed anchor) is passed in when configured; the same
 // instance is already registered in the shared verify chain so verify-on-write and
 // the handler share one stateful anchor. Without it, apt tops out at tofu.
-func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, gpgV *verify.GPGVerifier) {
+func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, gpgV *verify.GPGVerifier, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["apt"]
 	opts := []apthandler.Option{
 		apthandler.WithMeta(metaStore),
 		apthandler.WithPathPrefix(aptPrefix),
 		apthandler.WithLogger(log.With("protocol", apthandler.Protocol)),
+	}
+	if locker != nil {
+		opts = append(opts, apthandler.WithLocker(locker))
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
@@ -812,12 +910,15 @@ func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 // protocol config. The .prov GPG verifier (helm's signed anchor) is passed in
 // when configured; the same instance is registered in the shared chain. Without
 // it, helm tops out at tofu.
-func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, provV *verify.HelmProvVerifier) {
+func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, provV *verify.HelmProvVerifier, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["helm"]
 	opts := []helmhandler.Option{
 		helmhandler.WithMeta(metaStore),
 		helmhandler.WithPathPrefix(helmPrefix),
 		helmhandler.WithLogger(log.With("protocol", helmhandler.Protocol)),
+	}
+	if locker != nil {
+		opts = append(opts, helmhandler.WithLocker(locker))
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {

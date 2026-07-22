@@ -14,8 +14,8 @@
 //     *panicError. singleflight never re-panics; the entry is Forgotten so the
 //     next caller starts fresh.
 //
-//   - Distributed Locker: interface defined here; a pg-advisory or redsync impl
-//     is the production path. NewLocalLocker() provides a functional in-process
+//   - Distributed Locker: interface defined here; redsync (Redis) is the HA
+//     production path. NewLocalLocker() provides a functional in-process
 //     implementation with TTL + owner-checked (fenced) Release semantics.
 package coalesce
 
@@ -64,7 +64,7 @@ type Lock interface {
 }
 
 // Locker acquires cross-instance distributed locks with a TTL.
-// Production implementations back this with PG advisory locks or Redis SET NX.
+// HA production path: NewRedsyncLocker (go-redsync/redsync over go-redis).
 type Locker interface {
 	Acquire(ctx context.Context, key string, ttl time.Duration) (Lock, error)
 }

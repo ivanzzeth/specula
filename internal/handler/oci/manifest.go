@@ -102,8 +102,27 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageNam
 		return
 	}
 
-	newDigest, fetchErr := coalesce.Fetch(ctx, h.fetchSF,
+	newDigest, fetchErr := coalesce.FetchLocked(ctx, h.fetchSF, h.locker,
 		coalesce.FetchKey("oci", "manifest:"+imageName, reference, ""),
+		0,
+		func(ctx context.Context) (string, bool, error) {
+			d, _, rerr := h.resolveManifestDigest(ctx, imageName, reference)
+			if rerr != nil {
+				return "", false, rerr
+			}
+			if d == "" {
+				return "", false, nil
+			}
+			okRef := artifact.ArtifactRef{Protocol: "oci", Name: imageName, Digest: d}
+			e, lerr := h.cache.Lookup(ctx, okRef)
+			if lerr != nil {
+				return "", false, lerr
+			}
+			if e != nil {
+				return d, true, nil
+			}
+			return "", false, nil
+		},
 		func() (string, error) {
 			return h.fetchAndStoreManifest(ctx, imageName, reference)
 		})

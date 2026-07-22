@@ -55,6 +55,7 @@ type Handler struct {
 	// (ARCHITECTURE §7). Blobs and manifests share it under distinct key
 	// namespaces, so a blob and a manifest naming the same string never collide.
 	fetchSF coalesce.Coalescer
+	locker  coalesce.Locker
 }
 
 // Option is a functional option applied to Handler during construction.
@@ -88,6 +89,11 @@ func WithQuarantineDir(dir string) Option {
 // WithLogger injects a structured logger.
 func WithLogger(l *slog.Logger) Option {
 	return func(h *Handler) { h.log = l }
+}
+
+// WithLocker injects a cross-replica Locker for cold-fetch stampede protection.
+func WithLocker(l coalesce.Locker) Option {
+	return func(h *Handler) { h.locker = l }
 }
 
 // NewHandler constructs an OCI Handler backed by the given CacheManager.

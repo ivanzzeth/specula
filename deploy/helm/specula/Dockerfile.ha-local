@@ -1,0 +1,15 @@
+# Fast HA/minikube image: host-built static binary only (no go mod download).
+# Prefer scripts/ha-minikube.sh which stages the binary into a temp context
+# (repo .dockerignore excludes bin/). Manual equivalent:
+#
+#   CGO_ENABLED=0 go build -o /tmp/specula-ha/specula ./cmd/specula
+#   cp contrib/docker/specula.yaml /tmp/specula-ha/specula.yaml
+#   # use the Dockerfile emitted by ha-minikube.sh in that dir
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY specula /specula
+COPY specula.yaml /etc/specula/specula.yaml
+EXPOSE 7732 7733
+VOLUME ["/var/lib/specula"]
+USER nonroot:nonroot
+ENTRYPOINT ["/specula"]
+CMD ["--config", "/etc/specula/specula.yaml"]

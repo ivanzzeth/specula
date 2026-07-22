@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+spec:
+  # Single replica: SQLite + local blob are node-local and not shared.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "specula-bootstrap.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "specula-bootstrap.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      enableServiceLinks: {{ .Values.enableServiceLinks }}
+      containers:
+        - name: specula
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config
+            - /etc/specula/specula.yaml
+          ports:
+            - name: data
+              containerPort: {{ .Values.service.dataPort }}
+              protocol: TCP
+            - name: control
+              containerPort: {{ .Values.service.controlPort }}
+              protocol: TCP
+          # /v2/ is the auth-handshake endpoint (401 by protocol); /healthz is the
+          # unauthenticated liveness signal served on the data listener.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: data
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: data
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/specula
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/specula
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "specula-bootstrap.fullname" . }}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "specula-bootstrap.fullname" . }}-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

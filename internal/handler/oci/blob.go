@@ -107,9 +107,20 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 		}
 		// Collapsed on request identity (ARCHITECTURE §7): concurrent pulls of the
 		// same cold blob — the common case when N nodes schedule one image at
-		// once — cost ONE upstream round trip.
-		entry, err = coalesce.Fetch(ctx, h.fetchSF,
+		// once — cost ONE upstream round trip. Cross-replica: FetchLocked + locker.
+		entry, err = coalesce.FetchLocked(ctx, h.fetchSF, h.locker,
 			coalesce.FetchKey("oci", "blob:"+imageName, digest, ""),
+			0,
+			func(ctx context.Context) (*artifact.CacheEntry, bool, error) {
+				e, lerr := h.cache.Lookup(ctx, ref)
+				if lerr != nil {
+					return nil, false, lerr
+				}
+				if e != nil {
+					return e, true, nil
+				}
+				return nil, false, nil
+			},
 			func() (*artifact.CacheEntry, error) {
 				return h.fetchAndStoreBlob(ctx, imageName, digest)
 			})

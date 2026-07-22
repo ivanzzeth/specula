@@ -1,0 +1,173 @@
+{{- include "specula.validate.ha.blob" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "specula.fullname" . }}
+  labels:
+    {{- include "specula.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "specula.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "specula.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      # Kubernetes injects {SVCNAME}_SERVICE_HOST/_PORT/... env vars for every
+      # service in the namespace. Services named "specula-*" produce SPECULA_*
+      # vars that collide with Specula's SPECULA_ config env prefix, and the
+      # strict config loader rejects them as unknown keys (CrashLoopBackOff).
+      # Disable service links — Specula addresses backends via DNS, not env.
+      enableServiceLinks: {{ .Values.enableServiceLinks }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: specula
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config
+            - /etc/specula/specula.yaml
+          ports:
+            - name: data
+              containerPort: {{ .Values.service.dataPort }}
+              protocol: TCP
+            - name: control
+              containerPort: {{ .Values.service.controlPort }}
+              protocol: TCP
+          env:
+            - name: SPECULA_AUTH__CONFIG_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "specula.secretName" . }}
+                  key: config-secret
+            {{- if .Values.auth.jwtSecret }}
+            - name: SPECULA_AUTH__JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "specula.secretName" . }}
+                  key: jwt-secret
+            {{- end }}
+            {{- if .Values.auth.cookieSecure }}
+            - name: SPECULA_AUTH__COOKIE_SECURE
+              value: "true"
+            {{- end }}
+            {{- if .Values.postgresql.enabled }}
+            - name: PG_USER
+              value: {{ .Values.postgresql.auth.username | quote }}
+            - name: PG_HOST
+              value: {{ include "specula.postgresql.host" . | quote }}
+            - name: PG_DATABASE
+              value: {{ .Values.postgresql.auth.database | quote }}
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "specula.postgresql.secretName" . }}
+                  key: password
+            - name: SPECULA_STORAGE__META__DSN
+              value: "postgres://$(PG_USER):$(PG_PASSWORD)@$(PG_HOST):5432/$(PG_DATABASE)?sslmode=disable"
+            {{- else }}
+            {{- fail "postgresql.enabled must be true for HA" }}
+            {{- end }}
+            {{- if .Values.redis.enabled }}
+            {{- if .Values.redis.auth.enabled }}
+            - name: SPECULA_COALESCE__REDIS__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "specula.redis.secretName" . }}
+                  key: redis-password
+            {{- end }}
+            {{- else }}
+            {{- fail "redis.enabled must be true for HA" }}
+            {{- end }}
+            {{- if eq .Values.blob.driver "s3" }}
+            {{- if .Values.blob.s3.existingSecret }}
+            - name: SPECULA_STORAGE__BLOB__S3__ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.blob.s3.existingSecret }}
+                  key: {{ .Values.blob.s3.accessKeySecretKey }}
+            - name: SPECULA_STORAGE__BLOB__S3__SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.blob.s3.existingSecret }}
+                  key: {{ .Values.blob.s3.secretKeySecretKey }}
+            {{- else if .Values.minio.enabled }}
+            - name: SPECULA_STORAGE__BLOB__S3__ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "specula.minio.secretName" . }}
+                  key: root-user
+            - name: SPECULA_STORAGE__BLOB__S3__SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "specula.minio.secretName" . }}
+                  key: root-password
+            {{- else }}
+            {{- fail "blob.s3.existingSecret is required when minio.enabled is false and blob.driver is s3" }}
+            {{- end }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/specula
+              readOnly: true
+            {{- if and (eq .Values.blob.driver "local") .Values.blob.local.shared }}
+            - name: blob-data
+              mountPath: {{ .Values.blob.local.root }}
+            {{- end }}
+          # /v2/ is auth-gated (401 unauthenticated) and fails httpGet probes.
+          # /healthz is unauthenticated and served on the data listener.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: data
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: data
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "specula.configMapName" . }}
+        {{- if and (eq .Values.blob.driver "local") .Values.blob.local.shared }}
+        - name: blob-data
+          persistentVolumeClaim:
+            claimName: {{ include "specula.blob.pvcName" . }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

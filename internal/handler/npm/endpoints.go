@@ -731,12 +731,24 @@ func (h *Handler) serveBytes(ctx context.Context, ref artifact.ArtifactRef, entr
 
 // coalescedFetch runs fn under the cold-fetch single-flight so concurrent
 // callers for the SAME request identity share one upstream round trip
-// (ARCHITECTURE §7). See coalesce.Fetch for failure and bounded-wait semantics.
+// (ARCHITECTURE §7). See coalesce.FetchLocked for cross-replica semantics.
 func (h *Handler) coalescedFetch(
 	ctx context.Context,
 	ref artifact.ArtifactRef,
 	fn func() (*artifact.CacheEntry, error),
 ) (*artifact.CacheEntry, error) {
 	key := coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest)
-	return coalesce.Fetch(ctx, h.fetchSF, key, fn)
+	return coalesce.FetchLocked(ctx, h.fetchSF, h.locker, key, 0,
+		func(ctx context.Context) (*artifact.CacheEntry, bool, error) {
+			e, err := h.cache.Lookup(ctx, ref)
+			if err != nil {
+				return nil, false, err
+			}
+			if e != nil {
+				return e, true, nil
+			}
+			return nil, false, nil
+		},
+		fn,
+	)
 }

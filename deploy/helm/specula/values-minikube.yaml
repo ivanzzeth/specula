@@ -1,0 +1,82 @@
+# Minikube-friendly defaults for a 3-replica HA smoke test + HPA.
+#
+# Uses bundled Bitnami MinIO for shared CAS (avoids RWX PVC requirements on minikube).
+# Switch to blob.driver=local + blob.local.shared=true if your cluster has an RWX
+# StorageClass (NFS provisioner, etc.) — see README.md.
+
+replicaCount: 3
+
+image:
+  # scripts/ha-minikube.sh builds/pushes this into the minikube docker daemon.
+  repository: specula
+  tag: ha-local
+  pullPolicy: IfNotPresent
+
+auth:
+  # Demo only — replace in production (openssl rand -base64 32).
+  configSecret: "QJKHo5z8l1nUffgJXANt+4NuVFp8/UI5e+tCiB4h9OQ="
+
+# Requests required for HPA CPU metrics.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 60
+  targetMemoryUtilizationPercentage: 0
+
+# Single-node minikube: use a shared RWX hostpath PVC for the CAS instead of
+# MinIO. All replicas land on the one node, so ReadWriteMany over the default
+# hostpath StorageClass behaves as a genuine shared blob store — and it drops
+# the MinIO image dependency (the S3 path is exercised in production/k3s).
+blob:
+  driver: local
+  local:
+    root: /var/lib/specula/blobs
+    shared: true
+    size: 5Gi
+    # Single-node minikube hostpath: RWO is enough (multi-pod on same node).
+    accessModes:
+      - ReadWriteOnce
+
+postgresql:
+  enabled: true
+  # Bitnami 18.x defaults to registry-1.docker.io; pin to docker.io so the
+  # rendered ref matches images preloaded via `minikube image load`.
+  image:
+    registry: docker.io
+    pullPolicy: IfNotPresent
+  auth:
+    username: specula
+    password: specula
+    database: specula
+  primary:
+    persistence:
+      enabled: true
+      size: 2Gi
+
+redis:
+  enabled: true
+  architecture: standalone
+  image:
+    registry: docker.io
+    pullPolicy: IfNotPresent
+  auth:
+    enabled: false
+  master:
+    persistence:
+      enabled: true
+      size: 1Gi
+
+minio:
+  enabled: false
+
+ingress:
+  enabled: false
