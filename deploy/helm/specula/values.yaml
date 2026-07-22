@@ -1,6 +1,7 @@
 # Default values for Specula HA.
 # Bitnami subcharts (postgresql, redis, minio) are configured under their own keys.
 
+
 replicaCount: 3
 
 image:
@@ -59,6 +60,10 @@ auth:
   configSecret: ""
   jwtSecret: ""
   cookieSecure: false
+
+# When "cn", ConfigMap uses China-reachable upstreams (DaoCloud / goproxy.cn /
+# npmmirror / tuna / aliyun). Empty keeps the default global upstreams.
+regionProfile: ""
 
 # Blob storage: "s3" (MinIO subchart or external S3-compatible) OR "local" with shared PVC.
 blob:

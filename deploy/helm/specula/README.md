@@ -17,18 +17,31 @@ Git protocol is **not** enabled in HA values (bare mirrors are node-local; disab
 
 - Kubernetes 1.24+
 - Helm 3
-- `helm dependency update deploy/helm/specula` (downloads Bitnami subcharts)
+- Vendored Bitnami subcharts under `charts/` (offline / CN safe):
+
+```bash
+./scripts/vendor-helm-deps.sh   # helm pull oci://…/bitnamicharts → charts/
+# or (online only, often fails behind the GFW — prefer the script once, commit charts/):
+helm dependency update deploy/helm/specula
+```
 
 ## Install
 
 ```bash
 cd deploy/helm/specula
-helm dependency update
+./../../../scripts/vendor-helm-deps.sh   # no-op if charts/ already present
 
 # Production-style (S3 via bundled MinIO — swap for external S3 by disabling minio)
 helm upgrade --install specula . \
   --namespace specula --create-namespace \
   --set auth.configSecret="$(openssl rand -base64 32)"
+
+# China / GFW — use the Specula-owned CN overlay (protocol upstreams + Bitnami image mirrors):
+helm upgrade --install specula . \
+  --namespace specula --create-namespace \
+  -f values.yaml -f values-cn.yaml \
+  --set auth.configSecret="$(openssl rand -base64 32)" \
+  --set blob.local.storageClass=longhorn   # or your RWX class
 
 # Minikube demo (builds local image, enables metrics-server, verifies HA + HPA)
 ./scripts/ha-minikube.sh

@@ -1,0 +1,49 @@
+# China / GFW overlay for Specula HA.
+# Use with: helm upgrade --install … -f values.yaml -f values-cn.yaml
+#
+# - regionProfile=cn → ConfigMap protocol upstreams (DaoCloud / goproxy.cn / …)
+# - Bitnami subchart images via DaoCloud docker.io mirror (anonymous, no zot hop)
+# - Prefer local shared PVC over MinIO (MinIO image pull is another CN footgun)
+
+regionProfile: cn
+
+# Required when Bitnami images are retargeted off docker.io/bitnami (DaoCloud mirror).
+global:
+  security:
+    allowInsecureImages: true
+
+minio:
+  enabled: false
+
+blob:
+  driver: local
+  local:
+    shared: true
+
+# Bitnami charts still reference docker.io/bitnami/* — point registry at a CN mirror.
+# DaoCloud: docker.m.daocloud.io/<path> mirrors docker.io/<path>.
+postgresql:
+  image:
+    registry: docker.m.daocloud.io
+    repository: bitnami/postgresql
+  volumePermissions:
+    image:
+      registry: docker.m.daocloud.io
+      repository: bitnami/os-shell
+  metrics:
+    image:
+      registry: docker.m.daocloud.io
+      repository: bitnami/postgres-exporter
+
+redis:
+  image:
+    registry: docker.m.daocloud.io
+    repository: bitnami/redis
+  metrics:
+    image:
+      registry: docker.m.daocloud.io
+      repository: bitnami/redis-exporter
+  volumePermissions:
+    image:
+      registry: docker.m.daocloud.io
+      repository: bitnami/os-shell

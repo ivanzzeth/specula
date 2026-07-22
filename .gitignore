@@ -22,8 +22,10 @@
 /web/dist/*
 !/web/dist/.gitkeep
 
-# Helm dependency packages (run: helm dependency update deploy/helm/specula)
-/deploy/helm/specula/charts/
+# Helm dependency packages — vendor with ./scripts/vendor-helm-deps.sh then commit
+# so CN / air-gapped installs do not need docker.io OCI at install time.
+# (Keep this comment; do NOT ignore charts/*.tgz once vendored.)
+# /deploy/helm/specula/charts/
 
 # OCI conformance suite run artifacts (scripts/oci-conformance.sh writes these
 # under $WORK; this guards against the binary being run from the repo root).

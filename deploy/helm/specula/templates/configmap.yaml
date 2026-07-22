@@ -47,6 +47,111 @@ data:
 
     # Git is omitted in HA: bare mirrors are node-local and not shared across replicas.
     protocols:
+{{- if eq .Values.regionProfile "cn" }}
+      oci:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: daocloud
+            base_url: https://docker.m.daocloud.io
+            priority: 1
+            official: false
+          - name: aliyun
+            base_url: https://registry.aliyuncs.com
+            priority: 2
+            official: false
+          - name: docker-hub
+            base_url: https://registry-1.docker.io
+            priority: 3
+            official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 2
+      go:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: goproxy-cn
+            base_url: https://goproxy.cn
+            priority: 1
+            official: false
+          - name: goproxy-io
+            base_url: https://goproxy.io
+            priority: 2
+            official: false
+          - name: golang-proxy
+            base_url: https://proxy.golang.org
+            priority: 3
+            official: true
+        verification:
+          tiers: [signed, tofu, checksum]
+          quorum: 1
+        sumdb:
+          url: https://sum.golang.google.cn
+          policy: enforce
+      pypi:
+        mutable_ttl_seconds: 1800
+        upstreams:
+          - name: tuna
+            base_url: https://pypi.tuna.tsinghua.edu.cn
+            priority: 1
+            official: false
+          - name: aliyun
+            base_url: https://mirrors.aliyun.com/pypi
+            priority: 2
+            official: false
+          - name: pypi-org
+            base_url: https://pypi.org
+            priority: 3
+            official: true
+        verification:
+          tiers: [consensus, tofu, checksum]
+          quorum: 2
+          tofu: enforce
+      npm:
+        mutable_ttl_seconds: 120
+        upstreams:
+          - name: npmmirror
+            base_url: https://registry.npmmirror.com
+            priority: 1
+            official: false
+          - name: npm-registry
+            base_url: https://registry.npmjs.org
+            priority: 2
+            official: true
+        verification:
+          tiers: [consensus, tofu, checksum]
+          quorum: 2
+          tofu: enforce
+      helm:
+        mutable_ttl_seconds: 1800
+        upstreams:
+          - name: bitnami
+            base_url: https://charts.bitnami.com/bitnami
+            priority: 1
+            official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      apt:
+        mutable_ttl_seconds: 0
+        upstreams:
+          - name: tuna
+            base_url: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+            priority: 1
+            official: false
+          - name: aliyun
+            base_url: https://mirrors.aliyun.com/ubuntu
+            priority: 2
+            official: false
+          - name: ubuntu-archive
+            base_url: https://archive.ubuntu.com/ubuntu
+            priority: 3
+            official: true
+        verification:
+          tiers: [signed, tofu, checksum]
+          quorum: 1
+          tofu: enforce
+{{- else }}
       oci:
         mutable_ttl_seconds: 300
         upstreams:
@@ -115,6 +220,7 @@ data:
           tiers: [signed, tofu, checksum]
           quorum: 1
           tofu: enforce
+{{- end }}
       tarball:
         mutable_ttl_seconds: -1
         upstreams:
