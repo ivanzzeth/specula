@@ -54,6 +54,7 @@ func (c *errStatsCollector) Total(_ context.Context) (artifact.SizeStat, error) 
 }
 func (c *errStatsCollector) RecordPut(_ context.Context, _ string, _ int64) error   { return nil }
 func (c *errStatsCollector) RecordEvict(_ context.Context, _ string, _ int64) error { return nil }
+func (c *errStatsCollector) EvictionTotals() (int64, int64)                         { return 0, 0 }
 func (c *errStatsCollector) Refresh(_ context.Context)                              {}
 func (c *errStatsCollector) Run(_ context.Context)                                  {}
 func (c *errStatsCollector) AddOpaquePath(_, _ string)                              {}

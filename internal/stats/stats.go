@@ -63,6 +63,9 @@ type Collector interface {
 	RecordPut(ctx context.Context, protocol string, size int64) error
 	// RecordEvict decrements the aggregate for protocol by size bytes.
 	RecordEvict(ctx context.Context, protocol string, size int64) error
+	// EvictionTotals returns process-lifetime bytes/objects removed by
+	// capacity eviction (RecordEvict). Resets on restart.
+	EvictionTotals() (bytes, objects int64)
 	// Refresh performs ONE synchronous refresh: it reads the MetadataStore and
 	// walks any registered opaque roots, setting the Prometheus gauges to the
 	// authoritative values right now. It is what makes the FIRST measurement
@@ -120,6 +123,10 @@ type collector struct {
 	duPaths       []duEntry // opaque-cache roots for du-sb fallback
 	series        *seriesStore
 	seriesBackend SeriesBackend
+
+	// Process-lifetime eviction counters (capacity GC via RecordEvict).
+	evictedBytes   int64
+	evictedObjects int64
 
 	// tickCh, when non-nil, replaces time.NewTicker inside Run.
 	// Intended only for unit tests that drive refresh ticks deterministically.
@@ -513,9 +520,20 @@ func (c *collector) RecordEvict(ctx context.Context, protocol string, size int64
 		s.objects = 0
 	}
 	c.inmem[protocol] = s
+	if size > 0 {
+		c.evictedBytes += size
+	}
+	c.evictedObjects++
 	c.mu.Unlock()
 
 	return nil
+}
+
+// EvictionTotals returns process-lifetime capacity-eviction counters.
+func (c *collector) EvictionTotals() (bytes, objects int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.evictedBytes, c.evictedObjects
 }
 
 // AddOpaquePath registers an opaque-cache root paired with its Prometheus

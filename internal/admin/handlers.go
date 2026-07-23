@@ -224,6 +224,12 @@ func (s *Server) collectCacheStats(ctx context.Context) (StatsResponse, error) {
 		BackendDiskFree: free,
 		BackendDiskUsed: used,
 	}
+	if s.cfg != nil {
+		resp.MaxBytes = s.cfg.Cache.MaxBytes
+	}
+	if s.stats != nil {
+		resp.EvictedBytes, resp.EvictedObjects = s.stats.EvictionTotals()
+	}
 	if s.meta != nil {
 		if byOrigin, oerr := s.meta.CacheSizeByOrigin(ctx); oerr == nil {
 			if h, ok := byOrigin[artifact.OriginHosted]; ok {

@@ -47,10 +47,16 @@ type StatsResponse struct {
 	HostedBytes   int64 `json:"hosted_bytes"`
 	HostedObjects int64 `json:"hosted_objects"`
 	// CachedBytes/Objects are pull-through cache (evictable under max_bytes).
+	// CachedBytes/Objects are pull-through cache (evictable under max_bytes).
 	CachedBytes   int64 `json:"cached_bytes"`
 	CachedObjects int64 `json:"cached_objects"`
 	BackendDiskFree int64 `json:"backend_disk_free"`
 	BackendDiskUsed int64 `json:"backend_disk_used"`
+	// MaxBytes is cache.max_bytes (0 = unlimited).
+	MaxBytes int64 `json:"max_bytes"`
+	// EvictedBytes/Objects are process-lifetime eviction totals (reset on restart).
+	EvictedBytes   int64 `json:"evicted_bytes"`
+	EvictedObjects int64 `json:"evicted_objects"`
 }
 
 // InstanceStatsResponse is GET /api/v1/stats: cache occupancy plus live traffic.

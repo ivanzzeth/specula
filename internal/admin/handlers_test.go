@@ -243,6 +243,7 @@ func (c *fakeStatsCollector) Total(ctx context.Context) (artifact.SizeStat, erro
 }
 func (c *fakeStatsCollector) RecordPut(_ context.Context, _ string, _ int64) error   { return nil }
 func (c *fakeStatsCollector) RecordEvict(_ context.Context, _ string, _ int64) error { return nil }
+func (c *fakeStatsCollector) EvictionTotals() (int64, int64)                         { return 0, 0 }
 func (c *fakeStatsCollector) Refresh(_ context.Context)                              {}
 func (c *fakeStatsCollector) Run(_ context.Context)                                  {}
 func (c *fakeStatsCollector) Series(_ context.Context, _ string) ([]stats.SeriesPoint, error) {
@@ -1784,7 +1785,11 @@ func TestJSONFieldNames(t *testing.T) {
 		require.Equal(t, http.StatusOK, rr.Code)
 		var raw map[string]json.RawMessage
 		require.NoError(t, json.NewDecoder(rr.Body).Decode(&raw))
-		for _, key := range []string{"per_protocol", "total_bytes", "total_objects", "backend_disk_free", "backend_disk_used"} {
+		for _, key := range []string{
+			"per_protocol", "total_bytes", "total_objects",
+			"backend_disk_free", "backend_disk_used",
+			"max_bytes", "evicted_bytes", "evicted_objects",
+		} {
 			assert.Contains(t, raw, key, "missing JSON field %q", key)
 		}
 	})

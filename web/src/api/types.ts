@@ -59,6 +59,11 @@ export interface StatsResponse {
   cached_objects: number;
   backend_disk_free: number;
   backend_disk_used: number;
+  /** cache.max_bytes; 0 = unlimited */
+  max_bytes: number;
+  /** Process-lifetime capacity eviction totals (reset on restart). */
+  evicted_bytes: number;
+  evicted_objects: number;
 }
 
 export interface SeriesPoint {
