@@ -262,6 +262,47 @@ type ProtocolConfig struct {
 	// OCI configures OCI-specific pull-through extras (multi-registry allowlist).
 	// Only meaningful for the "oci" protocol; nil for all others.
 	OCI *OCIConfig `koanf:"oci"`
+
+	// Apt configures APT multi-archive allowlist (/apt/<archive>/dists|pool/…).
+	// Only meaningful for the "apt" protocol; nil for all others.
+	Apt *AptConfig `koanf:"apt"`
+
+	// Helm configures classic-HTTP multi-repo allowlist (/helm/<repo>/…).
+	// Only meaningful for the "helm" protocol; nil for all others.
+	Helm *HelmConfig `koanf:"helm"`
+
+	// Conda configures per-channel root allowlist (/conda/<channel>/…).
+	// Only meaningful for the "conda" protocol; nil for all others.
+	Conda *CondaConfig `koanf:"conda"`
+}
+
+// NamedSource is a named upstream root used by apt/helm/conda multi-source
+// allowlists (archive / repo / channel).
+type NamedSource struct {
+	Name    string `koanf:"name"`
+	BaseURL string `koanf:"base_url"`
+}
+
+// AptConfig holds APT multi-archive settings.
+// Empty Repositories → legacy behavior: any path prefix is cache-scoped only;
+// fetch always uses protocols.apt.upstreams (archive root).
+// Non-empty → /apt/<name>/… must match an allowlisted archive; unknown → 404.
+type AptConfig struct {
+	Repositories []NamedSource `koanf:"repositories"`
+}
+
+// HelmConfig holds classic-HTTP Helm multi-repo settings.
+// Empty Repositories → legacy: repo segment is a subpath under upstreams BaseURL.
+// Non-empty → /helm/<name>/… routes to that repo's BaseURL with path strip.
+type HelmConfig struct {
+	Repositories []NamedSource `koanf:"repositories"`
+}
+
+// CondaConfig holds per-channel root settings.
+// Empty Channels → legacy: full path under cloud-root upstreams.
+// Non-empty → /conda/<name>/… routes to that channel BaseURL after stripping name.
+type CondaConfig struct {
+	Channels []NamedSource `koanf:"channels"`
 }
 
 // CargoConfig holds Cargo-specific download-mirror settings.

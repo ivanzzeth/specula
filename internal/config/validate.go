@@ -321,6 +321,31 @@ func Validate(cfg *Config) error {
 				}
 			}
 		}
+
+		validateNamedSources := func(field string, srcs []NamedSource) {
+			for i, s := range srcs {
+				if strings.TrimSpace(s.Name) == "" {
+					add("protocols.%s.%s[%d].name: required", name, field, i)
+				}
+				u := strings.TrimSpace(s.BaseURL)
+				if u == "" {
+					add("protocols.%s.%s[%d].base_url: required", name, field, i)
+					continue
+				}
+				if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+					add("protocols.%s.%s[%d].base_url: must be http(s) URL, got %q", name, field, i, s.BaseURL)
+				}
+			}
+		}
+		if proto.Apt != nil {
+			validateNamedSources("apt.repositories", proto.Apt.Repositories)
+		}
+		if proto.Helm != nil {
+			validateNamedSources("helm.repositories", proto.Helm.Repositories)
+		}
+		if proto.Conda != nil {
+			validateNamedSources("conda.channels", proto.Conda.Channels)
+		}
 	}
 
 	if len(errs) == 0 {
