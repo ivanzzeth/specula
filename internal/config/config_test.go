@@ -81,14 +81,16 @@ func TestLoad_ExampleFile(t *testing.T) {
 	require.NoError(t, err, "example file must load and validate cleanly")
 
 	// Server
-	assert.Equal(t, ":7732", cfg.Server.DataPlaneAddr)
-	assert.Equal(t, ":7733", cfg.Server.ControlPlaneAddr)
+	assert.Equal(t, "0.0.0.0:7732", cfg.Server.DataPlaneAddr)
+	assert.Equal(t, "0.0.0.0:7733", cfg.Server.ControlPlaneAddr)
 
-	// Storage
+	// Storage — example uses ~/.specula; Load expands ~ to $HOME.
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
 	assert.Equal(t, "local", cfg.Storage.Blob.Driver)
-	assert.Equal(t, "/var/lib/specula/blobs", cfg.Storage.Blob.Local.Root)
+	assert.Equal(t, filepath.Join(home, ".specula", "blobs"), cfg.Storage.Blob.Local.Root)
 	assert.Equal(t, "sqlite", cfg.Storage.Meta.Driver)
-	assert.Equal(t, "/var/lib/specula/meta.db", cfg.Storage.Meta.DSN)
+	assert.Equal(t, filepath.Join(home, ".specula", "meta.db"), cfg.Storage.Meta.DSN)
 
 	// Cache
 	assert.Equal(t, int64(300), cfg.Cache.DefaultMutableTTLSeconds)
@@ -99,6 +101,8 @@ func TestLoad_ExampleFile(t *testing.T) {
 		_, ok := cfg.Protocols[proto]
 		assert.True(t, ok, "protocol %q missing from example config", proto)
 	}
+	require.NotNil(t, cfg.Protocols["git"].Git)
+	assert.Equal(t, filepath.Join(home, ".specula", "git"), cfg.Protocols["git"].Git.MirrorDir)
 
 	// OCI spot-check.
 	oci := cfg.Protocols["oci"]
@@ -382,37 +386,6 @@ protocols:
       quorum: 1
 `,
 			wantErrMsgs: []string{"storage.blob.driver"},
-		},
-		{
-			name: "local_blob_missing_root",
-			yaml: `
-server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
-storage:
-  blob:
-    driver: local
-    local:
-      root: ""
-  meta:
-    driver: sqlite
-    dsn: /tmp/meta.db
-cache:
-  default_mutable_ttl_seconds: 300
-  negative_ttl_seconds: 0
-protocols:
-  oci:
-    mutable_ttl_seconds: 60
-    upstreams:
-      - name: hub
-        base_url: https://registry-1.docker.io
-        priority: 1
-        official: true
-    verification:
-      tiers: [checksum]
-      quorum: 1
-`,
-			wantErrMsgs: []string{"storage.blob.local.root"},
 		},
 		{
 			name: "s3_missing_bucket",
@@ -868,8 +841,8 @@ storage:
 	require.NoError(t, err, "a config without a server block must start on the built-in ports")
 	assert.Equal(t, config.DefaultDataPlaneAddr, cfg.Server.DataPlaneAddr)
 	assert.Equal(t, config.DefaultControlPlaneAddr, cfg.Server.ControlPlaneAddr)
-	assert.Equal(t, ":7732", cfg.Server.DataPlaneAddr, "SPEC on a phone keypad; not 5000")
-	assert.Equal(t, ":7733", cfg.Server.ControlPlaneAddr, "not 8080")
+	assert.Equal(t, "0.0.0.0:7732", cfg.Server.DataPlaneAddr, "SPEC on a phone keypad; not 5000")
+	assert.Equal(t, "0.0.0.0:7733", cfg.Server.ControlPlaneAddr, "not 8080")
 }
 
 // TestLoad_ExplicitPortsOverrideDefaults keeps the defaults from becoming a floor

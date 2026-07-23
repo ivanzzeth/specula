@@ -29,9 +29,11 @@ Specula is a lightweight multi-protocol artifact proxy and Go library. It caches
 ```bash
 git clone https://github.com/ivanzzeth/specula.git
 cd specula
-cp specula.example.yaml specula.yaml   # edit storage paths / upstreams
-make run                               # or: go run ./cmd/specula -config specula.yaml
+make run                               # or: ./bin/specula  (writes specula.yaml from embed if missing)
 ```
+
+A release binary is the same: drop it anywhere and run — missing `specula.yaml`
+is created from the embedded example (data under `~/.specula`).
 
 - Data plane (protocols): `http://127.0.0.1:7732`
 - Control plane (WebUI): `http://127.0.0.1:7733`
@@ -56,7 +58,7 @@ Kubernetes, or full manual control — not required when `integrate` works for y
 
 ```bash
 make build-go
-sudo ./bin/specula service install          # binary → /usr/local/bin, unit enabled
+sudo ./bin/specula install                  # ≡ service install; embeds config → /etc/specula
 # or: make install
 
 sudo systemctl status specula
@@ -82,7 +84,8 @@ docker run --rm -p 7732:7732 -p 7733:7733 \
   ivanzz/specula:v0.4.0
 ```
 
-Default config is baked at `/etc/specula/specula.yaml` (data under `/var/lib/specula`).
+Default config is baked at `/etc/specula/specula.yaml` (container data under
+`/var/lib/specula`). Local / `make run` defaults to `~/.specula` (no root).
 Override with a bind-mount and `--config`, or `SPECULA_*` env vars.
 
 Local build / dogfood your own hosted registry:

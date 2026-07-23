@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/ivanzzeth/specula/internal/config"
 )
 
 //go:embed systemd/specula.service
@@ -54,12 +56,13 @@ func runService(args []string) error {
 }
 
 const serviceUsage = `Usage:
-  specula service install [--config PATH] [--binary PATH] [--user NAME] [--no-start]
-  specula service uninstall [--purge]
+  specula install | specula service install [--config PATH] [--binary PATH] [--user NAME] [--no-start]
+  specula uninstall | specula service uninstall [--purge]
   specula service status|enable|disable|start|stop
 
 Installs a systemd unit so Specula starts on boot (WantedBy=multi-user.target).
 Requires root. Creates system user, /etc/specula, /var/lib/specula if missing.
+Config is written from the embedded example when missing (no external YAML required).
 `
 
 func serviceInstall(args []string) error {
@@ -68,7 +71,6 @@ func serviceInstall(args []string) error {
 	configPath := fs.String("config", defaultConfigPath, "config file path written into the unit")
 	binaryPath := fs.String("binary", defaultBinaryPath, "destination for the specula binary")
 	unitUser := fs.String("user", defaultUnitUser, "system user to run as")
-	example := fs.String("example", "specula.example.yaml", "example config to copy if config is missing")
 	noStart := fs.Bool("no-start", false, "install and enable, but do not start yet")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -114,26 +116,12 @@ func serviceInstall(args []string) error {
 		fmt.Fprintf(os.Stderr, "installed binary → %s\n", *binaryPath)
 	}
 
-	if _, err := os.Stat(*configPath); os.IsNotExist(err) {
-		src := *example
-		if b, rerr := os.ReadFile(src); rerr == nil {
-			patched := patchConfigForSystemInstall(string(b))
-			if err := os.WriteFile(*configPath, []byte(patched), 0o644); err != nil {
-				return err
-			}
-			fmt.Fprintf(os.Stderr, "wrote config → %s (from %s; edit storage paths if needed)\n", *configPath, src)
-		} else {
-			minimal := fmt.Sprintf("# Specula system config — edit as needed.\n"+
-				"server:\n  data_plane_addr: \":7732\"\n  control_plane_addr: \":7733\"\n"+
-				"storage:\n  blob:\n    driver: local\n    local:\n      root: %s/blobs\n  meta:\n    driver: sqlite\n    dsn: %s/meta.db\n",
-				defaultDataDir, defaultDataDir)
-			if err := os.WriteFile(*configPath, []byte(minimal), 0o644); err != nil {
-				return err
-			}
-			fmt.Fprintf(os.Stderr, "wrote minimal config → %s\n", *configPath)
-		}
-	} else if err != nil {
+	created, err := config.WriteExampleIfMissing(*configPath, patchConfigForSystemInstall)
+	if err != nil {
 		return err
+	}
+	if created {
+		fmt.Fprintf(os.Stderr, "wrote config → %s (embedded example; storage under %s)\n", *configPath, defaultDataDir)
 	} else {
 		fmt.Fprintf(os.Stderr, "keeping existing config %s\n", *configPath)
 	}
@@ -240,6 +228,9 @@ func runSystemctl(args ...string) error {
 
 func patchConfigForSystemInstall(src string) string {
 	repl := []struct{ old, new string }{
+		{"~/.specula/blobs", defaultDataDir + "/blobs"},
+		{"~/.specula/meta.db", defaultDataDir + "/meta.db"},
+		{"~/.specula/git", defaultDataDir + "/git"},
 		{"./data/blobs", defaultDataDir + "/blobs"},
 		{"./data/meta.db", defaultDataDir + "/meta.db"},
 		{"./data/git", defaultDataDir + "/git"},

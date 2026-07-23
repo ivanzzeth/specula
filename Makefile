@@ -50,7 +50,7 @@ bench: build-go
 
 ## install: build-go then install systemd service (needs: root for service install)
 install: build-go
-	sudo ./bin/$(BINARY) service install --example specula.example.yaml
+	sudo ./bin/$(BINARY) install
 
 ## image: build the Specula container image (needs: docker; node+go inside Dockerfile)
 image:

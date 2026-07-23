@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,6 +39,10 @@ type SQLiteStore struct {
 // applies all pending embedded goose migrations. dsn may be a file path or an
 // SQLite URI (e.g. "file:specula.db?cache=shared").
 func NewSQLiteStore(dsn string) (*SQLiteStore, error) {
+	if err := ensureSQLiteParentDir(dsn); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", withPragmas(dsn))
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %q: %w", dsn, err)
@@ -367,6 +373,33 @@ func (s *SQLiteStore) CacheSizeByOrigin(ctx context.Context) (map[string]artifac
 //
 // A DSN that already carries query parameters keeps them; a bare file path is
 // promoted to a file: URI so the parameters are parseable.
+// ensureSQLiteParentDir creates the parent directory for a filesystem DSN so
+// first-boot under ~/.specula (or any other missing tree) does not fail open.
+// Memory and query-only URIs are skipped.
+func ensureSQLiteParentDir(dsn string) error {
+	path := dsn
+	switch {
+	case path == "" || path == ":memory:":
+		return nil
+	case strings.HasPrefix(path, "file:"):
+		path = strings.TrimPrefix(path, "file:")
+		if i := strings.IndexByte(path, '?'); i >= 0 {
+			path = path[:i]
+		}
+		if path == "" || path == ":memory:" {
+			return nil
+		}
+	}
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("sqlite: mkdir %s: %w", dir, err)
+	}
+	return nil
+}
+
 func withPragmas(dsn string) string {
 	const params = "_pragma=busy_timeout(5000)&_txlock=immediate"
 

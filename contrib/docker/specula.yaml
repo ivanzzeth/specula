@@ -4,8 +4,8 @@
 # Data lives under /var/lib/specula (declare a volume for persistence).
 
 server:
-  data_plane_addr: ":7732"
-  control_plane_addr: ":7733"
+  data_plane_addr: "0.0.0.0:7732"
+  control_plane_addr: "0.0.0.0:7733"
 
 storage:
   blob:

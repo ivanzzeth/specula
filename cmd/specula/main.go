@@ -109,6 +109,19 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "install":
+			// Release UX: `sudo ./specula install` ≡ `specula service install`.
+			if err := runService(append([]string{"install"}, os.Args[2:]...)); err != nil {
+				fmt.Fprintf(os.Stderr, "specula install: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "uninstall":
+			if err := runService(append([]string{"uninstall"}, os.Args[2:]...)); err != nil {
+				fmt.Fprintf(os.Stderr, "specula uninstall: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "bench":
 			if err := runBench(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "specula bench: %v\n", err)
@@ -468,12 +481,17 @@ func run() error {
 }
 
 // parseAndLoad parses the --config flag and loads+validates the config.
+// When the file is missing it is created from the embedded example so a
+// release binary can start with zero external files.
 func parseAndLoad() (*config.Config, string, error) {
 	configPath := flag.String("config", "specula.yaml", "path to the Specula config file")
 	flag.Parse()
-	cfg, err := config.Load(*configPath)
+	cfg, created, err := config.LoadOrCreate(*configPath)
 	if err != nil {
 		return nil, *configPath, fmt.Errorf("load config %q: %w", *configPath, err)
+	}
+	if created {
+		fmt.Fprintf(os.Stderr, "specula: wrote default config → %s (embedded example; edit as needed)\n", *configPath)
 	}
 	return cfg, *configPath, nil
 }

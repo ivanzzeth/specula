@@ -22,12 +22,18 @@ func TestRenderUnit(t *testing.T) {
 }
 
 func TestPatchConfigForSystemInstall(t *testing.T) {
-	in := "root: ./data/blobs\ndsn: ./data/meta.db\ngit: ./data/git\n"
+	in := "root: ~/.specula/blobs\ndsn: ~/.specula/meta.db\nmirror_dir: ~/.specula/git\n"
 	out := patchConfigForSystemInstall(in)
-	if strings.Contains(out, "./data/") {
-		t.Fatalf("still has ./data: %s", out)
+	if strings.Contains(out, "~/.specula") {
+		t.Fatalf("still has ~/.specula: %s", out)
 	}
 	if !strings.Contains(out, "/var/lib/specula/blobs") {
 		t.Fatalf("missing blobs path: %s", out)
+	}
+	if !strings.Contains(out, "/var/lib/specula/meta.db") {
+		t.Fatalf("missing meta path: %s", out)
+	}
+	if !strings.Contains(out, "/var/lib/specula/git") {
+		t.Fatalf("missing git path: %s", out)
 	}
 }

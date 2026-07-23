@@ -45,11 +45,11 @@ type Config struct {
 type ServerConfig struct {
 	// DataPlaneAddr is the listen address for the 8-protocol data plane.
 	// Consumers hit this address; no authentication is applied here.
-	// Example: ":7732" (see the port rationale in specula.example.yaml)
+	// Example: "0.0.0.0:7732" (see the port rationale in specula.example.yaml)
 	DataPlaneAddr string `koanf:"data_plane_addr"`
 
 	// ControlPlaneAddr is the listen address for the embedded WebUI +
-	// Admin API (email-authenticated management plane). Example: ":7733"
+	// Admin API (email-authenticated management plane). Example: "0.0.0.0:7733"
 	ControlPlaneAddr string `koanf:"control_plane_addr"`
 
 	// RegistryPublicHost is the host:port clients use to reach the OCI registry
@@ -136,7 +136,7 @@ type S3BlobConfig struct {
 type MetaStorageConfig struct {
 	// Driver is "sqlite" or "postgres".
 	Driver string `koanf:"driver"`
-	// DSN is the data source name. For SQLite: file path (e.g. /var/lib/specula/meta.db).
+	// DSN is the data source name. For SQLite: file path (e.g. ~/.specula/meta.db).
 	// For PostgreSQL: connection string (e.g. postgres://user:pass@host:5432/specula).
 	DSN string `koanf:"dsn"`
 }
@@ -521,7 +521,7 @@ type DependencyConfusionConfig struct {
 //
 // Examples:
 //
-//	SPECULA_SERVER__DATA_PLANE_ADDR=:7732
+//	SPECULA_SERVER__DATA_PLANE_ADDR=0.0.0.0:7732
 //	SPECULA_STORAGE__BLOB__DRIVER=s3
 //	SPECULA_PROTOCOLS__OCI__MUTABLE_TTL_SECONDS=300
 func Load(path string) (*Config, error) {
@@ -568,6 +568,15 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: unmarshal: %w", err)
 	}
 
+	// Expand ~/… paths, then fill any still-empty local storage fields from
+	// $HOME/.specula so a config that omits storage still boots without root.
+	if err := expandConfigPaths(&cfg); err != nil {
+		return nil, err
+	}
+	if err := applyStorageDefaults(&cfg); err != nil {
+		return nil, err
+	}
+
 	if err := Validate(&cfg); err != nil {
 		return nil, err
 	}
@@ -586,8 +595,8 @@ func Load(path string) (*Config, error) {
 // A collision here is not a cosmetic problem: it has already caused a
 // conformance run to silently grade a different server.
 const (
-	DefaultDataPlaneAddr    = ":7732"
-	DefaultControlPlaneAddr = ":7733"
+	DefaultDataPlaneAddr    = "0.0.0.0:7732"
+	DefaultControlPlaneAddr = "0.0.0.0:7733"
 )
 
 // TTLPtr returns a pointer to v, for building ProtocolConfig literals in code
