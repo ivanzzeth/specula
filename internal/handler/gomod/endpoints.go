@@ -200,6 +200,11 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 			writeGoError(w, se.StatusCode, http.StatusText(se.StatusCode))
 			return
 		}
+		if upstream.IsNotFound(fetchErr) {
+			h.log.Info("gomod: offline miss", "ref", ref)
+			writeGoError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
+			return
+		}
 		h.log.Error("gomod: mutable fetch", "ref", ref, "err", fetchErr)
 		writeGoError(w, http.StatusBadGateway, "upstream fetch failed")
 		return
@@ -300,6 +305,10 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, escMod,
 			h.log.Info("gomod: upstream reports absent/forbidden",
 				"module", escMod, "file", file, "status", se.StatusCode)
 			writeGoError(w, se.StatusCode, http.StatusText(se.StatusCode))
+			return
+		}
+		if upstream.IsNotFound(err) {
+			writeGoError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 			return
 		}
 		h.log.Error("gomod: fetch immutable", "module", escMod, "file", file, "err", err)

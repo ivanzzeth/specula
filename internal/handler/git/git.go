@@ -95,6 +95,9 @@ type Handler struct {
 	publicOnly      bool                // only mirror anonymously-readable repos
 	failClosed      bool                // probe failure → passthrough (never stale)
 
+	// offline blocks clone/fetch; serve existing mirrors only (server.mode=offline).
+	offline bool
+
 	// upstreamScheme is the URL scheme used when building upstream URLs.
 	// Default "https"; set to "http" in tests pointing at plain httptest.Server.
 	upstreamScheme string
@@ -179,6 +182,12 @@ func WithPublicOnly(publicOnly bool) Option {
 // the public-visibility probe fails.
 func WithFailClosed(failClosed bool) Option {
 	return func(h *Handler) { h.failClosed = failClosed }
+}
+
+// WithOffline disables clone/fetch refresh: only existing bare mirrors are
+// served; missing mirrors return 404 (no passthrough).
+func WithOffline(offline bool) Option {
+	return func(h *Handler) { h.offline = offline }
 }
 
 // WithSignedRefsVerifier injects the signed tag/commit verifier. When set, each
@@ -385,7 +394,7 @@ func (h *Handler) serveMirror(w http.ResponseWriter, r *http.Request, ref repoRe
 		}
 	}
 
-	// 2. Sync the mirror.
+	// 2. Sync the mirror (or serve local-only in offline mode).
 	//
 	// This is git's cache-outcome decision: unlike the CAS-backed handlers, git's
 	// byte cache is the bare mirror on disk, so the honest hit/miss axis is
@@ -394,22 +403,34 @@ func (h *Handler) serveMirror(w http.ResponseWriter, r *http.Request, ref repoRe
 	// request had to clone/fetch (a miss). Marked from r.Context(), not ctx: ctx
 	// is the timeout-bounded derivative, and the metrics scope rides on both, but
 	// the request context is the one the middleware installed.
-	upURL := ref.upstreamURLWithScheme(h.upstreamScheme)
-	contactedUpstream, err := h.mirror.EnsureSynced(ctx, ref, upURL)
-	if err != nil {
-		// The passthrough below reverse-proxies the body from the upstream, and
-		// the sync that just failed had already reached for it: a miss either way.
-		metrics.MarkMiss(r.Context())
-		h.log.Warn("git: mirror sync failed",
-			slog.String("repo", ref.mirrorRelPath()),
-			slog.Any("err", err))
-		h.passthrough(w, r, ref, "sync-fail")
-		return
-	}
-	if contactedUpstream {
-		metrics.MarkMiss(r.Context())
-	} else {
+	if h.offline {
+		path := h.mirror.mirrorPath(ref)
+		if !isUsableMirror(path) {
+			metrics.MarkMiss(r.Context())
+			h.log.Info("git: offline miss — no local mirror",
+				slog.String("repo", ref.mirrorRelPath()))
+			http.Error(w, "git: not found (offline)", http.StatusNotFound)
+			return
+		}
 		metrics.MarkHit(r.Context())
+	} else {
+		upURL := ref.upstreamURLWithScheme(h.upstreamScheme)
+		contactedUpstream, err := h.mirror.EnsureSynced(ctx, ref, upURL)
+		if err != nil {
+			// The passthrough below reverse-proxies the body from the upstream, and
+			// the sync that just failed had already reached for it: a miss either way.
+			metrics.MarkMiss(r.Context())
+			h.log.Warn("git: mirror sync failed",
+				slog.String("repo", ref.mirrorRelPath()),
+				slog.Any("err", err))
+			h.passthrough(w, r, ref, "sync-fail")
+			return
+		}
+		if contactedUpstream {
+			metrics.MarkMiss(r.Context())
+		} else {
+			metrics.MarkHit(r.Context())
+		}
 	}
 
 	// 3. Update TOFU ref→SHA pins (best-effort; non-fatal on error).
@@ -457,6 +478,13 @@ func (h *Handler) serveMirror(w http.ResponseWriter, r *http.Request, ref repoRe
 // Used for push requests, authenticated requests, private repos, probe
 // failures, and mirror-serve failures.
 func (h *Handler) passthrough(w http.ResponseWriter, r *http.Request, ref repoRef, reason string) {
+	if h.offline {
+		h.log.Info("git: offline — refusing passthrough",
+			slog.String("repo", ref.mirrorRelPath()),
+			slog.String("reason", reason))
+		http.Error(w, "git: not found (offline)", http.StatusNotFound)
+		return
+	}
 	upstream, err := url.Parse(h.upstreamScheme + "://" + ref.Host)
 	if err != nil {
 		h.log.Error("git: bad upstream URL",

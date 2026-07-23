@@ -308,6 +308,10 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 			return
 		}
 		h.log.Error("pypi: mutable fetch", "ref", ref, "err", fetchErr)
+		if upstream.IsNotFound(fetchErr) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "upstream fetch failed")
 		return
 	}
@@ -388,6 +392,10 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 	})
 	if err != nil {
 		h.log.Error("pypi: fetch immutable", "ref", ref, "err", err)
+		if upstream.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "upstream fetch failed")
 		return
 	}

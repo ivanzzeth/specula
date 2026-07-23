@@ -94,3 +94,27 @@ func TestUnknownRemoteHostRejected(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
+
+func TestOfflineMissReturns404(t *testing.T) {
+	upCalls := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upCalls++
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	t.Cleanup(up.Close)
+
+	h := NewHandler(newStoringFakeCache(),
+		WithUpstream(upstream.NewOfflineClient(), []upstream.Upstream{
+			{Name: "hub", BaseURL: up.URL, Priority: 1},
+		}),
+		WithQuarantineDir(t.TempDir()),
+	)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/v2/library/nginx/manifests/latest")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Equal(t, 0, upCalls, "offline must not contact upstream")
+}

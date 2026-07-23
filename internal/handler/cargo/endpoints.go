@@ -71,6 +71,10 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 			return
 		}
 		h.log.Error("cargo: mutable fetch", "ref", ref, "err", fetchErr)
+		if upstream.IsNotFound(fetchErr) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "upstream fetch failed", http.StatusBadGateway)
 		return
 	}
@@ -111,6 +115,10 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 			return
 		}
 		h.log.Error("cargo: crate fetch", "ref", ref, "err", err)
+		if upstream.IsNotFound(err) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "upstream fetch failed", http.StatusBadGateway)
 		return
 	}

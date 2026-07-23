@@ -129,6 +129,10 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageNam
 		})
 	if fetchErr != nil {
 		h.log.Error("oci: fetch manifest from upstream", "image", imageName, "ref", reference, "err", fetchErr)
+		if upstream.IsNotFound(fetchErr) {
+			writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
+			return
+		}
 		writeOCIError(w, http.StatusBadGateway, "MANIFEST_UNKNOWN", "upstream fetch failed")
 		return
 	}

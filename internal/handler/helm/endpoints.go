@@ -17,6 +17,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
 // staler is an optional extension of CacheManager that returns mutable entries
@@ -160,6 +161,10 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 			return
 		}
 		h.log.Error("helm: mutable fetch", "ref", ref, "err", fetchErr)
+		if upstream.IsNotFound(fetchErr) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "upstream fetch failed")
 		return
 	}
@@ -226,6 +231,10 @@ func (h *Handler) serveChart(w http.ResponseWriter, r *http.Request, repo, file 
 			return
 		}
 		h.log.Error("helm: fetch chart", "repo", repo, "file", file, "err", err)
+		if upstream.IsNotFound(err) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "upstream fetch failed")
 		return
 	}

@@ -357,6 +357,9 @@ func run() error {
 		log.Info("specula: cross-replica stampede lock ready",
 			"lock_driver", effectiveLockDriver(cfg), "redis", cfg.Coalesce.Redis.Addr)
 	}
+	if cfg.Offline() {
+		log.Info("specula: offline mode — cache hits only; misses return 404; no outbound fetch")
+	}
 
 	dataMux := http.NewServeMux()
 	mountOCI(dataMux, cfg, cm, metaStore, log, upstreams, regTokenSvc, regAuthz, repoStore, blobs, registryEnabled, stampedeLocker)
@@ -637,7 +640,7 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	}
 	if ok {
 		opts = append(opts,
-			oci.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("oci")), upstreamsFor("oci", pc.Upstreams)),
+			oci.WithUpstream(dataPlaneUpstream(cfg, ups, "oci"), upstreamsFor("oci", pc.Upstreams)),
 			oci.WithMutableTTL(mutableTTL(pc, cfg)),
 		)
 		if pc.OCI != nil && len(pc.OCI.RemoteRegistries) > 0 {
@@ -768,7 +771,7 @@ func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager
 			// would see a permanently healthy upstream. Caught by the real-traffic
 			// acceptance run, which showed {protocol="go"} alongside gomod's
 			// hit/miss series.
-			opts = append(opts, gomod.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime(goProtocolKey)), upstreamsFor(gomod.Protocol, pc.Upstreams)))
+			opts = append(opts, gomod.WithUpstream(dataPlaneUpstream(cfg, ups, goProtocolKey), upstreamsFor(gomod.Protocol, pc.Upstreams)))
 		}
 		opts = append(opts, gomod.WithMutableTTL(mutableTTL(pc, cfg)))
 
@@ -860,7 +863,7 @@ func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, pypi.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("pypi")), upstreamsFor("pypi", pc.Upstreams)))
+			opts = append(opts, pypi.WithUpstream(dataPlaneUpstream(cfg, ups, "pypi"), upstreamsFor("pypi", pc.Upstreams)))
 		}
 		opts = append(opts, pypi.WithMutableTTL(mutableTTL(pc, cfg)))
 		if dc := pc.Verification.DependencyConfusion; dc != nil && dc.PrivateUpstream != "" {
@@ -893,7 +896,7 @@ func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, npm.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("npm")), upstreamsFor("npm", pc.Upstreams)))
+			opts = append(opts, npm.WithUpstream(dataPlaneUpstream(cfg, ups, "npm"), upstreamsFor("npm", pc.Upstreams)))
 		}
 		opts = append(opts, npm.WithMutableTTL(mutableTTL(pc, cfg)))
 		if dc := pc.Verification.DependencyConfusion; dc != nil && dc.PrivateUpstream != "" {
@@ -928,7 +931,7 @@ func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, apthandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("apt")), upstreamsFor("apt", pc.Upstreams)))
+			opts = append(opts, apthandler.WithUpstream(dataPlaneUpstream(cfg, ups, "apt"), upstreamsFor("apt", pc.Upstreams)))
 		}
 		opts = append(opts, apthandler.WithMutableTTL(mutableTTL(pc, cfg)))
 	}
@@ -956,7 +959,7 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, helmhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("helm")), upstreamsFor("helm", pc.Upstreams)))
+			opts = append(opts, helmhandler.WithUpstream(dataPlaneUpstream(cfg, ups, "helm"), upstreamsFor("helm", pc.Upstreams)))
 		}
 		opts = append(opts, helmhandler.WithMutableTTL(mutableTTL(pc, cfg)))
 	}
@@ -982,7 +985,7 @@ func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager,
 	hosts := []string{}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, tarballhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("tarball")), upstreamsFor("tarball", pc.Upstreams)))
+			opts = append(opts, tarballhandler.WithUpstream(dataPlaneUpstream(cfg, ups, "tarball"), upstreamsFor("tarball", pc.Upstreams)))
 		}
 		hosts = upstreamHosts(pc.Upstreams)
 		opts = append(opts, tarballhandler.WithAllowedHosts(hosts))
@@ -1021,6 +1024,9 @@ func mountGit(mux *http.ServeMux, cfg *config.Config, metaStore metastore.Metada
 	if signedV != nil {
 		opts = append(opts, githandler.WithSignedRefsVerifier(signedV))
 	}
+	if cfg.Offline() {
+		opts = append(opts, githandler.WithOffline(true))
+	}
 	mux.Handle(gitPrefix+"/", metrics.Middleware("git", githandler.NewHandler(opts...)))
 	log.Info("specula: mounted git handler",
 		"path", gitPrefix+"/", "configured", ok, "signed", signedV != nil)
@@ -1039,7 +1045,7 @@ func mountCargo(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, m
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, cargohandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("cargo")), upstreamsFor("cargo", pc.Upstreams)))
+			opts = append(opts, cargohandler.WithUpstream(dataPlaneUpstream(cfg, ups, "cargo"), upstreamsFor("cargo", pc.Upstreams)))
 		}
 		opts = append(opts, cargohandler.WithMutableTTL(mutableTTL(pc, cfg)))
 		if pc.Cargo != nil && len(pc.Cargo.DLUpstreams) > 0 {
@@ -1063,7 +1069,7 @@ func mountConda(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, m
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, condahandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("conda")), upstreamsFor("conda", pc.Upstreams)))
+			opts = append(opts, condahandler.WithUpstream(dataPlaneUpstream(cfg, ups, "conda"), upstreamsFor("conda", pc.Upstreams)))
 		}
 		opts = append(opts, condahandler.WithMutableTTL(mutableTTL(pc, cfg)))
 	}
@@ -1084,7 +1090,7 @@ func mountHF(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, meta
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
-			opts = append(opts, hfhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("hf")), upstreamsFor("hf", pc.Upstreams)))
+			opts = append(opts, hfhandler.WithUpstream(dataPlaneUpstream(cfg, ups, "hf"), upstreamsFor("hf", pc.Upstreams)))
 		}
 		opts = append(opts, hfhandler.WithMutableTTL(mutableTTL(pc, cfg)))
 	}
@@ -1440,6 +1446,12 @@ func toUpstreams(in []config.UpstreamConfig) []upstream.Upstream {
 		})
 	}
 	return out
+}
+
+// dataPlaneUpstream builds the fetch client for a protocol, wrapping it with
+// OfflineClient when server.mode=offline (PRD US-5).
+func dataPlaneUpstream(cfg *config.Config, ups *upstream.Registry, protocol string) upstream.Client {
+	return upstream.MaybeOffline(upstream.NewClientWithRuntime(ups.Runtime(protocol)), cfg.Offline())
 }
 
 // upstreamsFor converts a protocol's configured upstreams AND declares each one

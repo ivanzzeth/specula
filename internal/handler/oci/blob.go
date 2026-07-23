@@ -13,6 +13,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
 // serveBlob handles GET/HEAD /v2/<name>/blobs/<digest>.
@@ -127,6 +128,10 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 			})
 		if err != nil {
 			h.log.Error("oci: fetch blob from upstream", "image", imageName, "digest", digest, "err", err)
+			if upstream.IsNotFound(err) {
+				writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
+				return
+			}
 			writeOCIError(w, http.StatusBadGateway, "BLOB_UNKNOWN", "upstream fetch failed")
 			return
 		}
