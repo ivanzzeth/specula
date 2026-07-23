@@ -15,6 +15,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/auth"
+	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/org"
 )
@@ -622,6 +623,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 				Official: u.Official,
 			})
 		}
+		pv.Sources = protocolSourcesView(pc)
 		resp.Protocols = append(resp.Protocols, pv)
 	}
 	sort.Slice(resp.Protocols, func(i, j int) bool {
@@ -642,6 +644,43 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---- internal helpers --------------------------------------------------------
+
+func protocolSourcesView(pc config.ProtocolConfig) []NamedSourceView {
+	var out []NamedSourceView
+	appendNamed := func(kind string, srcs []config.NamedSource) {
+		for _, s := range srcs {
+			if strings.TrimSpace(s.Name) == "" {
+				continue
+			}
+			out = append(out, NamedSourceView{Name: s.Name, BaseURL: s.BaseURL, Kind: kind})
+		}
+	}
+	if pc.Apt != nil {
+		appendNamed("repository", pc.Apt.Repositories)
+	}
+	if pc.Helm != nil {
+		appendNamed("repository", pc.Helm.Repositories)
+	}
+	if pc.Conda != nil {
+		appendNamed("channel", pc.Conda.Channels)
+	}
+	if pc.Cargo != nil {
+		appendNamed("registry", pc.Cargo.Registries)
+	}
+	if pc.OCI != nil {
+		for _, rr := range pc.OCI.RemoteRegistries {
+			if strings.TrimSpace(rr.Host) == "" {
+				continue
+			}
+			base := rr.BaseURL
+			if base == "" {
+				base = "https://" + rr.Host
+			}
+			out = append(out, NamedSourceView{Name: rr.Host, BaseURL: base, Kind: "remote_registry"})
+		}
+	}
+	return out
+}
 
 // parseUserID extracts and validates the {id} path value from r.
 func parseUserID(w http.ResponseWriter, r *http.Request) (int64, bool) {

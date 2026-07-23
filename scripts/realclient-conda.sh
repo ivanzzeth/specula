@@ -42,6 +42,10 @@ protocols:
         base_url: https://conda.anaconda.org
         priority: 2
         official: true
+    conda:
+      channels:
+        - name: conda-forge
+          base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
 YAML
 
 step "starting specula"

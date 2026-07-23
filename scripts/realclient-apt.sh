@@ -112,6 +112,10 @@ protocols:
         base_url: http://archive.ubuntu.com/ubuntu
         priority: 2
         official: true
+    apt:
+      repositories:
+        - name: ubuntu
+          base_url: http://mirrors.aliyun.com/ubuntu
     verification:
       # No Specula-side GPG keyring configured here: apt verifies the chain
       # end-to-end against the system keyring (the design intent).  A future

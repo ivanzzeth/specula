@@ -189,11 +189,18 @@ export interface UpstreamConfig {
   official: boolean;
 }
 
+export interface NamedSourceConfig {
+  name: string;
+  base_url: string;
+  kind: string;
+}
+
 export interface ProtocolConfig {
   protocol: string;
   upstreams: UpstreamConfig[];
   verify_tiers: string[];
   mutable_ttl_seconds: number;
+  sources?: NamedSourceConfig[];
 }
 
 export interface ConfigResponse {

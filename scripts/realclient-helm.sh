@@ -95,6 +95,10 @@ protocols:
         base_url: ${UPSTREAM_BASE}
         priority: 0
         official: true
+    helm:
+      repositories:
+        - name: charts
+          base_url: ${UPSTREAM_BASE}/charts
     mutable_ttl_seconds: 1800
 EOF
 

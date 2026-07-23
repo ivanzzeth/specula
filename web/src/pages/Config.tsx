@@ -237,6 +237,37 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
                   {t('config.noUpstreams', { protocol: p.protocol })}
                 </CardContent>
               )}
+
+              {p.sources && p.sources.length > 0 && (
+                <CardContent className="pt-0">
+                  <div className="mb-2 text-micro font-semibold uppercase tracking-wide text-slate-500">
+                    {t('config.sources', { defaultValue: 'Allowlisted sources' })}
+                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-28">{t('config.col.kind', { defaultValue: 'Kind' })}</TableHead>
+                        <TableHead className="w-36">{t('config.col.name')}</TableHead>
+                        <TableHead>{t('config.col.baseUrl')}</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {p.sources.map((s) => (
+                        <TableRow key={`${s.kind}:${s.name}`}>
+                          <TableCell className="text-slate-500">{s.kind}</TableCell>
+                          <TableCell className="font-medium text-slate-100">{s.name}</TableCell>
+                          <TableCell
+                            className="max-w-[1px] truncate text-slate-400"
+                            title={s.base_url}
+                          >
+                            {s.base_url}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              )}
             </Card>
           ))}
         </div>

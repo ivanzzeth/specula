@@ -311,6 +311,17 @@ type ProtocolConfigView struct {
 	Upstreams     []UpstreamView `json:"upstreams"`
 	VerifyTiers   []string       `json:"verify_tiers"`
 	MutableTTLSec int64          `json:"mutable_ttl_seconds"`
+	// Sources lists multi-root allowlist entries (apt archives, helm repos,
+	// conda channels, cargo registries, oci remote_registries). Empty when
+	// the protocol has no named-source allowlist configured.
+	Sources []NamedSourceView `json:"sources,omitempty"`
+}
+
+// NamedSourceView is one allowlisted named upstream root (archive/repo/channel).
+type NamedSourceView struct {
+	Name    string `json:"name"`
+	BaseURL string `json:"base_url"`
+	Kind    string `json:"kind"` // "repository" | "channel" | "registry" | "remote_registry"
 }
 
 // ConfigResponse is the running configuration snapshot with all secrets

@@ -3,6 +3,8 @@
 #
 # - regionProfile=cn → ConfigMap protocol upstreams (DaoCloud / goproxy.cn /
 #   tuna / rsproxy / hf-mirror / … including cargo + conda + hf)
+# - Multi-source allowlists in the ConfigMap match specula.example.yaml
+#   (apt.repositories, helm.repositories, conda.channels, cargo.registries)
 # - Bitnami subchart images via DaoCloud docker.io mirror (anonymous, no zot hop)
 # - Prefer local shared PVC over MinIO (MinIO image pull is another CN footgun)
 

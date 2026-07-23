@@ -128,6 +128,12 @@ data:
             base_url: https://charts.bitnami.com/bitnami
             priority: 1
             official: true
+        helm:
+          repositories:
+            - name: bitnami
+              base_url: https://charts.bitnami.com/bitnami
+            - name: prometheus-community
+              base_url: https://prometheus-community.github.io/helm-charts
         verification:
           tiers: [tofu, checksum]
           quorum: 1
@@ -147,6 +153,12 @@ data:
             base_url: https://archive.ubuntu.com/ubuntu
             priority: 3
             official: true
+        apt:
+          repositories:
+            - name: ubuntu
+              base_url: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+            - name: debian
+              base_url: https://mirrors.tuna.tsinghua.edu.cn/debian
         verification:
           tiers: [signed, tofu, checksum]
           quorum: 1
@@ -172,6 +184,11 @@ data:
               base_url: https://static.crates.io
               priority: 2
               official: true
+          registries:
+            - name: crates-io
+              base_url: https://index.crates.io
+            - name: rsproxy
+              base_url: https://rsproxy.cn/index
         verification:
           tiers: [tofu, checksum]
           quorum: 1
@@ -187,6 +204,12 @@ data:
             base_url: https://conda.anaconda.org
             priority: 2
             official: true
+        conda:
+          channels:
+            - name: conda-forge
+              base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
+            - name: bioconda
+              base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/bioconda
         verification:
           tiers: [checksum, tofu]
           quorum: 1
