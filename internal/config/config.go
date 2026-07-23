@@ -11,6 +11,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
@@ -69,6 +70,19 @@ type ServerConfig struct {
 	// blob.driver=local with local.shared=true (PVC/NFS). Production does not
 	// require MinIO/AWS specifically.
 	HA bool `koanf:"ha"`
+
+	// Mode is "online" (default) or "offline". Offline serves only already-cached
+	// content: upstream Fetch/Revalidate and git mirror clone/refresh are blocked
+	// and cache misses return 404 (PRD US-5). Restart required to switch.
+	Mode string `koanf:"mode"`
+}
+
+// Offline reports whether the server is in air-gap mode (no outbound fetches).
+func (c *Config) Offline() bool {
+	if c == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(c.Server.Mode), "offline")
 }
 
 // CoalesceConfig selects the cross-instance stampede lock backend

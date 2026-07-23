@@ -40,6 +40,11 @@ server:
   # single-node (node-local mirrors) — disable git in HA Deployment values.
   # ha: false
 
+  # Runtime mode: online (default) or offline. Offline serves only already-cached
+  # artifacts — no upstream Fetch and no git mirror clone/refresh; misses are 404.
+  # Warm the cache while online, then restart with mode: offline for air-gap.
+  # mode: online
+
 # ── Coalesce (cross-replica cold-fetch stampede lock) ─────────────────────────
 # Empty / omitted = in-process singleflight only (fine for DaemonSet / single node).
 # HA deployments must set lock_driver: redis (go-redsync/redsync over go-redis).

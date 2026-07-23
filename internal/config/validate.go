@@ -99,6 +99,12 @@ func Validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.Server.ControlPlaneAddr) == "" {
 		add("server.control_plane_addr: must not be empty")
 	}
+	switch m := strings.ToLower(strings.TrimSpace(cfg.Server.Mode)); m {
+	case "", "online", "offline":
+		// ok — empty means online
+	default:
+		add("server.mode: must be \"online\", \"offline\", or empty, got %q", cfg.Server.Mode)
+	}
 
 	// ── Storage — Blob ────────────────────────────────────────────────────
 	switch cfg.Storage.Blob.Driver {
