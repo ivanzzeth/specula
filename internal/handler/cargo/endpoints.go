@@ -28,7 +28,8 @@ type entryServer interface {
 
 func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, indexPath string) {
 	ref := indexRef(indexPath)
-	h.serveMutable(w, r, ref, "application/json", h.upstreams, indexPath == "config.json")
+	_, fetchName, _ := h.upstreamForPath(indexPath)
+	h.serveMutable(w, r, ref, "application/json", fetchName == "config.json")
 }
 
 func (h *Handler) serveCrate(w http.ResponseWriter, r *http.Request, name, version string) {
@@ -36,7 +37,7 @@ func (h *Handler) serveCrate(w http.ResponseWriter, r *http.Request, name, versi
 	h.serveImmutable(w, r, ref, h.dlUpstreams)
 }
 
-func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ct string, ups []upstream.Upstream, rewriteConfig bool) {
+func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ct string, rewriteConfig bool) {
 	ctx := r.Context()
 	entry, err := h.cache.Lookup(ctx, ref)
 	if err != nil {
@@ -53,7 +54,7 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	if sm, ok := h.cache.(staler); ok {
 		staleEntry, _ = sm.LookupStale(ctx, ref)
 	}
-	if h.upstreamClt == nil || len(ups) == 0 {
+	if h.upstreamClt == nil {
 		if staleEntry != nil {
 			metrics.MarkHit(ctx)
 			h.serveMutableBytes(w, r, ref, staleEntry, ct, rewriteConfig)
@@ -62,7 +63,19 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, ups)
+	ups, fetchName, upsOK := h.upstreamForPath(ref.Name)
+	if !upsOK {
+		if staleEntry != nil {
+			metrics.MarkHit(ctx)
+			h.serveMutableBytes(w, r, ref, staleEntry, ct, rewriteConfig)
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	fetchRef := ref
+	fetchRef.Name = fetchName
+	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, fetchRef, ups)
 	if fetchErr != nil {
 		if staleEntry != nil {
 			metrics.MarkHit(ctx)

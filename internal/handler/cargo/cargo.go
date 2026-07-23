@@ -37,6 +37,7 @@ type Handler struct {
 	meta          meta.MetadataStore
 	upstreamClt   upstream.Client
 	upstreams     []upstream.Upstream // sparse index mirrors
+	registries    RegistryMap         // allowlisted named sparse-index roots
 	dlUpstreams   []upstream.Upstream // .crate download mirrors (defaults to static.crates.io)
 	pathPrefix    string
 	mutableTTLSec int64

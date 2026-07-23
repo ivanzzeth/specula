@@ -470,6 +470,13 @@ protocols:
           base_url: https://rsproxy.cn
           priority: 2
           official: false
+      # Path-style multi-registry allowlist (/cargo/index/<name>/…). Unknown → 404.
+      # Index fetches use each registry's base_url; .crate downloads still use dl_upstreams.
+      registries:
+        - name: crates-io
+          base_url: https://index.crates.io
+        - name: rsproxy
+          base_url: https://rsproxy.cn/index
 
     verification:
       tiers: [tofu, checksum]

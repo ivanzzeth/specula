@@ -305,11 +305,17 @@ type CondaConfig struct {
 	Channels []NamedSource `koanf:"channels"`
 }
 
-// CargoConfig holds Cargo-specific download-mirror settings.
+// CargoConfig holds Cargo sparse-registry extras (download mirrors + multi-registry allowlist).
+// Empty Registries → legacy behavior: full index path under protocols.cargo.upstreams.
+// Non-empty → /cargo/index/<name>/… routes to that registry's BaseURL after stripping name.
 type CargoConfig struct {
 	// DLUpstreams are ordered mirrors for .crate downloads (static.crates.io
 	// layout). Empty → handler default https://static.crates.io.
 	DLUpstreams []UpstreamConfig `koanf:"dl_upstreams"`
+
+	// Registries is the allowlist of named sparse-index roots for path-style
+	// multi-registry pulls (/cargo/index/<name>/…). Unknown names → 404.
+	Registries []NamedSource `koanf:"registries"`
 }
 
 // OCIConfig holds OCI multi-registry pull-through settings.

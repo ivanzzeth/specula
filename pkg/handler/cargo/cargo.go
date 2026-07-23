@@ -33,3 +33,13 @@ func WithQuarantineDir(dir string) Option            { return intcargo.WithQuara
 func WithLogger(l *slog.Logger) Option               { return intcargo.WithLogger(l) }
 func WithLocker(l coalesce.Locker) Option            { return intcargo.WithLocker(l) }
 func CrateIndexPath(name string) string              { return intcargo.CrateIndexPath(name) }
+
+type RegistrySpec = intcargo.RegistrySpec
+
+func WithRegistries(regs intcargo.RegistryMap) Option {
+	return intcargo.WithRegistries(regs)
+}
+
+func RegistriesFromSpecs(specs []RegistrySpec) intcargo.RegistryMap {
+	return intcargo.RegistriesFromSpecs(specs)
+}

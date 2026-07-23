@@ -1068,8 +1068,17 @@ func mountCargo(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, m
 			opts = append(opts, cargohandler.WithUpstream(dataPlaneUpstream(cfg, ups, "cargo"), upstreamsFor("cargo", pc.Upstreams)))
 		}
 		opts = append(opts, cargohandler.WithMutableTTL(mutableTTL(pc, cfg)))
-		if pc.Cargo != nil && len(pc.Cargo.DLUpstreams) > 0 {
-			opts = append(opts, cargohandler.WithDLUpstreams(upstreamsFor("cargo", pc.Cargo.DLUpstreams)))
+		if pc.Cargo != nil {
+			if len(pc.Cargo.DLUpstreams) > 0 {
+				opts = append(opts, cargohandler.WithDLUpstreams(upstreamsFor("cargo", pc.Cargo.DLUpstreams)))
+			}
+			if len(pc.Cargo.Registries) > 0 {
+				specs := make([]cargohandler.RegistrySpec, 0, len(pc.Cargo.Registries))
+				for _, reg := range pc.Cargo.Registries {
+					specs = append(specs, cargohandler.RegistrySpec{Name: reg.Name, BaseURL: reg.BaseURL})
+				}
+				opts = append(opts, cargohandler.WithRegistries(cargohandler.RegistriesFromSpecs(specs)))
+			}
 		}
 	}
 	mux.Handle(cargoPrefix+"/", metrics.Middleware("cargo", cargohandler.NewHandler(cm, opts...)))

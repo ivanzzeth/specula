@@ -346,6 +346,9 @@ func Validate(cfg *Config) error {
 		if proto.Conda != nil {
 			validateNamedSources("conda.channels", proto.Conda.Channels)
 		}
+		if proto.Cargo != nil {
+			validateNamedSources("cargo.registries", proto.Cargo.Registries)
+		}
 	}
 
 	if len(errs) == 0 {
