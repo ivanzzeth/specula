@@ -149,6 +149,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "config":
+			if err := runConfig(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula config: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "version", "--version", "-V":
 			fmt.Println(version.String())
 			return

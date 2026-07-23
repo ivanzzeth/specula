@@ -52,6 +52,16 @@ make build-go
 本机 / 开发机用上面这一条即可。下文各协议手动片段是给 CI 镜像、Kubernetes
 或完全手控用的——能跑 `integrate` 时不必逐段照抄。
 
+**升级配置（显式生效）** — 只升二进制**不会**改已有 `specula.yaml`。要把参考配置里的新默认（apt 多归档、helm 多仓、conda channel、更多 git 主机、cargo rsproxy 等）合并进现有文件：
+
+```bash
+./bin/specula config apply-example --dry-run          # 先预览
+./bin/specula config apply-example                    # 合并并写 .bak.<timestamp>
+# 然后重启 Specula
+```
+
+默认是增量合并（你的值优先；字符串列表做并集；带 `name` 的列表按名合并）。只有你明确需要时才用 `--fill-empty` / `--overwrite`。
+
 ### 安装为系统守护进程（开机自启）
 
 ```bash

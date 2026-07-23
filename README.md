@@ -54,6 +54,19 @@ make build-go
 That is the local/dev path. The per-protocol snippets further down are for CI images,
 Kubernetes, or full manual control — not required when `integrate` works for you.
 
+**Upgrade config (opt-in)** — binary upgrades never rewrite an existing
+`specula.yaml`. To pull new reference defaults (multi-archive apt, helm repos,
+conda channels, extra git hosts, cargo rsproxy, …) into your file:
+
+```bash
+./bin/specula config apply-example --dry-run          # preview
+./bin/specula config apply-example                    # merge + .bak.<timestamp>
+# then restart Specula
+```
+
+Default merge is additive (your values win; string lists union; `{name:…}` lists
+merge by name). Use `--fill-empty` / `--overwrite` only when you intend to.
+
 ### Install as a system daemon (starts on boot)
 
 ```bash
