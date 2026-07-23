@@ -60,12 +60,14 @@ conda channels, extra git hosts, cargo rsproxy, …) into your file:
 
 ```bash
 ./bin/specula config apply-example --dry-run          # preview
+./bin/specula config apply-example --section apt,helm # subset only
 ./bin/specula config apply-example                    # merge + .bak.<timestamp>
-# then restart Specula
+# then restart Specula; follow any printed `integrate` hints for clients
 ```
 
 Default merge is additive (your values win; string lists union; `{name:…}` lists
-merge by name). Use `--fill-empty` / `--overwrite` only when you intend to.
+merge by name). Comments on existing keys are preserved. Use `--fill-empty` /
+`--overwrite` only when you intend to.
 
 ### Install as a system daemon (starts on boot)
 
@@ -473,7 +475,7 @@ git clone http://127.0.0.1:7732/git/github.com/golang/go.git
 git config --global url."http://127.0.0.1:7732/git/github.com/".insteadOf "https://github.com/"
 ```
 
-Host must be in `protocols.git.git.allowed_upstreams`. Private / push traffic is passed through and not cached.
+Host must be in `protocols.git.git.allowed_upstreams`. Private / push traffic is passed through and not cached. With `public_only: true`, hosts that lack a visibility probe (anything outside github.com, gitlab.com, gitee.com, codeberg.org, bitbucket.org, git.sr.ht) are treated as non-public and fail closed — not mirrored.
 
 ### Cargo (sparse registry)
 

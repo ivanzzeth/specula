@@ -56,11 +56,12 @@ make build-go
 
 ```bash
 ./bin/specula config apply-example --dry-run          # 先预览
+./bin/specula config apply-example --section apt,helm # 只合并部分协议
 ./bin/specula config apply-example                    # 合并并写 .bak.<timestamp>
-# 然后重启 Specula
+# 然后重启 Specula；按命令输出的 integrate 提示刷新客户端
 ```
 
-默认是增量合并（你的值优先；字符串列表做并集；带 `name` 的列表按名合并）。只有你明确需要时才用 `--fill-empty` / `--overwrite`。
+默认是增量合并（你的值优先；字符串列表做并集；带 `name` 的列表按名合并）。**已有键上的注释会保留**。只有你明确需要时才用 `--fill-empty` / `--overwrite`。
 
 ### 安装为系统守护进程（开机自启）
 

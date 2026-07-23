@@ -32,18 +32,23 @@ type ApplyExampleOptions struct {
 
 	// NoBackup disables the backup even when Backup is the CLI default.
 	NoBackup bool
+
+	// Sections, when non-empty, limits the example overlay to protocols.<name>
+	// for each listed protocol (e.g. "apt", "helm", "conda"). Empty → full example.
+	Sections []string
 }
 
 // ApplyExampleResult summarizes a merge of the embedded example into path.
 type ApplyExampleResult struct {
-	Path       string
-	BackupPath string
-	Created    bool // true when path did not exist and was written from example alone
-	DryRun     bool
-	Added      []string // dotted paths newly present after merge
-	Changed    []string // dotted paths whose value changed
-	// Wrote is true when the config file was replaced on disk.
-	Wrote bool
+	Path            string
+	BackupPath      string
+	Created         bool // true when path did not exist and was written from example alone
+	DryRun          bool
+	Added           []string // dotted paths newly present after merge
+	Changed         []string // dotted paths whose value changed
+	Wrote           bool
+	IntegrateHints  []string // suggested `specula integrate` commands after write
+	PreservedComments bool   // true when the write path used Node merge
 }
 
 // ApplyExample merges the embedded ExampleYAML into the YAML file at path.
@@ -55,22 +60,36 @@ type ApplyExampleResult struct {
 //   - lists of maps with a "name" field are merged by name (operator entry wins;
 //     missing keys inside an entry are filled from the example entry)
 //
+// When the target file already exists, the write path uses yaml.Node merging so
+// comments on existing keys are preserved; newly inserted keys keep example comments.
+//
 // The result is validated with Load+Validate before write (and on dry-run).
 func ApplyExample(path string, opts ApplyExampleOptions) (*ApplyExampleResult, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("config: empty path")
 	}
 
-	exampleRoot, err := decodeYAMLMap(ExampleYAML)
+	exampleRaw := ExampleYAML
+	if len(opts.Sections) > 0 {
+		filtered, err := filterExampleYAML(ExampleYAML, opts.Sections)
+		if err != nil {
+			return nil, fmt.Errorf("config: filter example sections: %w", err)
+		}
+		exampleRaw = filtered
+	}
+
+	exampleRoot, err := decodeYAMLMap(exampleRaw)
 	if err != nil {
 		return nil, fmt.Errorf("config: parse embedded example: %w", err)
 	}
 
 	res := &ApplyExampleResult{Path: path, DryRun: opts.DryRun}
 	var userRoot map[string]any
+	var userRaw []byte
 	raw, readErr := os.ReadFile(path)
 	switch {
 	case readErr == nil:
+		userRaw = raw
 		userRoot, err = decodeYAMLMap(raw)
 		if err != nil {
 			return nil, fmt.Errorf("config: parse %q: %w", path, err)
@@ -78,20 +97,39 @@ func ApplyExample(path string, opts ApplyExampleOptions) (*ApplyExampleResult, e
 	case os.IsNotExist(readErr):
 		res.Created = true
 		userRoot = map[string]any{}
+		userRaw = []byte("{}\n")
 	default:
 		return nil, fmt.Errorf("config: read %q: %w", path, readErr)
 	}
 
+	mopts := mergeOptions{Overwrite: opts.Overwrite, FillEmpty: opts.FillEmpty}
 	before := cloneMap(userRoot)
-	merged := deepMerge(userRoot, exampleRoot, mergeOptions{
-		Overwrite: opts.Overwrite,
-		FillEmpty: opts.FillEmpty,
-	})
+	merged := deepMerge(userRoot, exampleRoot, mopts)
 	res.Added, res.Changed = diffMaps(before, merged)
+	res.IntegrateHints = IntegrateHintsForChanges(res.Added, res.Changed, path)
 
-	out, err := yaml.Marshal(merged)
-	if err != nil {
-		return nil, fmt.Errorf("config: marshal merged yaml: %w", err)
+	var out []byte
+	if res.Created {
+		out, err = yaml.Marshal(merged)
+		if err != nil {
+			return nil, fmt.Errorf("config: marshal merged yaml: %w", err)
+		}
+	} else {
+		out, err = mergeYAMLPreservingComments(userRaw, exampleRaw, mopts)
+		if err != nil {
+			// Fall back to map marshal if Node merge fails (still valid YAML).
+			out, err = yaml.Marshal(merged)
+			if err != nil {
+				return nil, fmt.Errorf("config: marshal merged yaml: %w", err)
+			}
+		} else {
+			res.PreservedComments = true
+			// Recompute diff from Node-merge decode so report matches disk.
+			if after, decErr := decodeYAMLMap(out); decErr == nil {
+				res.Added, res.Changed = diffMaps(before, after)
+				res.IntegrateHints = IntegrateHintsForChanges(res.Added, res.Changed, path)
+			}
+		}
 	}
 
 	// Validate via a temp file so Load's file provider works unchanged.
@@ -479,6 +517,9 @@ func FormatApplyExampleReport(r *ApplyExampleResult) string {
 	if r.BackupPath != "" {
 		b.WriteString(fmt.Sprintf("backup: %s\n", r.BackupPath))
 	}
+	if r.PreservedComments && r.Wrote {
+		b.WriteString("comments: preserved on existing keys (new keys keep example comments)\n")
+	}
 	if len(r.Added) == 0 && len(r.Changed) == 0 {
 		b.WriteString("no changes (already up to date with example keys)\n")
 		return b.String()
@@ -496,7 +537,13 @@ func FormatApplyExampleReport(r *ApplyExampleResult) string {
 		}
 	}
 	if r.Wrote {
-		b.WriteString("wrote merged config (YAML comments from the old file are not preserved)\n")
+		b.WriteString("wrote merged config\n")
+	}
+	if len(r.IntegrateHints) > 0 {
+		b.WriteString("client wiring may need a refresh (paths/allowlists changed):\n")
+		for _, h := range r.IntegrateHints {
+			b.WriteString("  $ " + h + "\n")
+		}
 	}
 	return b.String()
 }

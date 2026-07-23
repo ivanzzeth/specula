@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/ivanzzeth/specula/internal/config"
 )
@@ -36,9 +37,11 @@ Default merge policy (safe for upgrades):
   • your existing values win on conflicts
   • string lists are unioned (e.g. git allowed_upstreams)
   • lists of {name: …} maps are merged by name (e.g. apt.repositories)
+  • comments on existing keys are preserved
 
 Flags:
   --config PATH     config file (default: specula.yaml)
+  --section LIST    only merge protocols.<name> (comma-separated: apt,helm,…)
   --dry-run         show what would change; do not write
   --fill-empty      also replace empty strings/lists/maps from the example
   --overwrite       prefer example values on conflicts (destructive)
@@ -46,6 +49,7 @@ Flags:
 
 Examples:
   specula config apply-example --dry-run
+  specula config apply-example --section apt,helm,conda
   specula config apply-example --config /etc/specula/specula.yaml
   specula config apply-example --fill-empty
 `
@@ -55,6 +59,7 @@ func runConfigApplyExample(args []string) error {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = func() { fmt.Fprint(os.Stderr, configUsage) }
 	configPath := fs.String("config", "specula.yaml", "path to the Specula config file")
+	section := fs.String("section", "", "comma-separated protocol names to merge (empty = all)")
 	dryRun := fs.Bool("dry-run", false, "show merge result without writing")
 	fillEmpty := fs.Bool("fill-empty", false, "replace empty values from the example")
 	overwrite := fs.Bool("overwrite", false, "prefer example values on conflicts")
@@ -66,12 +71,23 @@ func runConfigApplyExample(args []string) error {
 		return err
 	}
 
+	var sections []string
+	if strings.TrimSpace(*section) != "" {
+		for _, p := range strings.Split(*section, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				sections = append(sections, p)
+			}
+		}
+	}
+
 	res, err := config.ApplyExample(*configPath, config.ApplyExampleOptions{
 		DryRun:    *dryRun,
 		FillEmpty: *fillEmpty,
 		Overwrite: *overwrite,
 		Backup:    true,
 		NoBackup:  *noBackup,
+		Sections:  sections,
 	})
 	if err != nil {
 		return err

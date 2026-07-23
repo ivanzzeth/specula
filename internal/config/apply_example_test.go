@@ -144,17 +144,90 @@ func TestApplyExample_CreatesMissingFile(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestFormatApplyExampleReport(t *testing.T) {
-	s := config.FormatApplyExampleReport(&config.ApplyExampleResult{
-		Path:    "specula.yaml",
-		DryRun:  true,
-		Added:   []string{"protocols.apt.apt"},
-		Changed: []string{"protocols.git.git.allowed_upstreams"},
+func TestApplyExample_PreservesComments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "specula.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+# keep-me-operator-comment
+server:
+  # listen note
+  data_plane_addr: "127.0.0.1:9"
+protocols:
+  git:
+    upstreams:
+      - name: github
+        base_url: https://github.com
+        priority: 1
+        official: true
+    git:
+      # custom hosts
+      allowed_upstreams: [github.com]
+    verification:
+      tiers: [tofu]
+      quorum: 1
+      tofu: enforce
+`), 0o644))
+
+	res, err := config.ApplyExample(path, config.ApplyExampleOptions{
+		NoBackup: true,
+		Sections: []string{"git"},
 	})
-	assert.Contains(t, s, "dry-run")
-	assert.Contains(t, s, "+ protocols.apt.apt")
-	assert.Contains(t, s, "~ protocols.git.git.allowed_upstreams")
+	require.NoError(t, err)
+	require.True(t, res.PreservedComments)
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	s := string(raw)
+	assert.Contains(t, s, "keep-me-operator-comment")
+	assert.Contains(t, s, "listen note")
+	assert.Contains(t, s, "custom hosts")
+	assert.Contains(t, s, "codeberg.org")
 }
+
+func TestApplyExample_SectionLimitsOverlay(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "specula.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(`
+server:
+  data_plane_addr: "127.0.0.1:9"
+protocols:
+  apt:
+    upstreams:
+      - name: ubuntu-archive
+        base_url: https://archive.ubuntu.com/ubuntu
+        priority: 1
+        official: true
+    verification:
+      tiers: [tofu]
+      quorum: 1
+      tofu: enforce
+`), 0o644))
+
+	_, err := config.ApplyExample(path, config.ApplyExampleOptions{
+		NoBackup: true,
+		Sections: []string{"apt"},
+	})
+	require.NoError(t, err)
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Protocols["apt"].Apt)
+	assert.NotEmpty(t, cfg.Protocols["apt"].Apt.Repositories)
+	_, hasHelm := cfg.Protocols["helm"]
+	assert.False(t, hasHelm, "helm must not be injected when --section apt")
+}
+
+func TestIntegrateHintsForChanges(t *testing.T) {
+	hints := config.IntegrateHintsForChanges(
+		[]string{"protocols.apt.apt"},
+		[]string{"protocols.git.git.allowed_upstreams"},
+		"/etc/specula/specula.yaml",
+	)
+	require.NotEmpty(t, hints)
+	joined := strings.Join(hints, "\n")
+	assert.Contains(t, joined, "integrate --protocols apt")
+	assert.Contains(t, joined, "integrate --protocols git")
+	assert.Contains(t, joined, "--config /etc/specula/specula.yaml")
+}
+
 
 func TestApplyExample_FillEmptyReplacesEmptySlice(t *testing.T) {
 	dir := t.TempDir()
