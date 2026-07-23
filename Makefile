@@ -98,7 +98,7 @@ clean:
 #   test-postgres     the live-PostgreSQL paths.  needs: docker (or a DSN)
 #   test-conformance  the OFFICIAL OCI distribution-spec suite vs the real binary.
 #                     Our unique gate — ai-sandbox has no equivalent.  needs: network (first run)
-#   test-realclient   real pip / npm / apt-get / helm / git / docker clients.  needs: network + those tools
+#   test-realclient   real pip / npm / apt-get / helm / git / docker / cargo / conda / hf clients.  needs: network + those tools
 #   test-trust-oracle INDEPENDENT re-derivation of the tier each artifact DESERVES, using the
 #                     ecosystems' own tooling (gpg / go sumdb / PEP 503 re-fetch). The only
 #                     dimension that does not take our own word for anything — every other
@@ -227,7 +227,7 @@ test-trust-oracle-signed:
 test-trust-oracle-mutations:
 	bash scripts/trust-oracle-mutations.sh
 
-## test-realclient: real pip/npm/apt-get/helm/git/docker clients (needs: network + those tools; docker daemon)
+## test-realclient: real pip/npm/apt/helm/git/docker/cargo/conda/hf clients (needs: network + tools)
 #
 # Each script picks its own free ports and temp dirs, so these collide neither with each
 # other nor with any running instance. Sequential: several drive shared client caches.
@@ -238,6 +238,9 @@ test-realclient:
 	bash scripts/realclient-helm.sh
 	bash scripts/realclient-git.sh
 	bash scripts/realclient-docker.sh
+	bash scripts/realclient-cargo.sh
+	bash scripts/realclient-conda.sh
+	bash scripts/realclient-hf.sh
 
 ## test-e2e: the dimensions needing a real binary + real infra (needs: network + docker + clients)
 test-e2e: test-conformance test-realclient

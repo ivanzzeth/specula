@@ -4,11 +4,11 @@
 
 **能镜像的都镜像。能验证的就验证。其余绝不谎称。**
 
-Specula 是一个轻量的多协议制品代理，也是可嵌入的 Go 库。它缓存 OCI 镜像、Go modules、PyPI、npm、apt、Helm、通用 tarball 与公共 git clone，并采用**诚实分级**的供应链信任模型。可作守护进程部署、嵌入你的 HTTP 服务，或在任意 Go 项目里直接调用 SDK。
+Specula 是一个轻量的多协议制品代理，也是可嵌入的 Go 库。它缓存 OCI 镜像、Go modules、PyPI、npm、apt、Helm、通用 tarball、公共 git clone、Cargo crate、conda 包与 Hugging Face Hub 制品，并采用**诚实分级**的供应链信任模型。可作守护进程部署、嵌入你的 HTTP 服务，或在任意 Go 项目里直接调用 SDK。
 
 ## 核心功能
 
-- **单二进制 8 协议** — OCI、Go modules（GOPROXY）、PyPI、npm、apt、Helm、tarball、git
+- **单二进制 11 协议** — OCI、Go modules（GOPROXY）、PyPI、npm、apt、Helm、tarball、git、Cargo（sparse）、conda、Hugging Face Hub
 - **诚实分级信任** — `signed` → `consensus` → `tofu` → `checksum`（达到哪档就只报哪档）
 - **写时验证** — 只对外服务已验证字节；流式隔离区，多 GB 工件不全量入内存
 - **二层缓存** — 不可变 CAS（永久）+ 可变元数据（短 TTL / 条件重验）；可选 `cache.max_bytes` 自动淘汰最旧未 pin 条目
@@ -429,6 +429,31 @@ git config --global url."http://127.0.0.1:7732/git/github.com/".insteadOf "https
 ```
 
 主机须在 `protocols.git.git.allowed_upstreams` 中。私有仓 / push 会透传、不缓存。
+
+### Cargo（sparse registry）
+
+```bash
+./bin/specula integrate --protocols cargo --addr http://127.0.0.1:7732
+# 写入 ~/.cargo/config.toml source replace → sparse+http://127.0.0.1:7732/cargo/index/
+cargo fetch
+```
+
+### conda
+
+```bash
+./bin/specula integrate --protocols conda --addr http://127.0.0.1:7732
+# 在 ~/.condarc 前置 channel http://127.0.0.1:7732/conda/conda-forge
+micromamba create -y -n demo -c http://127.0.0.1:7732/conda/conda-forge --override-channels ca-certificates
+```
+
+### Hugging Face Hub
+
+```bash
+./bin/specula integrate --protocols hf --addr http://127.0.0.1:7732
+# 经 ~/.config/specula/env.sh 导出 HF_ENDPOINT=http://127.0.0.1:7732/hf
+source ~/.config/specula/env.sh
+huggingface-cli download hf-internal-testing/tiny-random-bert --local-dir /tmp/hf-tiny
+```
 
 ## HA（多副本）
 

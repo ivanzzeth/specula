@@ -35,8 +35,8 @@ func TestAllProtocolsMatchesOnTheWireProtocolNames(t *testing.T) {
 	assert.True(t, in("gomod"), "protocol label must be the on-the-wire %q (gomod.Protocol), not the config key", "gomod")
 	assert.False(t, in("go"), `"go" is the CONFIG key, never a protocol label — pre-initialising under it mints a phantom series that reads 0 for ever`)
 
-	for _, p := range []string{"oci", "pypi", "npm", "apt", "helm", "tarball", "git"} {
+	for _, p := range []string{"oci", "pypi", "npm", "apt", "helm", "tarball", "git", "cargo", "conda", "hf"} {
 		assert.True(t, in(p), "protocol %q must be in the label vocabulary", p)
 	}
-	assert.Len(t, AllProtocols, 8, "PRD §2 fixes the protocol list at eight")
+	assert.Len(t, AllProtocols, 11, "protocol label vocabulary is bounded (11 on-the-wire names)")
 }

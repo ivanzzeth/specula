@@ -35,10 +35,10 @@ import (
 	"github.com/ivanzzeth/specula/internal/artifact"
 )
 
-// AllProtocols is the bounded set of protocol label values. PRD §2 fixes the
-// protocol list at eight; this slice is what makes protocol a safe label and is
-// the basis for pre-initialising the hit/miss counters.
-var AllProtocols = []string{"oci", "pypi", "npm", "gomod", "apt", "helm", "tarball", "git"}
+// AllProtocols is the bounded set of protocol label values. PRD §7.1 keeps
+// protocol cardinality bounded (currently 11); this slice is what makes
+// protocol a safe label and is the basis for pre-initialising hit/miss counters.
+var AllProtocols = []string{"oci", "pypi", "npm", "gomod", "apt", "helm", "tarball", "git", "cargo", "conda", "hf"}
 
 // CheckChain is the reserved `check` label value for the verification Chain's
 // aggregate verdict, as opposed to an individual verifier's own result.

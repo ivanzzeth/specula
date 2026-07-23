@@ -208,7 +208,7 @@ type AuthConfig struct {
 
 // ProtocolConfig holds per-protocol upstreams and verification policy.
 // Keys in Config.Protocols correspond to protocol names: "oci", "pypi",
-// "npm", "go", "apt", "helm", "tarball", "git".
+// "npm", "go", "apt", "helm", "tarball", "git", "cargo", "conda", "hf".
 type ProtocolConfig struct {
 	// Upstreams is the ordered fallback chain. The handler tries each
 	// in ascending Priority order; lower Priority = tried first.
@@ -239,6 +239,18 @@ type ProtocolConfig struct {
 	// block; ARCHITECTURE §9). git does not use the generic Upstreams fallback
 	// chain — it reverse-proxies / mirrors the AllowedUpstreams hosts directly.
 	Git *GitConfig `koanf:"git"`
+
+	// Cargo configures Cargo sparse-registry extras (crate download mirrors).
+	// Index upstreams use the generic Upstreams list; dl_upstreams fetch .crate
+	// files (default: https://static.crates.io when omitted).
+	Cargo *CargoConfig `koanf:"cargo"`
+}
+
+// CargoConfig holds Cargo-specific download-mirror settings.
+type CargoConfig struct {
+	// DLUpstreams are ordered mirrors for .crate downloads (static.crates.io
+	// layout). Empty → handler default https://static.crates.io.
+	DLUpstreams []UpstreamConfig `koanf:"dl_upstreams"`
 }
 
 // GitConfig holds the git-clone acceleration settings for the "git" protocol

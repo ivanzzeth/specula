@@ -20,7 +20,7 @@
 
 # ── Server ────────────────────────────────────────────────────────────────────
 server:
-  # Data plane: all 8 protocol handlers, no consumer auth.
+  # Data plane: all protocol handlers, no consumer auth.
   # Configure your network policy / mTLS / firewall at the perimeter.
   # Ports 7732/7733: "SPEC" on a phone keypad (S=7 P=7 E=3 C=2) — Specula, and
   # the specs this proxy exists to conform to. Deliberately NOT 5000/8080:
@@ -391,3 +391,82 @@ protocols:
       # signed_refs:
       #   policy: warn
       #   allowed_signers: /etc/specula/keys/git-allowed-signers
+
+  # ── Cargo (sparse registry) ───────────────────────────────────────────────
+  cargo:
+    # Sparse index (RFC 2789). Index JSON is mutable (short TTL + TOFU);
+    # .crate files are immutable (checksum; pin when upstream advertises digest).
+    mutable_ttl_seconds: 300
+
+    # Sparse index hosts (index.crates.io layout).
+    upstreams:
+      - name: index-crates-io
+        base_url: https://index.crates.io
+        priority: 1
+        official: true
+      # Optional CN-friendly index mirrors (uncomment if preferred):
+      # - name: rsproxy-index
+      #   base_url: https://rsproxy.cn/index
+      #   priority: 1
+      #   official: false
+
+    cargo:
+      # .crate download mirrors (static.crates.io layout: /crates/<name>/<name>-<ver>.crate).
+      dl_upstreams:
+        - name: static-crates-io
+          base_url: https://static.crates.io
+          priority: 1
+          official: true
+        # - name: ustc-crates
+        #   base_url: https://mirrors.ustc.edu.cn/crates.io
+        #   priority: 1
+        #   official: false
+
+    verification:
+      tiers: [tofu, checksum]
+      quorum: 1
+      tofu: enforce
+
+  # ── conda (channel proxy) ─────────────────────────────────────────────────
+  conda:
+    # Channel tree: /conda/<channel>/<subdir>/repodata.json (mutable) and
+    # /conda/<channel>/<subdir>/<pkg>.{conda,tar.bz2} (immutable; pin sha256 from repodata).
+    mutable_ttl_seconds: 300
+
+    # base_url is the cloud root; request path keeps /<channel>/…
+    upstreams:
+      - name: tuna-cloud
+        base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
+        priority: 1
+        official: false
+      - name: anaconda-cloud
+        base_url: https://conda.anaconda.org
+        priority: 2
+        official: true
+
+    verification:
+      tiers: [checksum, tofu]
+      quorum: 1
+      tofu: enforce
+
+  # ── Hugging Face Hub (HF_ENDPOINT compatible) ─────────────────────────────
+  hf:
+    # Hub-compatible reverse proxy. Set HF_ENDPOINT=http://host:7732/hf
+    # Authorization / cookie requests pass through and are not cached (public_only).
+    # CDN/LFS URLs in JSON responses are rewritten to /hf/… so traffic stays on Specula.
+    mutable_ttl_seconds: 120
+
+    upstreams:
+      - name: hf-mirror
+        base_url: https://hf-mirror.com
+        priority: 1
+        official: false
+      - name: huggingface
+        base_url: https://huggingface.co
+        priority: 2
+        official: true
+
+    verification:
+      tiers: [tofu, checksum]
+      quorum: 1
+      tofu: enforce

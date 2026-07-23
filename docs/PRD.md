@@ -3,9 +3,10 @@
 > **Tagline**: Mirror everything. Verify what you can. Never lie about the rest.
 >
 > Specula is a lightweight, high-availability, multi-protocol artifact proxy that
-> caches OCI images, PyPI/npm/Go/apt packages, Helm charts, generic tarballs, and
-> accelerates public `git clone` — in a single Go binary with an **honest, tiered
-> supply-chain trust model** and an embedded management WebUI.
+> caches OCI images, PyPI/npm/Go/apt packages, Helm charts, generic tarballs,
+> public git clones, Cargo crates, conda packages, and Hugging Face Hub artifacts —
+> in a single Go binary with an **honest, tiered supply-chain trust model** and an
+> embedded management WebUI.
 >
 > **v0.2 changes**: honest tiered trust model (整改 v0.1 把 checksum 当供应链防护的根本错误)、
 > 新增 Helm 与 git 协议、双平面架构（数据面 + 带认证 WebUI 的管理面）、缓存容量统计。
@@ -31,7 +32,7 @@
 | Harbor | OCI | Trivy 扫描（CVE，非来源） | Heavy |
 | zot / goproxy.io / verdaccio | 单协议 | 无 | Light |
 
-**Specula 的定位**：一个 Go 二进制、8 协议、**诚实分级的供应链验证**（能验真实性就验，不能就明确标注
+**Specula 的定位**：一个 Go 二进制、11 协议、**诚实分级的供应链验证**（能验真实性就验，不能就明确标注
 仅 TOFU/共识，绝不谎称防篡改）、从第一天起横向扩展、内嵌管理 WebUI。
 
 ---
@@ -40,7 +41,7 @@
 
 ### G1 — 单一二进制多协议
 
-原生服务 8 个协议（用成熟 Go 库做底座，非编排容器——见 DESIGN-REVIEW §5）：
+原生服务 11 个协议（用成熟 Go 库做底座，非编排容器——见 DESIGN-REVIEW §5）：
 
 - **OCI** — 容器镜像（Docker v2 + OCI Distribution v1）
 - **PyPI** — Python 包（PEP 503 / 691）
@@ -50,6 +51,9 @@
 - **Helm** — chart（OCI 形态复用 OCI handler；经典 HTTP repo：index.yaml + tgz + .prov）
 - **tarball** — URL-keyed 通用下载缓存
 - **git** — 公共仓库 `git clone` 加速（smart-HTTP + 本地 bare mirror）
+- **Cargo** — sparse registry（RFC 2789；`config.json` dl/api 重写）
+- **conda** — channel 代理（`repodata.json` + 包 digest pin）
+- **Hugging Face Hub** — `HF_ENDPOINT` 兼容反向代理（CDN/LFS URL 重写；带 Authorization 透传不入 CAS）
 
 ### G2 — 诚实分级的供应链信任 (Honest Tiered Trust)
 
@@ -78,6 +82,9 @@
 | npm | **consensus / tofu** | provenance CN 不可用且覆盖 ~3–12% | 实务上 TOFU + 依赖混淆 guard；metadata 仅暴露 sha512 integrity/sha1 shasum，metadata-only 的 sha256 跨源共识不可用，故默认停在 tofu |
 | PyPI | **consensus / tofu** | PEP 740 CN 不可用且覆盖 ~5% | 已接线：consensus（PEP 503 simple-index `#sha256=` 跨源 quorum 比对，metadata-only）+ TOFU |
 | tarball | **consensus / tofu** | 无原生签名 | metadata 无 sha256，metadata-only 共识不可用，默认停在 tofu；可配官方源比对 |
+| Cargo | **tofu / checksum** | sparse 索引无跨源 sha256 共识 | 索引 TOFU；`.crate` 流式 checksum，有上游 digest 则 pin |
+| conda | **checksum / tofu** | repodata 提供 sha256/md5 | 包按 repodata digest pin；repodata 本身短 TTL + TOFU |
+| Hugging Face | **tofu / checksum** | 公开 Hub 对象 | 带 Authorization/cookie 透传不缓存；CDN/LFS URL 重写到 `/hf/` |
 
 其余供应链控制：
 - **Allowlist / denylist** — 每协议策略
@@ -135,8 +142,8 @@ Specula 实例**无状态**。持久状态在：
 - **数据面无消费者认证** — 部署在可信网段（cluster-internal / 私有子网），mTLS/网络策略把边界。
   （**注意**：管理平面 WebUI 有认证——这与数据面是两个平面。）
 - **无镜像 CVE 扫描** — Specula 验证 provenance/签名，不查 CVE 库（Trivy/Grype 另行）
-- **无 Maven / Cargo / Hex** — 未来协议插件
-- **无 GUI 策略编辑器写回 git** — WebUI 可编辑运行时配置，但声明式 YAML 仍是 source of truth
+- **无 Maven / NuGet / RubyGems / Hex** — 下一波协议扩展（仍要求官方 layout + 真客户端脚本）
+- **无 Cargo git index** — 仅 sparse registry；git index 与现有 git handler 职责重叠- **无 GUI 策略编辑器写回 git** — WebUI 可编辑运行时配置，但声明式 YAML 仍是 source of truth
 
 ---
 
@@ -373,7 +380,7 @@ registry —— **注册不得依赖于构造某个对象或某次请求**（`sp
 
 ### 7.1 标签基数 (cardinality)
 
-`protocol` 有界（8）、`method`/`status` 有界、`upstream` 由 config 限定、`check` 由已注册
+`protocol` 有界（11）、`method`/`status` 有界、`upstream` 由 config 限定、`check` 由已注册
 verifier 集合限定、`tier`/`result` 各为固定枚举。
 
 **绝不**用作标签：repo / package name / module path / image name / tag / digest / URL / path。
@@ -466,9 +473,9 @@ gauge 打到 1。但 HTTP 451（法律封锁）是格式良好的 4xx——clien
 
 | Metric | 预初始化 | 无流量时可见 |
 |---|---|---|
-| `cache_hits/misses_total{protocol}` | 8 个 protocol，init() 时 | ✅ 真实的 0 |
+| `cache_hits/misses_total{protocol}` | 11 个 protocol，init() 时 | ✅ 真实的 0 |
 | `upstream_blocked{protocol,upstream}` | 由 config 声明（`PreInitUpstream`） | ✅ 真实的 0 |
-| `cache_bytes{protocol}` | 8 个 protocol，init() 时 → **启动同步测量**覆写 | ✅ 真实的 0（冷）/ 真实值（热） |
+| `cache_bytes{protocol}` | 11 个 protocol，init() 时 → **启动同步测量**覆写 | ✅ 真实的 0（冷）/ 真实值（热） |
 | `cache_objects{protocol}` | ❌ 不透明缓存对象数不可数 | 首次可数测量后 |
 | `requests_total{protocol,method,status}` | ❌ status 不可预知 | 首次请求后 |
 | `verification_total{...,tier,result}` | ❌ 预初始化会捏造从未发生的组合 | 首次验证后 |
@@ -499,11 +506,11 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 
 ## 8. Ports
 
-单一数据面端口按**路径前缀**分发全部 8 协议（非每协议一个端口）。
+单一数据面端口按**路径前缀**分发全部协议（非每协议一个端口）。
 
 | 平面 | 端口 | 内容 |
 |---|---|---|
-| **数据面** | **7732** | 8 协议:`/v2/`(OCI+registry) `/pypi/` `/npm/` `/go/` `/apt/` `/helm/` `/tarball/` `/git/` + `/token` |
+| **数据面** | **7732** | 11 协议:`/v2/`(OCI+registry) `/pypi/` `/npm/` `/go/` `/apt/` `/helm/` `/tarball/` `/git/` `/cargo/` `/conda/` `/hf/` + `/token` |
 | **控制面** | **7733** | 内嵌 WebUI + Admin API + `/healthz` `/readyz` `/metrics` + `/token` |
 
 **为什么是 7732/7733**：电话键盘上 `S-P-E-C` = `7-7-3-2` —— 既是 **Spec**ula，也是这个代理
@@ -527,6 +534,7 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 | **v0.6** | git clone 加速（bare mirror + 签名 ref 验证 + force-push 告警）| ✅ done |
 | **v0.7** | PostgreSQL HA + 分布式 stampede 锁 + 跨节点统计聚合 | ◐ partial（PG + coalesce 已落地）|
 | **v0.8** | tarball + consensus 档（多镜像 quorum + origin-check）+ CN mirror profile | ◐ partial（tarball + consensus 引擎已落地；tarball metadata-only 共识不可用停在 tofu）|
+| **v0.9** | Cargo sparse + conda channel + Hugging Face Hub（`HF_ENDPOINT`）| ✅ done |
 | **v1.0** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）| ☐ planned |
 
-> v0.2-hardening 分支说明：8 协议数据面 + 四档诚实信任模型（checksum/tofu/consensus/signed）已端到端接线。consensus 引擎（quorum + origin-check + 并行取 digest）与 cosign keyed 锚均已实现并从 config 自动装配、按协议自门控。metadata-only 的 sha256 跨源共识当前仅对 OCI（Docker-Content-Digest）与 PyPI（PEP 503 `#sha256=`）可用；npm/tarball 因 metadata 不暴露 sha256 默认停在 tofu，绝不 fail-close 真实拉取。
+> v0.2-hardening 分支说明：11 协议数据面 + 四档诚实信任模型（checksum/tofu/consensus/signed）已端到端接线。consensus 引擎（quorum + origin-check + 并行取 digest）与 cosign keyed 锚均已实现并从 config 自动装配、按协议自门控。metadata-only 的 sha256 跨源共识当前仅对 OCI（Docker-Content-Digest）与 PyPI（PEP 503 `#sha256=`）可用；npm/tarball/cargo 因 metadata 不暴露跨源 sha256 默认停在 tofu，绝不 fail-close 真实拉取。

@@ -95,6 +95,24 @@
         "versionCol": "Digest",
         "tierContext": "跨镜像源 digest 法定多数 → consensus · 首次拉取锁定 digest → tofu",
         "emptyMsg": "尚未缓存 tarball。"
+      },
+      "cargo": {
+        "nameCol": "Crate",
+        "versionCol": "版本",
+        "tierContext": "sparse 索引 TOFU + crate checksum · 无跨源 sha256 时不声称 consensus",
+        "emptyMsg": "尚未缓存 crate。将 Cargo sparse 索引指向 Specula，再执行 cargo fetch。"
+      },
+      "conda": {
+        "nameCol": "包",
+        "versionCol": "Build",
+        "tierContext": "repodata sha256 pin → checksum · repodata 变更走 TOFU",
+        "emptyMsg": "尚未缓存 conda 包。将 Specula 加为 channel，再安装任意包。"
+      },
+      "hf": {
+        "nameCol": "仓库",
+        "versionCol": "Revision / 文件",
+        "tierContext": "公开 Hub 对象 TOFU + checksum · 带 Authorization 的请求不入缓存",
+        "emptyMsg": "尚未缓存 Hugging Face 制品。将 HF_ENDPOINT 指向代理，再下载公开仓库。"
       }
     }
   },

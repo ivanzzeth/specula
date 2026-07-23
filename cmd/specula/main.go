@@ -55,9 +55,12 @@ import (
 	"github.com/ivanzzeth/specula/pkg/artifact"
 	"github.com/ivanzzeth/specula/pkg/cache"
 	apthandler "github.com/ivanzzeth/specula/pkg/handler/apt"
+	cargohandler "github.com/ivanzzeth/specula/pkg/handler/cargo"
+	condahandler "github.com/ivanzzeth/specula/pkg/handler/conda"
 	githandler "github.com/ivanzzeth/specula/pkg/handler/git"
 	"github.com/ivanzzeth/specula/pkg/handler/gomod"
 	helmhandler "github.com/ivanzzeth/specula/pkg/handler/helm"
+	hfhandler "github.com/ivanzzeth/specula/pkg/handler/hf"
 	"github.com/ivanzzeth/specula/pkg/handler/npm"
 	"github.com/ivanzzeth/specula/pkg/handler/oci"
 	"github.com/ivanzzeth/specula/pkg/handler/pypi"
@@ -364,6 +367,9 @@ func run() error {
 	mountHelm(dataMux, cfg, cm, metaStore, log, upstreams, helmProvV, stampedeLocker)
 	mountTarball(dataMux, cfg, cm, metaStore, log, upstreams)
 	mountGit(dataMux, cfg, metaStore, log, gitSignedV)
+	mountCargo(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountConda(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountHF(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
 	// Liveness on the data plane too, so a bare data-plane LB can probe it.
 	dataMux.HandleFunc("/healthz", healthz)
 
@@ -826,6 +832,9 @@ const (
 	helmPrefix    = "/helm"
 	tarballPrefix = "/tarball"
 	gitPrefix     = "/git"
+	cargoPrefix   = "/cargo"
+	condaPrefix   = "/conda"
+	hfPrefix      = "/hf"
 )
 
 // mountPyPI wires the PyPI handler at /pypi/ using the "pypi" protocol config for
@@ -1008,6 +1017,72 @@ func mountGit(mux *http.ServeMux, cfg *config.Config, metaStore metastore.Metada
 	mux.Handle(gitPrefix+"/", metrics.Middleware("git", githandler.NewHandler(opts...)))
 	log.Info("specula: mounted git handler",
 		"path", gitPrefix+"/", "configured", ok, "signed", signedV != nil)
+}
+
+// mountCargo wires the Cargo sparse-registry handler at /cargo/.
+func mountCargo(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
+	pc, ok := cfg.Protocols["cargo"]
+	opts := []cargohandler.Option{
+		cargohandler.WithMeta(metaStore),
+		cargohandler.WithPathPrefix(cargoPrefix),
+		cargohandler.WithLogger(log.With("protocol", cargohandler.Protocol)),
+	}
+	if locker != nil {
+		opts = append(opts, cargohandler.WithLocker(locker))
+	}
+	if ok {
+		if len(pc.Upstreams) > 0 {
+			opts = append(opts, cargohandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("cargo")), upstreamsFor("cargo", pc.Upstreams)))
+		}
+		opts = append(opts, cargohandler.WithMutableTTL(mutableTTL(pc, cfg)))
+		if pc.Cargo != nil && len(pc.Cargo.DLUpstreams) > 0 {
+			opts = append(opts, cargohandler.WithDLUpstreams(upstreamsFor("cargo", pc.Cargo.DLUpstreams)))
+		}
+	}
+	mux.Handle(cargoPrefix+"/", metrics.Middleware("cargo", cargohandler.NewHandler(cm, opts...)))
+	log.Info("specula: mounted Cargo handler", "path", cargoPrefix+"/", "configured", ok)
+}
+
+// mountConda wires the conda channel proxy at /conda/.
+func mountConda(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
+	pc, ok := cfg.Protocols["conda"]
+	opts := []condahandler.Option{
+		condahandler.WithMeta(metaStore),
+		condahandler.WithPathPrefix(condaPrefix),
+		condahandler.WithLogger(log.With("protocol", condahandler.Protocol)),
+	}
+	if locker != nil {
+		opts = append(opts, condahandler.WithLocker(locker))
+	}
+	if ok {
+		if len(pc.Upstreams) > 0 {
+			opts = append(opts, condahandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("conda")), upstreamsFor("conda", pc.Upstreams)))
+		}
+		opts = append(opts, condahandler.WithMutableTTL(mutableTTL(pc, cfg)))
+	}
+	mux.Handle(condaPrefix+"/", metrics.Middleware("conda", condahandler.NewHandler(cm, opts...)))
+	log.Info("specula: mounted conda handler", "path", condaPrefix+"/", "configured", ok)
+}
+
+// mountHF wires the Hugging Face Hub–compatible proxy at /hf/.
+func mountHF(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
+	pc, ok := cfg.Protocols["hf"]
+	opts := []hfhandler.Option{
+		hfhandler.WithMeta(metaStore),
+		hfhandler.WithPathPrefix(hfPrefix),
+		hfhandler.WithLogger(log.With("protocol", hfhandler.Protocol)),
+	}
+	if locker != nil {
+		opts = append(opts, hfhandler.WithLocker(locker))
+	}
+	if ok {
+		if len(pc.Upstreams) > 0 {
+			opts = append(opts, hfhandler.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("hf")), upstreamsFor("hf", pc.Upstreams)))
+		}
+		opts = append(opts, hfhandler.WithMutableTTL(mutableTTL(pc, cfg)))
+	}
+	mux.Handle(hfPrefix+"/", metrics.Middleware("hf", hfhandler.NewHandler(cm, opts...)))
+	log.Info("specula: mounted HuggingFace handler", "path", hfPrefix+"/", "configured", ok)
 }
 
 // buildGPGVerifier constructs the apt InRelease→Packages→.deb GPG chain verifier

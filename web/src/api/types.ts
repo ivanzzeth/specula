@@ -279,8 +279,20 @@ export interface PatchUserRequest {
 
 // ---- Cache browser (GET /api/v1/admin/cache/{protocol}) ----------------------
 
-/** The eight browsable protocols. `go` and `gomod` are both accepted. */
-export type Protocol = 'oci' | 'pypi' | 'npm' | 'go' | 'gomod' | 'apt' | 'helm' | 'git' | 'tarball';
+/** Browsable protocols. `go` and `gomod` are both accepted. */
+export type Protocol =
+  | 'oci'
+  | 'pypi'
+  | 'npm'
+  | 'go'
+  | 'gomod'
+  | 'apt'
+  | 'helm'
+  | 'git'
+  | 'tarball'
+  | 'cargo'
+  | 'conda'
+  | 'hf';
 
 /** The four verification tiers (PRD §G2), weakest → strongest. */
 export type Tier = 'checksum' | 'tofu' | 'consensus' | 'signed';

@@ -4,11 +4,11 @@
 
 **Mirror everything. Verify what you can. Never lie about the rest.**
 
-Specula is a lightweight multi-protocol artifact proxy and Go library. It caches OCI images, Go modules, PyPI, npm, apt, Helm, tarballs, and public git clones — with an **honest, tiered** supply-chain trust model. Use it as a daemon, embed the HTTP handlers, or call the SDK from any Go program.
+Specula is a lightweight multi-protocol artifact proxy and Go library. It caches OCI images, Go modules, PyPI, npm, apt, Helm, tarballs, public git clones, Cargo crates, conda packages, and Hugging Face Hub artifacts — with an **honest, tiered** supply-chain trust model. Use it as a daemon, embed the HTTP handlers, or call the SDK from any Go program.
 
 ## Core features
 
-- **8 protocols in one binary** — OCI, Go modules (GOPROXY), PyPI, npm, apt, Helm, tarball, git
+- **11 protocols in one binary** — OCI, Go modules (GOPROXY), PyPI, npm, apt, Helm, tarball, git, Cargo (sparse), conda, Hugging Face Hub
 - **Honest tiered trust** — `signed` → `consensus` → `tofu` → `checksum` (never claim more than you verified)
 - **Verify-on-write** — only verified bytes are served; streaming quarantine, no multi-GB blobs in memory
 - **Two-tier cache** — immutable CAS (permanent) + mutable metadata (short TTL / revalidate); optional `cache.max_bytes` auto-evicts oldest unpinned entries
@@ -437,6 +437,31 @@ git config --global url."http://127.0.0.1:7732/git/github.com/".insteadOf "https
 ```
 
 Host must be in `protocols.git.git.allowed_upstreams`. Private / push traffic is passed through and not cached.
+
+### Cargo (sparse registry)
+
+```bash
+./bin/specula integrate --protocols cargo --addr http://127.0.0.1:7732
+# writes ~/.cargo/config.toml source replace → sparse+http://127.0.0.1:7732/cargo/index/
+cargo fetch
+```
+
+### conda
+
+```bash
+./bin/specula integrate --protocols conda --addr http://127.0.0.1:7732
+# prepends channel http://127.0.0.1:7732/conda/conda-forge in ~/.condarc
+micromamba create -y -n demo -c http://127.0.0.1:7732/conda/conda-forge --override-channels ca-certificates
+```
+
+### Hugging Face Hub
+
+```bash
+./bin/specula integrate --protocols hf --addr http://127.0.0.1:7732
+# exports HF_ENDPOINT=http://127.0.0.1:7732/hf via ~/.config/specula/env.sh
+source ~/.config/specula/env.sh
+huggingface-cli download hf-internal-testing/tiny-random-bert --local-dir /tmp/hf-tiny
+```
 
 ## HA (multi-replica)
 

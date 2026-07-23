@@ -194,3 +194,83 @@ func TestWriteEnvFileIncludesNoProxy(t *testing.T) {
 	}
 }
 
+func TestIntegrateCargoSparseReplace(t *testing.T) {
+	home := t.TempDir()
+	r := integrateCargo(home, "http://127.0.0.1:7732", false)
+	if r.Action != "added" {
+		t.Fatalf("%+v", r)
+	}
+	path := filepath.Join(home, ".cargo", "config.toml")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, `registry = "sparse+http://127.0.0.1:7732/cargo/index/"`) {
+		t.Fatalf("missing sparse registry:\n%s", s)
+	}
+	if !strings.Contains(s, `replace-with = "specula"`) {
+		t.Fatalf("missing replace-with:\n%s", s)
+	}
+	r2 := integrateCargo(home, "http://127.0.0.1:7732", false)
+	if r2.Action != "already" {
+		t.Fatalf("want already, got %+v", r2)
+	}
+}
+
+func TestIntegrateCargoDryRun(t *testing.T) {
+	home := t.TempDir()
+	r := integrateCargo(home, "http://127.0.0.1:7732", true)
+	if r.Action != "added" {
+		t.Fatalf("%+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".cargo", "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("dry-run must not write config: %v", err)
+	}
+}
+
+func TestIntegrateCondaChannel(t *testing.T) {
+	home := t.TempDir()
+	r := integrateConda(home, "http://127.0.0.1:7732", false)
+	if r.Action != "added" {
+		t.Fatalf("%+v", r)
+	}
+	path := filepath.Join(home, ".condarc")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "http://127.0.0.1:7732/conda/conda-forge") {
+		t.Fatalf("missing channel:\n%s", s)
+	}
+	r2 := integrateConda(home, "http://127.0.0.1:7732", false)
+	if r2.Action != "already" {
+		t.Fatalf("want already, got %+v", r2)
+	}
+}
+
+func TestIntegrateHFEnvEndpoint(t *testing.T) {
+	home := t.TempDir()
+	rep, err := Run(Options{
+		Addr:      "http://127.0.0.1:7732",
+		Protocols: []string{"hf"},
+		Home:      home,
+		DryRun:    false,
+		SkipRoot:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Protocol != "hf" || rep.Results[0].Action != "added" {
+		t.Fatalf("%+v", rep)
+	}
+	b, err := os.ReadFile(envPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "HF_ENDPOINT=") || !strings.Contains(string(b), "http://127.0.0.1:7732/hf") {
+		t.Fatalf("missing HF_ENDPOINT:\n%s", b)
+	}
+}
+

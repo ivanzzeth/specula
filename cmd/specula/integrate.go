@@ -27,7 +27,7 @@ func runIntegrate(args []string) error {
 	fs.SetOutput(os.Stderr)
 	addr := fs.String("addr", "http://127.0.0.1:7732", "Specula data-plane base URL")
 	protocols := fs.String("protocols", strings.Join(integrate.DefaultProtocols, ","),
-		"comma-separated protocols: go,npm,pypi,oci,helm,git,apt")
+		"comma-separated protocols: go,npm,pypi,oci,helm,git,apt,cargo,conda,hf")
 	dryRun := fs.Bool("dry-run", false, "print planned changes without writing")
 	skipRoot := fs.Bool("skip-root", false, "skip apt /etc/docker actions that need root")
 	fs.Usage = func() {

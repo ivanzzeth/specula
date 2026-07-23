@@ -43,7 +43,9 @@ pick_free_port() {
 port_listener_pid() {
   local port="$1"
   command -v ss >/dev/null 2>&1 || return 0
-  ss -ltnHp "sport = :${port}" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2
+  # Under `set -o pipefail`, a non-matching grep would otherwise fail the pipeline
+  # and abort the caller on the first empty-listen poll (before the daemon binds).
+  ss -ltnHp "sport = :${port}" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2 || true
 }
 
 # wait_for_daemon <pid> <port> <health_url> <logfile>

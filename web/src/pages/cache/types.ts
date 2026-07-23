@@ -45,6 +45,9 @@ export const PROTOCOLS = [
   'helm',
   'git',
   'tarball',
+  'cargo',
+  'conda',
+  'hf',
 ] as const;
 
 export type ProtocolSlug = (typeof PROTOCOLS)[number];
@@ -67,6 +70,9 @@ export const PROTOCOL_LABELS: Record<ProtocolSlug, string> = {
   helm: 'Helm',
   git: 'git',
   tarball: 'tarball',
+  cargo: 'Cargo',
+  conda: 'conda',
+  hf: 'Hugging Face',
 };
 
 /** Sort columns; the display label comes from `cache.sort.<value>`. */

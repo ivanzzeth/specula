@@ -1,5 +1,5 @@
 /**
- * CacheBrowser — the 8-protocol cache scanning surface (REGISTRY-DESIGN §5.2).
+ * CacheBrowser — multi-protocol cache scanning surface (REGISTRY-DESIGN §5.2).
  *
  * Core premise: operators should be able to SEE what the proxy has cached per
  * protocol — not just a total byte count. The tier badge on every row answers
@@ -8,17 +8,22 @@
  * Each protocol tab is a route segment (/cache/pypi, /cache/go, …) so the
  * view is linkable — an operator can paste /cache/npm into a ticket.
  *
+ * Tab list = known PROTOCOLS ∪ protocols reported by GET /admin/stats, so new
+ * data-plane protocols appear without a hard-coded WebUI release lag.
+ *
  * Only the active protocol's ProtocolPanel mounts at any time: switching tabs
  * navigates to /cache/{protocol}, remounting a fresh panel with default
- * filters. This keeps the initial load to one API call, not eight.
+ * filters. This keeps the initial load to one API call.
  *
  * Owned by: the Cache UI agent.
  * Files: web/src/pages/CacheBrowser.tsx, web/src/pages/cache/**
  */
 
+import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router-dom';
 
+import { getStats } from '@/api/client';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import { ProtocolPanel } from './cache/ProtocolPanel';
@@ -29,6 +34,40 @@ export function CacheBrowser() {
   const { protocol: param } = useParams<{ protocol: string }>();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const [statsProtocols, setStatsProtocols] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    getStats()
+      .then((s) => {
+        if (cancelled) return;
+        const names = (s.per_protocol ?? []).map((p) => p.protocol).filter(Boolean);
+        setStatsProtocols(names);
+      })
+      .catch(() => {
+        /* tabs still render from PROTOCOLS */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const tabs = useMemo(() => {
+    const seen = new Set<string>();
+    const out: ProtocolSlug[] = [];
+    for (const p of PROTOCOLS) {
+      seen.add(p);
+      out.push(p);
+    }
+    for (const raw of statsProtocols) {
+      // stats may report on-the-wire "gomod"; cache UI uses config key "go".
+      const slug = raw === 'gomod' ? 'go' : raw;
+      if (!isValidProtocol(slug) || seen.has(slug)) continue;
+      seen.add(slug);
+      out.push(slug);
+    }
+    return out;
+  }, [statsProtocols]);
 
   // Validate and default the protocol — fall back to 'oci' for unknown values
   // or when at the bare /cache route (no :protocol param in the path).
@@ -45,13 +84,13 @@ export function CacheBrowser() {
 
       <Tabs value={active} onValueChange={onTabChange}>
         <TabsList>
-          {PROTOCOLS.map((p) => (
+          {tabs.map((p) => (
             <TabsTrigger
               key={p}
               value={p}
-              aria-label={t('cache.tabAria', { protocol: PROTOCOL_LABELS[p] })}
+              aria-label={t('cache.tabAria', { protocol: PROTOCOL_LABELS[p] ?? p })}
             >
-              {PROTOCOL_LABELS[p]}
+              {PROTOCOL_LABELS[p] ?? p}
             </TabsTrigger>
           ))}
         </TabsList>

@@ -93,6 +93,24 @@
         "versionCol": "Digest",
         "tierContext": "cross-mirror digest quorum → consensus · first-use digest lock → tofu",
         "emptyMsg": "No tarballs cached yet."
+      },
+      "cargo": {
+        "nameCol": "Crate",
+        "versionCol": "Version",
+        "tierContext": "sparse index TOFU + crate checksum · no cross-mirror sha256 → no consensus claim",
+        "emptyMsg": "No crates cached yet. Point Cargo at the sparse+ Specula index and run cargo fetch."
+      },
+      "conda": {
+        "nameCol": "Package",
+        "versionCol": "Build",
+        "tierContext": "repodata sha256 pin → checksum · index TOFU on repodata change",
+        "emptyMsg": "No conda packages cached yet. Add Specula as a channel and install a package."
+      },
+      "hf": {
+        "nameCol": "Repo",
+        "versionCol": "Revision / File",
+        "tierContext": "public Hub objects TOFU + checksum · Authorization-bearing requests are not cached",
+        "emptyMsg": "No Hugging Face artifacts cached yet. Set HF_ENDPOINT to the proxy and download a public repo."
       }
     }
   },

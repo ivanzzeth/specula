@@ -340,5 +340,11 @@ function buildUsageHint(
     case 'tarball':
       // name IS the original URL — show it but don't build a proxy URL
       return null;
+    case 'cargo':
+      return `CARGO_HOME=… cargo fetch  # sparse+http://${host}/cargo/index/`;
+    case 'conda':
+      return `conda install -c http://${host}/conda/conda-forge ${entry.name}`;
+    case 'hf':
+      return `HF_ENDPOINT=http://${host}/hf huggingface-cli download ${entry.name}`;
   }
 }

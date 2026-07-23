@@ -26,7 +26,7 @@
 
 Specula 是一个**无状态 Go 守护进程**，明确分为两个平面：
 
-- **数据面 (Data Plane)**：8 协议拉取端点。无消费者认证（可信网段/mTLS/网络策略把边界），
+- **数据面 (Data Plane)**：11 协议拉取端点。无消费者认证（可信网段/mTLS/网络策略把边界），
   高吞吐。核心是"取回 → **验证** → 缓存 → 服务"管线。
 - **管理面 (Control Plane)**：单一二进制内嵌 WebUI，带**邮箱认证**（首个=admin）。
   看缓存统计、验签告警、配策略、管上游健康、GC。
@@ -73,6 +73,7 @@ graph TD
         subgraph handlers[Data Plane Handlers]
             oci[OCI] & pypi[PyPI] & npm[npm] & gomod[Go]
             apt[apt] & helm[Helm] & tar[tarball] & git[git]
+            cargo[Cargo] & conda[conda] & hf[HF Hub]
         end
         subgraph pipeline[核心管线]
             policy[Policy Engine]
@@ -131,6 +132,25 @@ graph LR
 | Helm | chart `*.tgz` | `index.yaml` | 30min |
 | git | git object by SHA | refs | 30s |
 | tarball | 内容 by sha256 | — | — |
+| Cargo | `.crate` by digest | sparse index JSON / `config.json` | 5min |
+| conda | `.conda` / `.tar.bz2`（repodata sha256 pin） | `repodata.json` | 5min |
+| Hugging Face | 公开文件 / LFS 对象 | Hub API / refs / tree | 2min |
+
+**数据面挂载（路径前缀 → handler）**：
+
+| 前缀 | 协议 |
+|---|---|
+| `/v2/` | OCI (+ registry token) |
+| `/pypi/` | PyPI |
+| `/npm/` | npm |
+| `/go/` | Go modules (+ `/sumdb/` 透传) |
+| `/apt/` | apt |
+| `/helm/` | Helm HTTP repo |
+| `/tarball/` | generic URL cache |
+| `/git/` | git smart-HTTP |
+| `/cargo/` | Cargo sparse registry |
+| `/conda/` | conda channel |
+| `/hf/` | Hugging Face Hub（`HF_ENDPOINT`）|
 
 **config 哨兵**：`ttl: -1` = 永不重验（不可变），`ttl: 0` = 每次重验。
 **负缓存**：404 短 TTL 缓存（默认 30min），吸收 miss-stampede，且被 singleflight 合并。
@@ -515,7 +535,7 @@ specula/
 ├── cmd/specula/            — 入口, flag, bootstrap, 根 ServeMux
 ├── internal/
 │   ├── config/             — YAML 模型 + 校验 + 加密配置库
-│   ├── handler/            — oci pypi npm gomod apt helm tarball git
+│   ├── handler/            — oci pypi npm gomod apt helm tarball git cargo conda hf
 │   ├── artifact/           — ArtifactRef, CacheEntry, Tier
 │   ├── cache/              — CacheManager, 二层缓存, quarantine 提升
 │   ├── store/

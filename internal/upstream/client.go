@@ -725,6 +725,23 @@ func buildPath(ref artifact.ArtifactRef) string {
 		}
 		return ref.Name + "/" + ref.Version
 
+	case "cargo":
+		// Sparse index: Name is the path under index.crates.io (config.json, li/bc/libc).
+		// Crate download: static.crates.io/crates/{name}/{name}-{version}.crate
+		if ref.Mutable {
+			return ref.Name
+		}
+		return "crates/" + ref.Name + "/" + ref.Name + "-" + ref.Version + ".crate"
+
+	case "conda":
+		// Name = "<channel>/<subdir>/…path" relative to channel root (or full
+		// relative path including channel when BaseURL is the conda hub root).
+		return ref.Name
+
+	case "hf":
+		// Name is the Hub-relative path (api/…, models/…, resolve/…).
+		return ref.Name
+
 	default:
 		if ref.Digest != "" {
 			return ref.Name + "/" + ref.Digest

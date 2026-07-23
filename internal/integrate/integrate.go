@@ -14,7 +14,7 @@ import (
 )
 
 // DefaultProtocols is the set applied when --protocols is omitted.
-var DefaultProtocols = []string{"go", "npm", "pypi", "oci", "helm", "git", "apt"}
+var DefaultProtocols = []string{"go", "npm", "pypi", "oci", "helm", "git", "apt", "cargo", "conda", "hf"}
 
 // Options configures an integrate run.
 type Options struct {
@@ -87,6 +87,14 @@ func Run(opts Options) (Report, error) {
 			r = integrateGit(home, addr, opts.DryRun)
 		case "apt":
 			r = integrateApt(addr, opts.DryRun, opts.SkipRoot)
+		case "cargo", "crates", "rust":
+			r = integrateCargo(home, addr, opts.DryRun)
+			r.Protocol = "cargo"
+		case "conda":
+			r = integrateConda(home, addr, opts.DryRun)
+		case "hf", "huggingface":
+			r = integrateHF(home, addr, opts.DryRun)
+			r.Protocol = "hf"
 		case "tarball":
 			r = Result{Protocol: "tarball", Action: "skipped", Detail: "tarball has no global client config; use Specula URLs directly"}
 		default:
@@ -185,6 +193,12 @@ func writeEnvFile(home, addr string, rep Report) error {
 		case "pypi":
 			b.WriteString("# PIP_INDEX_URL is also in pip.conf; optional session override:\n")
 			b.WriteString("# export PIP_INDEX_URL=" + shellQuote(addr+"/pypi/simple") + "\n")
+		case "hf":
+			b.WriteString("export HF_ENDPOINT=" + shellQuote(strings.TrimRight(addr, "/")+"/hf") + "\n")
+		case "cargo":
+			b.WriteString("# Cargo source replace is in ~/.cargo/config.toml\n")
+		case "conda":
+			b.WriteString("# conda channel is in ~/.condarc\n")
 		}
 	}
 	dir := filepath.Dir(envPath(home))
