@@ -171,6 +171,20 @@ protocols:
       quorum: 2
       # cosign_key: /etc/specula/keys/cosign.pub
 
+    # Multi-registry pull-through (path-style + containerd override_path).
+    # Unqualified names (library/nginx) still use upstreams above (Hub chain).
+    # Prefixed names (codeberg.org/org/repo) strip the host and fetch from that
+    # registry — only hosts listed here are allowed (SSRF allowlist).
+    oci:
+      remote_registries:
+        - host: ghcr.io
+        - host: quay.io
+        - host: registry.k8s.io
+        - host: gcr.io
+        - host: codeberg.org
+        # - host: mirror.example
+        #   base_url: https://mirror.example
+
   # ── PyPI ──────────────────────────────────────────────────────────────────
   pypi:
     # PyPI is a flat namespace — dependency confusion is a structural risk.

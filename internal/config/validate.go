@@ -300,6 +300,21 @@ func Validate(cfg *Config) error {
 					name, proto.Git.SyncStaleAfter, err)
 			}
 		}
+
+		// oci.remote_registries: host required; base_url if set must be http(s).
+		if proto.OCI != nil {
+			for i, rr := range proto.OCI.RemoteRegistries {
+				if strings.TrimSpace(rr.Host) == "" {
+					add("protocols.%s.oci.remote_registries[%d].host: required", name, i)
+				}
+				if u := strings.TrimSpace(rr.BaseURL); u != "" {
+					if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+						add("protocols.%s.oci.remote_registries[%d].base_url: must be http(s) URL, got %q",
+							name, i, rr.BaseURL)
+					}
+				}
+			}
+		}
 	}
 
 	if len(errs) == 0 {

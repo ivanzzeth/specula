@@ -244,6 +244,10 @@ type ProtocolConfig struct {
 	// Index upstreams use the generic Upstreams list; dl_upstreams fetch .crate
 	// files (default: https://static.crates.io when omitted).
 	Cargo *CargoConfig `koanf:"cargo"`
+
+	// OCI configures OCI-specific pull-through extras (multi-registry allowlist).
+	// Only meaningful for the "oci" protocol; nil for all others.
+	OCI *OCIConfig `koanf:"oci"`
 }
 
 // CargoConfig holds Cargo-specific download-mirror settings.
@@ -251,6 +255,26 @@ type CargoConfig struct {
 	// DLUpstreams are ordered mirrors for .crate downloads (static.crates.io
 	// layout). Empty → handler default https://static.crates.io.
 	DLUpstreams []UpstreamConfig `koanf:"dl_upstreams"`
+}
+
+// OCIConfig holds OCI multi-registry pull-through settings.
+// Unqualified names (library/nginx) still use protocols.oci.upstreams (Hub chain).
+// Names prefixed with an allowlisted host (codeberg.org/org/repo) route to that
+// registry after stripping the host from the upstream path.
+type OCIConfig struct {
+	// RemoteRegistries is the SSRF allowlist of non-Hub registries Specula will
+	// proxy. Empty → multi-registry path-style pulls are rejected (404).
+	RemoteRegistries []OCIRemoteRegistry `koanf:"remote_registries"`
+}
+
+// OCIRemoteRegistry is one allowlisted remote OCI registry host.
+type OCIRemoteRegistry struct {
+	// Host is the registry hostname as it appears in image refs / path prefixes
+	// (e.g. "ghcr.io", "codeberg.org"). Compared case-insensitively.
+	Host string `koanf:"host"`
+
+	// BaseURL overrides the upstream root (default: https://<host>).
+	BaseURL string `koanf:"base_url"`
 }
 
 // GitConfig holds the git-clone acceleration settings for the "git" protocol
