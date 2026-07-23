@@ -31,3 +31,14 @@ func WithPathPrefix(prefix string) Option   { return intconda.WithPathPrefix(pre
 func WithQuarantineDir(dir string) Option   { return intconda.WithQuarantineDir(dir) }
 func WithLogger(l *slog.Logger) Option      { return intconda.WithLogger(l) }
 func WithLocker(l coalesce.Locker) Option   { return intconda.WithLocker(l) }
+
+type ChannelSpec = intconda.ChannelSpec
+
+func WithChannels(channels intconda.ChannelMap) Option {
+	return intconda.WithChannels(channels)
+}
+
+func ChannelsFromSpecs(specs []ChannelSpec) intconda.ChannelMap {
+	return intconda.ChannelsFromSpecs(specs)
+}
+

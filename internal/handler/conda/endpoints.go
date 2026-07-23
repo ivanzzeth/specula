@@ -51,7 +51,7 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	if sm, ok := h.cache.(staler); ok {
 		staleEntry, _ = sm.LookupStale(ctx, ref)
 	}
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	if h.upstreamClt == nil {
 		if staleEntry != nil {
 			metrics.MarkHit(ctx)
 			h.serveMutableBytes(w, r, ref, staleEntry, ct)
@@ -60,7 +60,19 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+	ups, fetchName, upsOK := h.upstreamForPath(ref.Name)
+	if !upsOK {
+		if staleEntry != nil {
+			metrics.MarkHit(ctx)
+			h.serveMutableBytes(w, r, ref, staleEntry, ct)
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	fetchRef := ref
+	fetchRef.Name = fetchName
+	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, fetchRef, ups)
 	if fetchErr != nil {
 		if staleEntry != nil {
 			metrics.MarkHit(ctx)
@@ -99,12 +111,17 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 		h.streamEntry(w, r, entry)
 		return
 	}
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	if h.upstreamClt == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	ups, fetchName, upsOK := h.upstreamForPath(ref.Name)
+	if !upsOK {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
 	entry, err = h.coalescedFetch(ctx, ref, func() (*artifact.CacheEntry, error) {
-		return h.fetchAndStoreImmutable(ctx, ref)
+		return h.fetchAndStoreImmutable(ctx, ups, fetchName, ref)
 	})
 	if err != nil {
 		var ve *cache.VerifyError
@@ -141,8 +158,10 @@ func (h *Handler) coalescedFetch(ctx context.Context, ref artifact.ArtifactRef, 
 	)
 }
 
-func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
-	rc, umeta, err := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ups []upstream.Upstream, fetchName string, storeRef artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	fetchRef := storeRef
+	fetchRef.Name = fetchName
+	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)
 	if err != nil {
 		return nil, fmt.Errorf("upstream fetch: %w", err)
 	}
@@ -151,7 +170,7 @@ func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ref artifact.Artif
 	if err != nil {
 		return nil, fmt.Errorf("quarantine: %w", err)
 	}
-	entry, storeErr := h.cache.Store(ctx, ref, art)
+	entry, storeErr := h.cache.Store(ctx, storeRef, art)
 	if storeErr != nil {
 		cleanup()
 		return nil, storeErr

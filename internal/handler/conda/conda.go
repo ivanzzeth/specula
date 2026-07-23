@@ -41,6 +41,7 @@ type Handler struct {
 	meta          meta.MetadataStore
 	upstreamClt   upstream.Client
 	upstreams     []upstream.Upstream
+	channels      ChannelMap
 	pathPrefix    string
 	mutableTTLSec int64
 	quarantineDir string
