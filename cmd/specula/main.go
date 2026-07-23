@@ -934,6 +934,13 @@ func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 			opts = append(opts, apthandler.WithUpstream(dataPlaneUpstream(cfg, ups, "apt"), upstreamsFor("apt", pc.Upstreams)))
 		}
 		opts = append(opts, apthandler.WithMutableTTL(mutableTTL(pc, cfg)))
+		if pc.Apt != nil && len(pc.Apt.Repositories) > 0 {
+			specs := make([]apthandler.RepositorySpec, 0, len(pc.Apt.Repositories))
+			for _, r := range pc.Apt.Repositories {
+				specs = append(specs, apthandler.RepositorySpec{Name: r.Name, BaseURL: r.BaseURL})
+			}
+			opts = append(opts, apthandler.WithRepositories(apthandler.RepositoriesFromSpecs(specs)))
+		}
 	}
 	if gpgV != nil {
 		opts = append(opts, apthandler.WithGPGVerifier(gpgV))
@@ -962,6 +969,13 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 			opts = append(opts, helmhandler.WithUpstream(dataPlaneUpstream(cfg, ups, "helm"), upstreamsFor("helm", pc.Upstreams)))
 		}
 		opts = append(opts, helmhandler.WithMutableTTL(mutableTTL(pc, cfg)))
+		if pc.Helm != nil && len(pc.Helm.Repositories) > 0 {
+			specs := make([]helmhandler.RepositorySpec, 0, len(pc.Helm.Repositories))
+			for _, r := range pc.Helm.Repositories {
+				specs = append(specs, helmhandler.RepositorySpec{Name: r.Name, BaseURL: r.BaseURL})
+			}
+			opts = append(opts, helmhandler.WithRepositories(helmhandler.RepositoriesFromSpecs(specs)))
+		}
 	}
 	if provV != nil {
 		opts = append(opts, helmhandler.WithProvenanceVerifier(provV))
@@ -1072,6 +1086,13 @@ func mountConda(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, m
 			opts = append(opts, condahandler.WithUpstream(dataPlaneUpstream(cfg, ups, "conda"), upstreamsFor("conda", pc.Upstreams)))
 		}
 		opts = append(opts, condahandler.WithMutableTTL(mutableTTL(pc, cfg)))
+		if pc.Conda != nil && len(pc.Conda.Channels) > 0 {
+			specs := make([]condahandler.ChannelSpec, 0, len(pc.Conda.Channels))
+			for _, c := range pc.Conda.Channels {
+				specs = append(specs, condahandler.ChannelSpec{Name: c.Name, BaseURL: c.BaseURL})
+			}
+			opts = append(opts, condahandler.WithChannels(condahandler.ChannelsFromSpecs(specs)))
+		}
 	}
 	mux.Handle(condaPrefix+"/", metrics.Middleware("conda", condahandler.NewHandler(cm, opts...)))
 	log.Info("specula: mounted conda handler", "path", condaPrefix+"/", "configured", ok)

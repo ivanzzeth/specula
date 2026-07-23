@@ -245,8 +245,8 @@ protocols:
 | `go` | `/go/` | `goproxy.cn`、`goproxy.io`、`proxy.golang.org` |
 | `pypi` | `/pypi/` | 清华 Tuna、阿里云、`pypi.org` |
 | `npm` | `/npm/` | `registry.npmmirror.com`、`registry.npmjs.org` |
-| `apt` | `/apt/` | 清华 / 阿里 Ubuntu、`archive.ubuntu.com` |
-| `helm` | `/helm/` | chart 仓库根（如 Bitnami） |
+| `apt` | `/apt/<archive>/` | 多归档白名单（`apt.repositories`） |
+| `helm` | `/helm/<repo>/` | 多仓库白名单（`helm.repositories`） |
 | `tarball` | `/tarball/` | 允许的下载主机 + URL 缓存 |
 | `git` | `/git/` | 主机白名单（`git.allowed_upstreams`） |
 
@@ -266,7 +266,7 @@ protocols:
 protocols:
   git:
     git:
-      allowed_upstreams: [github.com, gitlab.com, gitee.com]
+      allowed_upstreams: [github.com, gitlab.com, gitee.com, codeberg.org, git.sr.ht, bitbucket.org]
       mirror_dir: /var/specula/git
       public_only: true
 ```
@@ -392,18 +392,18 @@ registry=http://127.0.0.1:7732/npm/
 
 ### apt（Debian / Ubuntu）
 
-`sources.list` 指向 Specula 的 apt 挂载点（`/apt/` 之后与普通 Ubuntu 源布局一致：`dists/`、`pool/`）：
+`sources.list` 指向 Specula 的 apt 挂载点（归档前缀须匹配 `apt.repositories`，例如 `ubuntu`；其后与普通源布局一致：`dists/`、`pool/`）：
 
 ```text
-deb http://127.0.0.1:7732/apt/ jammy main restricted universe multiverse
-deb http://127.0.0.1:7732/apt/ jammy-updates main restricted universe multiverse
+deb http://127.0.0.1:7732/apt/ubuntu/ jammy main restricted universe multiverse
+deb http://127.0.0.1:7732/apt/ubuntu/ jammy-updates main restricted universe multiverse
 ```
 
 ```bash
 sudo apt-get update && sudo apt-get install <pkg>
 ```
 
-请保证 Specula `protocols.apt.upstreams` 的 `base_url` 与你暴露的发行版树一致（例如 `…/ubuntu`）。
+请保证 `protocols.apt.apt.repositories` 包含 URL 中的归档名（如 `ubuntu`），且 `base_url` 指向对应发行版树。
 
 ### Helm
 

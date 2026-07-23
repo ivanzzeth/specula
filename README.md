@@ -247,8 +247,8 @@ protocols:
 | `go` | `/go/` | `goproxy.cn`, `goproxy.io`, `proxy.golang.org` |
 | `pypi` | `/pypi/` | Tuna, Aliyun, `pypi.org` |
 | `npm` | `/npm/` | `registry.npmmirror.com`, `registry.npmjs.org` |
-| `apt` | `/apt/` | Tuna / Aliyun Ubuntu, `archive.ubuntu.com` |
-| `helm` | `/helm/` | chart repo root (e.g. Bitnami) |
+| `apt` | `/apt/<archive>/` | multi-archive allowlist (`apt.repositories`) |
+| `helm` | `/helm/<repo>/` | multi-repo allowlist (`helm.repositories`) |
 | `tarball` | `/tarball/` | host allowlist + URL cache |
 | `git` | `/git/` | host allowlist (`git.allowed_upstreams`) |
 
@@ -268,7 +268,7 @@ protocols:
 protocols:
   git:
     git:
-      allowed_upstreams: [github.com, gitlab.com, gitee.com]
+      allowed_upstreams: [github.com, gitlab.com, gitee.com, codeberg.org, git.sr.ht, bitbucket.org]
       mirror_dir: /var/specula/git
       public_only: true
 ```
@@ -414,18 +414,18 @@ registry=http://127.0.0.1:7732/npm/
 
 ### apt (Debian / Ubuntu)
 
-Point `sources.list` at Specula’s apt mount (paths after `/apt/` mirror a normal Ubuntu archive root: `dists/`, `pool/`):
+Point `sources.list` at Specula’s apt mount (archive prefix must match `apt.repositories`, e.g. `ubuntu`; paths after that mirror a normal archive root: `dists/`, `pool/`):
 
 ```text
-deb http://127.0.0.1:7732/apt/ jammy main restricted universe multiverse
-deb http://127.0.0.1:7732/apt/ jammy-updates main restricted universe multiverse
+deb http://127.0.0.1:7732/apt/ubuntu/ jammy main restricted universe multiverse
+deb http://127.0.0.1:7732/apt/ubuntu/ jammy-updates main restricted universe multiverse
 ```
 
 ```bash
 sudo apt-get update && sudo apt-get install <pkg>
 ```
 
-Ensure Specula’s `protocols.apt.upstreams` `base_url` matches the distro tree you expose (e.g. `…/ubuntu`).
+Ensure Specula’s `protocols.apt.apt.repositories` includes the archive name you use in the URL (e.g. `ubuntu`), and that `base_url` points at that distro tree.
 
 ### Helm
 

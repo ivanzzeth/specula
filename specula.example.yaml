@@ -310,6 +310,8 @@ protocols:
     # The distro keyring is obtained out-of-band and cannot be forged by a mirror.
     mutable_ttl_seconds: 0   # always revalidate: InRelease has its own expiry field
 
+    # Default fallback chain used when the path has no archive prefix
+    # (/apt/dists/…) or when apt.repositories is empty (legacy).
     upstreams:
       - name: tuna
         base_url: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
@@ -323,6 +325,15 @@ protocols:
         base_url: https://archive.ubuntu.com/ubuntu
         priority: 3
         official: true
+
+    # Multi-archive allowlist: /apt/<name>/dists|pool/… routes to that archive
+    # root (path strip). Unknown names → 404. Empty list → legacy single-root.
+    apt:
+      repositories:
+        - name: ubuntu
+          base_url: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
+        - name: debian
+          base_url: https://mirrors.tuna.tsinghua.edu.cn/debian
 
     verification:
       tiers: [signed, tofu, checksum]
@@ -343,11 +354,21 @@ protocols:
     # OCI-format Helm charts are handled by the oci protocol above.
     mutable_ttl_seconds: 1800   # 30 minutes for index.yaml
 
+    # Default fallback for flat layout (/helm/index.yaml) when repositories empty.
     upstreams:
       - name: bitnami
         base_url: https://charts.bitnami.com/bitnami
         priority: 1
         official: true
+
+    # Multi-repo allowlist: /helm/<name>/index.yaml routes to that chart root
+    # (path strip). Unknown names → 404. Empty list → legacy subpath under upstreams.
+    helm:
+      repositories:
+        - name: bitnami
+          base_url: https://charts.bitnami.com/bitnami
+        - name: prometheus-community
+          base_url: https://prometheus-community.github.io/helm-charts
 
     verification:
       # .prov GPG signature provides "signed" tier when keyring is configured.
@@ -403,7 +424,7 @@ protocols:
 
     # git-specific bare-mirror settings (ARCHITECTURE §9, PRD §6).
     git:
-      allowed_upstreams: [github.com, gitlab.com, gitee.com]
+      allowed_upstreams: [github.com, gitlab.com, gitee.com, codeberg.org, git.sr.ht, bitbucket.org]
       mirror_dir: ~/.specula/git
       sync_stale_after: 30s    # reuse a mirror within this window; concurrent-clone-safe
       public_only: true        # private repos / Authorization-bearing → passthrough, no cache
@@ -426,17 +447,17 @@ protocols:
     # .crate files are immutable (checksum; pin when upstream advertises digest).
     mutable_ttl_seconds: 300
 
-    # Sparse index hosts (index.crates.io layout).
+    # Sparse index hosts (index.crates.io layout). Prefer official first;
+    # rsproxy is a CN-friendly fallback (pair with matching dl_upstreams below).
     upstreams:
       - name: index-crates-io
         base_url: https://index.crates.io
         priority: 1
         official: true
-      # Optional CN-friendly index mirrors (uncomment if preferred):
-      # - name: rsproxy-index
-      #   base_url: https://rsproxy.cn/index
-      #   priority: 1
-      #   official: false
+      - name: rsproxy-index
+        base_url: https://rsproxy.cn/index
+        priority: 2
+        official: false
 
     cargo:
       # .crate download mirrors (static.crates.io layout: /crates/<name>/<name>-<ver>.crate).
@@ -445,10 +466,10 @@ protocols:
           base_url: https://static.crates.io
           priority: 1
           official: true
-        # - name: ustc-crates
-        #   base_url: https://mirrors.ustc.edu.cn/crates.io
-        #   priority: 1
-        #   official: false
+        - name: rsproxy-dl
+          base_url: https://rsproxy.cn
+          priority: 2
+          official: false
 
     verification:
       tiers: [tofu, checksum]
@@ -461,7 +482,7 @@ protocols:
     # /conda/<channel>/<subdir>/<pkg>.{conda,tar.bz2} (immutable; pin sha256 from repodata).
     mutable_ttl_seconds: 300
 
-    # base_url is the cloud root; request path keeps /<channel>/…
+    # Cloud-root fallback when conda.channels is empty (legacy full-path fetch).
     upstreams:
       - name: tuna-cloud
         base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
@@ -471,6 +492,17 @@ protocols:
         base_url: https://conda.anaconda.org
         priority: 2
         official: true
+
+    # Per-channel roots: /conda/<name>/… strips <name> and fetches against BaseURL.
+    # Unknown channel names → 404 when this list is non-empty.
+    conda:
+      channels:
+        - name: conda-forge
+          base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
+        - name: bioconda
+          base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/bioconda
+        - name: pytorch
+          base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/pytorch
 
     verification:
       tiers: [checksum, tofu]
