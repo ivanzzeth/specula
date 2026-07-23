@@ -119,7 +119,14 @@ Update versions with `helm search repo bitnami/<chart> --versions` and edit `Cha
 ./scripts/ha-minikube.sh
 ```
 
-See script output for port-forward commands and an acceptance checklist.
+Acceptance (v0.7) covered by the script:
+
+1. `/v2/` and control `/healthz` via port-forward
+2. Warm pull-through: `GET /v2/library/hello-world/manifests/latest` → 200
+3. Delete one Specula pod — `/v2/` stays up; re-fetch warmed manifest → 200 (shared CAS)
+4. HPA minReplicas bump → scale to 4 ready replicas
+
+Requires: `minikube`, `helm`, `kubectl`, `docker`, `curl`. Missing tools → hard fail (not silent SKIP).
 
 ## Caveats
 

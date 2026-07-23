@@ -93,11 +93,18 @@ export function Dashboard() {
       ? Math.min(100, Math.round((stats.backend_disk_used / diskTotal) * 100))
       : 0;
 
+  const maxBytes = stats.max_bytes ?? 0;
+  const cachedBytes = stats.cached_bytes > 0 ? stats.cached_bytes : stats.total_bytes;
+  const capPct =
+    maxBytes > 0 ? Math.min(100, Math.round((cachedBytes / maxBytes) * 100)) : 0;
+
   // Gauge colour is DATA, so it comes off the status-lamp ramp, never off the
   // amber accent — amber means "interactive" everywhere else in this UI, and a
   // gauge that turns amber at 80% would read as a control, not a warning.
-  const gaugeClass =
+  const diskGaugeClass =
     diskPct >= 90 ? 'bg-health-blocked' : diskPct >= 80 ? 'bg-tier-tofu' : 'bg-tier-signed';
+  const capGaugeClass =
+    capPct >= 90 ? 'bg-health-blocked' : capPct >= 80 ? 'bg-tier-tofu' : 'bg-tier-signed';
 
   const perProtocol = stats.per_protocol ?? [];
   const hasPerProtocol = perProtocol.length > 0;
@@ -110,9 +117,8 @@ export function Dashboard() {
 
       {/* ── Readout tiles ─────────────────────────────────────────────────────
           Hairline grid: the 1px gap IS the border (gap-px over a slate-800
-          field), so four tiles read as one instrument cluster rather than four
-          floating cards. */}
-      <div className="grid grid-cols-2 gap-px border border-slate-800 bg-slate-800 sm:grid-cols-4">
+          field), so tiles read as one instrument cluster rather than cards. */}
+      <div className="grid grid-cols-2 gap-px border border-slate-800 bg-slate-800 sm:grid-cols-3 lg:grid-cols-5">
         <Readout
           label={t('dashboard.totalObjects')}
           value={stats.total_objects.toLocaleString()}
@@ -134,7 +140,45 @@ export function Dashboard() {
           value={formatBytes(stats.backend_disk_free)}
           className="bg-slate-900"
         />
+        <Readout
+          label={t('dashboard.evicted')}
+          value={formatBytes(stats.evicted_bytes ?? 0)}
+          hint={t('dashboard.evictedHint')}
+          className="bg-slate-900"
+        />
       </div>
+
+      {/* ── Specula cache.max_bytes gauge ─────────────────────────────────── */}
+      {maxBytes > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t('dashboard.cacheCap')}</CardTitle>
+            <span className="tnum text-data text-slate-400">
+              {t('dashboard.cacheCapOf', { pct: capPct, total: formatBytes(maxBytes) })}
+            </span>
+          </CardHeader>
+          <CardContent>
+            <div
+              className="h-1.5 w-full overflow-hidden rounded-[1px] bg-slate-800"
+              role="meter"
+              aria-valuenow={capPct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-label={t('dashboard.cacheCapAria', { pct: capPct })}
+            >
+              <div className={`h-full transition-all ${capGaugeClass}`} style={{ width: `${capPct}%` }} />
+            </div>
+            <div className="mt-1.5 flex justify-between text-data text-slate-500">
+              <span className="tnum">
+                {t('dashboard.usedSuffix', { value: formatBytes(cachedBytes) })}
+              </span>
+              <span className="tnum">
+                {t('dashboard.totalSuffix', { value: formatBytes(maxBytes) })}
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Disk gauge ────────────────────────────────────────────────────── */}
       {diskTotal > 0 && (
@@ -154,7 +198,7 @@ export function Dashboard() {
               aria-valuemax={100}
               aria-label={t('dashboard.diskAria', { pct: diskPct })}
             >
-              <div className={`h-full transition-all ${gaugeClass}`} style={{ width: `${diskPct}%` }} />
+              <div className={`h-full transition-all ${diskGaugeClass}`} style={{ width: `${diskPct}%` }} />
             </div>
             <div className="mt-1.5 flex justify-between text-data text-slate-500">
               <span className="tnum">

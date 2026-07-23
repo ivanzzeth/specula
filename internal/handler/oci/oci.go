@@ -43,7 +43,8 @@ type Handler struct {
 	cache         cache.CacheManager
 	meta          meta.MetadataStore     // optional: direct mutable-tier (tag→digest) access
 	upstreamClt   upstream.Client        // optional: cache-miss upstream fetcher
-	upstreams     []upstream.Upstream    // ordered fallback list
+	upstreams     []upstream.Upstream    // ordered Hub fallback list
+	remoteRegs    remoteRegistry         // allowlisted non-Hub registries (path-style)
 	mutableTTLSec int64                  // TTL for tag→digest mutable entries (seconds)
 	quarantineDir string                 // directory for on-disk quarantine temp files
 	hosted        HostedResolver         // optional: hosted-first pull seam (R2)

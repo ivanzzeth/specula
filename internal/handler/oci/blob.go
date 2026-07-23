@@ -13,6 +13,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
 // serveBlob handles GET/HEAD /v2/<name>/blobs/<digest>.
@@ -101,7 +102,8 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 			return
 		}
 		// Non-hosted: cache miss → fetch from upstream with verify-on-write (G1 fix).
-		if h.upstreamClt == nil || len(h.upstreams) == 0 {
+		ups, _, ok := h.upstreamForName(imageName)
+		if h.upstreamClt == nil || !ok || len(ups) == 0 {
 			writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
 			return
 		}
@@ -126,6 +128,10 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 			})
 		if err != nil {
 			h.log.Error("oci: fetch blob from upstream", "image", imageName, "digest", digest, "err", err)
+			if upstream.IsNotFound(err) {
+				writeOCIError(w, http.StatusNotFound, "BLOB_UNKNOWN", "blob unknown to registry")
+				return
+			}
 			writeOCIError(w, http.StatusBadGateway, "BLOB_UNKNOWN", "upstream fetch failed")
 			return
 		}
@@ -187,14 +193,18 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 // The fetched bytes are verified against the requested digest before Store
 // is called. A mismatch returns an error with DIGEST_INVALID semantics.
 func (h *Handler) fetchAndStoreBlob(ctx context.Context, imageName, digest string) (*artifact.CacheEntry, error) {
+	ups, fetchName, ok := h.upstreamForName(imageName)
+	if !ok || len(ups) == 0 {
+		return nil, fmt.Errorf("no upstream for %q", imageName)
+	}
 	fetchRef := artifact.ArtifactRef{
 		Protocol: "oci",
-		Name:     imageName,
-		Digest:   digest, // buildPath: v2/<name>/blobs/<digest>
+		Name:     fetchName, // stripped of allowlisted registry host for upstream path
+		Digest:   digest,    // buildPath: v2/<name>/blobs/<digest>
 		Mutable:  false,
 	}
 
-	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, h.upstreams)
+	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)
 	if err != nil {
 		return nil, fmt.Errorf("upstream fetch blob: %w", err)
 	}

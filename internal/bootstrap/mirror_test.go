@@ -28,10 +28,14 @@ func TestWriteContainerdHosts_DockerIO(t *testing.T) {
 	require.Contains(t, s, `[host."http://127.0.0.1:30732"]`)
 	require.Contains(t, s, `capabilities = ["pull", "resolve"]`)
 	require.Contains(t, s, `skip_verify = true`)
+	require.NotContains(t, s, "override_path")
 
 	got2, err := os.ReadFile(filepath.Join(dir, "registry.k8s.io", "hosts.toml"))
 	require.NoError(t, err)
-	require.Contains(t, string(got2), `server = "https://registry.k8s.io"`)
+	s2 := string(got2)
+	require.Contains(t, s2, `server = "https://registry.k8s.io"`)
+	require.Contains(t, s2, `[host."http://127.0.0.1:30732/v2/registry.k8s.io"]`)
+	require.Contains(t, s2, `override_path = true`)
 }
 
 func TestWriteContainerdHosts_RequiresFields(t *testing.T) {
@@ -52,5 +56,8 @@ func TestWriteContainerdHosts_NoSkipVerify(t *testing.T) {
 	}))
 	got, err := os.ReadFile(filepath.Join(dir, "ghcr.io", "hosts.toml"))
 	require.NoError(t, err)
-	require.NotContains(t, string(got), "skip_verify")
+	s := string(got)
+	require.NotContains(t, s, "skip_verify")
+	require.Contains(t, s, `override_path = true`)
+	require.Contains(t, s, `[host."https://mirror.example:443/v2/ghcr.io"]`)
 }

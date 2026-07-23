@@ -33,6 +33,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
 // staler is an optional extension of CacheManager that returns mutable entries
@@ -191,6 +192,10 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 			return
 		}
 		h.log.Error("apt: mutable fetch", "ref", ref, "err", fetchErr)
+		if isNotFound(fetchErr) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "upstream fetch failed")
 		return
 	}
@@ -471,6 +476,9 @@ func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef
 func isNotFound(err error) bool {
 	if err == nil {
 		return false
+	}
+	if upstream.IsNotFound(err) {
+		return true
 	}
 	return strings.Contains(err.Error(), "HTTP 404")
 }

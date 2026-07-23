@@ -35,6 +35,7 @@ func WithSyncStaleAfter(d time.Duration) Option  { return intgit.WithSyncStaleAf
 func WithUpstreamTimeout(d time.Duration) Option { return intgit.WithUpstreamTimeout(d) }
 func WithPublicOnly(publicOnly bool) Option      { return intgit.WithPublicOnly(publicOnly) }
 func WithFailClosed(failClosed bool) Option      { return intgit.WithFailClosed(failClosed) }
+func WithOffline(offline bool) Option            { return intgit.WithOffline(offline) }
 func WithSignedRefsVerifier(v *verify.GitSignedVerifier) Option {
 	return intgit.WithSignedRefsVerifier(v)
 }

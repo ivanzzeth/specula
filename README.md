@@ -309,36 +309,60 @@ docker info | grep -A5 'Registry Mirrors'
 curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
 ```
 
-This updates `/etc/docker/daemon.json`:
-- `registry-mirrors` — Specula first (existing mirrors kept)
-- `insecure-registries` — `127.0.0.1:7732` when Specula is `http://`
+This updates:
+- `/etc/docker/daemon.json`: `registry-mirrors` (**docker.io only**) and `insecure-registries`
+- `/etc/containerd/certs.d/<registry>/hosts.toml`: non-Hub registries get `override_path` so pulls reach Specula with the host in the path
 
-Without sudo, Specula still writes `~/.config/docker/daemon.json` and
-`~/.config/specula/docker-daemon.snippet.json`, but **dockerd ignores the user
-path** — re-run with sudo for a real one-click.
+Without sudo, Specula still writes user-dir daemon.json / `~/.config/specula/certs.d/`, but
+**dockerd/containerd ignore those paths** — re-run with sudo for a real one-click.
 
 Manual equivalent:
 
 ```jsonc
-// /etc/docker/daemon.json — pull-through for docker.io
+// /etc/docker/daemon.json — pull-through for docker.io ONLY
 {
   "registry-mirrors": ["http://127.0.0.1:7732"],
   "insecure-registries": ["127.0.0.1:7732"]
 }
 ```
 
-```toml
-# containerd hosts.toml (example for docker.io)
-# /etc/containerd/certs.d/docker.io/hosts.toml
-server = "https://docker.io"
-
-[host."http://127.0.0.1:7732"]
-  capabilities = ["pull", "resolve"]
-```
+`registry-mirrors` does **not** intercept pulls from other registries (`ghcr.io`,
+`codeberg.org`, `quay.io`, …). For those, use path-style pulls or containerd
+`certs.d` (see below). `integrate --protocols oci` writes both daemon.json and
+containerd hosts.toml.
 
 ```bash
-# one-off
-docker pull 127.0.0.1:7732/library/nginx:latest   # if using as a named registry
+# Path-style — works with plain dockerd (image name includes the registry host)
+docker pull 127.0.0.1:7732/codeberg.org/forgejo/forgejo:12
+docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
+docker pull 127.0.0.1:7732/ghcr.io/OWNER/IMAGE:tag
+```
+
+```toml
+# containerd hosts.toml — transparent pull (override_path for non-docker.io)
+# Written by: sudo specula integrate --protocols oci
+#   or: specula bootstrap-mirror write --endpoint http://127.0.0.1:7732
+#
+# /etc/containerd/certs.d/docker.io/hosts.toml  (Hub-relative paths)
+server = "https://registry-1.docker.io"
+[host."http://127.0.0.1:7732"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+
+# /etc/containerd/certs.d/codeberg.org/hosts.toml
+server = "https://codeberg.org"
+[host."http://127.0.0.1:7732/v2/codeberg.org"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+  skip_verify = true
+```
+
+Allowlisted hosts are configured under `protocols.oci.oci.remote_registries`
+(see `specula.example.yaml`). Unknown host prefixes are rejected (SSRF allowlist).
+
+```bash
+# Hub one-off via Specula as a named registry
+docker pull 127.0.0.1:7732/library/nginx:latest
 ```
 
 Specula serves the OCI Distribution API at `/v2/`.
@@ -463,6 +487,25 @@ source ~/.config/specula/env.sh
 huggingface-cli download hf-internal-testing/tiny-random-bert --local-dir /tmp/hf-tiny
 ```
 
+## Offline / air-gap (`server.mode: offline`)
+
+Warm Specula while online, then restart with `mode: offline`. Cache hits keep
+working; misses return **404** and Specula makes **no outbound** fetches (git
+mirrors are served as-is — no clone/refresh).
+
+```yaml
+server:
+  mode: offline   # restart required to switch; empty/online = normal pull-through
+```
+
+```bash
+# 1) online: warm
+docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
+# 2) set mode: offline, restart daemon
+# 3) hit works; uncached tag fails fast
+./scripts/realclient-offline.sh
+```
+
 ## HA (multi-replica)
 
 Mature-library stack only: Postgres meta + Redis (redsync) stampede lock + shared CAS
@@ -483,6 +526,7 @@ NodePort, containerd `certs.d` DaemonSet — no busybox). Local smoke (container
 |-----|----------|
 | [docs/LIBRARY.md](docs/LIBRARY.md) | Public `pkg/` API, stability, error contract |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Two-plane design, cache, verify, **HA matrix** |
+| [docs/TRUST.md](docs/TRUST.md) | Cosign / apt GPG / Helm `.prov` / dep-confusion cookbook + oracles |
 | [deploy/helm/specula/README.md](deploy/helm/specula/README.md) | Helm install (Bitnami PG/Redis, optional MinIO) |
 | [deploy/helm/specula-bootstrap/README.md](deploy/helm/specula-bootstrap/README.md) | China / air-gapped self-bootstrap |
 | [docs/PRD.md](docs/PRD.md) | Product requirements |

@@ -347,6 +347,10 @@ func (h *Handler) serveTarball(w http.ResponseWriter, r *http.Request, host, key
 	rc, umeta, fetchErr := h.fetchFromURL(ctx, key, file)
 	if fetchErr != nil {
 		h.log.Error("tarball: upstream fetch", "key", key, "file", file, "err", fetchErr)
+		if upstream.IsNotFound(fetchErr) {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
 		writeError(w, http.StatusBadGateway, "upstream fetch failed: "+fetchErr.Error())
 		return
 	}

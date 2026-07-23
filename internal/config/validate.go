@@ -99,6 +99,12 @@ func Validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.Server.ControlPlaneAddr) == "" {
 		add("server.control_plane_addr: must not be empty")
 	}
+	switch m := strings.ToLower(strings.TrimSpace(cfg.Server.Mode)); m {
+	case "", "online", "offline":
+		// ok — empty means online
+	default:
+		add("server.mode: must be \"online\", \"offline\", or empty, got %q", cfg.Server.Mode)
+	}
 
 	// ── Storage — Blob ────────────────────────────────────────────────────
 	switch cfg.Storage.Blob.Driver {
@@ -298,6 +304,21 @@ func Validate(cfg *Config) error {
 			if _, err := time.ParseDuration(proto.Git.SyncStaleAfter); err != nil {
 				add("protocols.%s.git.sync_stale_after: invalid duration %q: %v",
 					name, proto.Git.SyncStaleAfter, err)
+			}
+		}
+
+		// oci.remote_registries: host required; base_url if set must be http(s).
+		if proto.OCI != nil {
+			for i, rr := range proto.OCI.RemoteRegistries {
+				if strings.TrimSpace(rr.Host) == "" {
+					add("protocols.%s.oci.remote_registries[%d].host: required", name, i)
+				}
+				if u := strings.TrimSpace(rr.BaseURL); u != "" {
+					if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+						add("protocols.%s.oci.remote_registries[%d].base_url: must be http(s) URL, got %q",
+							name, i, rr.BaseURL)
+					}
+				}
 			}
 		}
 	}

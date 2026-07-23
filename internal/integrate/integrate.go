@@ -79,7 +79,9 @@ func Run(opts Options) (Report, error) {
 			r = integratePip(home, addr, opts.DryRun)
 			r.Protocol = "pypi"
 		case "oci", "docker":
-			r = integrateDocker(home, addr, opts.DryRun, opts.SkipRoot)
+			dr := integrateDocker(home, addr, opts.DryRun, opts.SkipRoot)
+			cr := integrateContainerdCerts(home, addr, opts.DryRun, opts.SkipRoot)
+			r = mergeOCIResults(dr, cr)
 			r.Protocol = "oci"
 		case "helm":
 			r = integrateHelm(addr, opts.DryRun)

@@ -481,8 +481,8 @@ func TestPypiServeImmutable_LookupError_500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
 
-func TestPypiServeImmutable_Upstream404_502(t *testing.T) {
-	// Upstream always returns 404 → fetch fails → 502.
+func TestPypiServeImmutable_Upstream404_NotFound(t *testing.T) {
+	// Upstream always returns 404 → fetch fails → 404.
 	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
@@ -497,7 +497,7 @@ func TestPypiServeImmutable_Upstream404_502(t *testing.T) {
 	resp, err := http.Get(srv.URL + "/packages/ab/cd/flask-2.0-py3-none-any.whl")
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestPypiServeImmutableFromCache_ErrCacheMiss_404(t *testing.T) {

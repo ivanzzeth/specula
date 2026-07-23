@@ -5,6 +5,37 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+## [0.7.0] — Multi-registry OCI, offline mode, ops polish — 2026-07-24
+
+### Added
+
+- **OCI multi-registry pull-through**: path-style
+  `docker pull 127.0.0.1:7732/<registryHost>/<repo>:<tag>`; host stripped on
+  upstream fetch; SSRF allowlist `protocols.oci.oci.remote_registries`.
+  Bootstrap / `integrate --protocols oci` write containerd `hosts.toml` with
+  `override_path` for non-`docker.io` registries.
+- **`server.mode: offline`**: cache hits only; misses 404; no outbound fetch
+  (git: no clone/refresh / passthrough). Gate: `scripts/realclient-offline.sh`.
+- **Dashboard capacity**: Admin stats expose `max_bytes`, `evicted_bytes` /
+  `evicted_objects`; WebUI gauge for Specula cache ceiling.
+- **HA acceptance**: `scripts/ha-minikube.sh` warms a manifest, kills a replica,
+  re-fetches (shared CAS hit). PRD v0.7 marked done.
+- **Trust cookbook**: [`docs/TRUST.md`](docs/TRUST.md) — cosign keyed, apt GPG,
+  Helm `.prov`, dep-confusion fail-closed. Example apt keyring path enabled;
+  CI runs `test-trust-oracle` + `test-trust-oracle-signed` on `main`/PRs.
+
+### Docs
+
+- README (EN/ZH): offline / multi-registry notes; TRUST.md linked.
+
+## [0.6.0] — Cargo, conda, Hugging Face — 2026-07-23
+
+### Added
+
+- **Cargo** sparse registry (`/cargo/`), **conda** channel (`/conda/`),
+  **Hugging Face Hub** (`/hf/`, `HF_ENDPOINT`).
+- `specula integrate` for cargo / conda / hf; realclient scripts + Makefile.
+
 ## [0.5.0] — HA & China bootstrap — 2026-07-22
 
 ### Added

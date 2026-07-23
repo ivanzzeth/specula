@@ -97,7 +97,8 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageNam
 	}
 
 	// Non-hosted: Step 3 — fetch from upstream with verify-on-write.
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	ups, _, ok := h.upstreamForName(imageName)
+	if h.upstreamClt == nil || !ok || len(ups) == 0 {
 		writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
 		return
 	}
@@ -128,6 +129,10 @@ func (h *Handler) serveManifest(w http.ResponseWriter, r *http.Request, imageNam
 		})
 	if fetchErr != nil {
 		h.log.Error("oci: fetch manifest from upstream", "image", imageName, "ref", reference, "err", fetchErr)
+		if upstream.IsNotFound(fetchErr) {
+			writeOCIError(w, http.StatusNotFound, "MANIFEST_UNKNOWN", "manifest unknown")
+			return
+		}
 		writeOCIError(w, http.StatusBadGateway, "MANIFEST_UNKNOWN", "upstream fetch failed")
 		return
 	}
@@ -236,14 +241,18 @@ func (h *Handler) resolveManifestDigest(ctx context.Context, imageName, referenc
 // The OCI manifest Accept header is always sent so registries return the
 // correct content type for multi-arch image indexes.
 func (h *Handler) fetchAndStoreManifest(ctx context.Context, imageName, reference string) (string, error) {
+	ups, fetchName, ok := h.upstreamForName(imageName)
+	if !ok || len(ups) == 0 {
+		return "", fmt.Errorf("no upstream for %q", imageName)
+	}
 	fetchRef := artifact.ArtifactRef{
 		Protocol: "oci",
-		Name:     imageName,
+		Name:     fetchName, // stripped of allowlisted registry host for upstream path
 		Version:  reference,
 		Mutable:  true, // buildPath: v2/<name>/manifests/<reference>
 	}
 
-	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, h.upstreams, upstream.WithOCIManifestAccept())
+	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups, upstream.WithOCIManifestAccept())
 	if err != nil {
 		return "", fmt.Errorf("upstream fetch manifest: %w", err)
 	}

@@ -40,6 +40,11 @@ server:
   # single-node (node-local mirrors) — disable git in HA Deployment values.
   # ha: false
 
+  # Runtime mode: online (default) or offline. Offline serves only already-cached
+  # artifacts — no upstream Fetch and no git mirror clone/refresh; misses are 404.
+  # Warm the cache while online, then restart with mode: offline for air-gap.
+  # mode: online
+
 # ── Coalesce (cross-replica cold-fetch stampede lock) ─────────────────────────
 # Empty / omitted = in-process singleflight only (fine for DaemonSet / single node).
 # HA deployments must set lock_driver: redis (go-redsync/redsync over go-redis).
@@ -165,11 +170,30 @@ protocols:
         official: true
 
     verification:
-      # Without a cosign_key, OCI tops out at consensus or tofu.
-      # Set cosign_key + tiers: [signed, tofu, checksum] for keyed verification.
+      # Without cosign keys, OCI tops out at consensus or tofu.
+      # Copy-paste for signed (CN-safe keyed; tlog MUST stay false):
+      #   tiers: [signed, tofu, checksum]
+      #   cosign:
+      #     keys: [/etc/specula/keys/cosign.pub]
+      #     tlog: false
+      # Full cookbook: docs/TRUST.md
       tiers: [tofu, checksum]
       quorum: 2
-      # cosign_key: /etc/specula/keys/cosign.pub
+      # cosign_key: /etc/specula/keys/cosign.pub   # legacy single-key alias
+
+    # Multi-registry pull-through (path-style + containerd override_path).
+    # Unqualified names (library/nginx) still use upstreams above (Hub chain).
+    # Prefixed names (codeberg.org/org/repo) strip the host and fetch from that
+    # registry — only hosts listed here are allowed (SSRF allowlist).
+    oci:
+      remote_registries:
+        - host: ghcr.io
+        - host: quay.io
+        - host: registry.k8s.io
+        - host: gcr.io
+        - host: codeberg.org
+        # - host: mirror.example
+        #   base_url: https://mirror.example
 
   # ── PyPI ──────────────────────────────────────────────────────────────────
   pypi:
@@ -199,10 +223,10 @@ protocols:
       tiers: [consensus, tofu, checksum]
       quorum: 2
       tofu: enforce   # pin digest on first fetch; alert on later change
-      # Dependency-confusion guard (DESIGN-REVIEW §4): PyPI is a FLAT namespace,
-      # so list the exact private names you own — prefix "conventions" are theatre.
+      # Dependency-confusion guard (DESIGN-REVIEW §4 / docs/TRUST.md):
+      # PyPI is a FLAT namespace — list exact private names you own.
       # dependency_confusion:
-      #   private_names: ["mycompany-*"]
+      #   private_names: ["corp-internal", "corp-lib"]
       #   private_upstream: https://pypi.internal.example.com/simple
       #   on_private_down: fail_closed   # never fall back to a public mirror
 
@@ -228,8 +252,8 @@ protocols:
       tiers: [consensus, tofu, checksum]
       quorum: 2
       tofu: enforce
-      # Dependency-confusion guard: scoped names (@org/pkg) are confusion-resistant
-      # by design; unscoped private names need an explicit denylist.
+      # Dependency-confusion guard (docs/TRUST.md): scopes are resistant by
+      # design; unscoped private names need an explicit denylist.
       # dependency_confusion:
       #   private_scopes: ["@myorg"]
       #   private_unscoped: ["internal-svc"]
@@ -308,7 +332,10 @@ protocols:
       # with the OS and cannot be forged by a mirror. Set keyring to enable it.
       gpg:
         policy: enforce
-        # keyring: /etc/specula/keyrings/ubuntu-archive-keyring.gpg
+        # Distro keyring is out-of-band (mirror cannot forge it). On Ubuntu/Debian
+        # hosts the archive keyring is usually already present; copy it into the
+        # Specula image/VM if the daemon filesystem differs. See docs/TRUST.md.
+        keyring: /usr/share/keyrings/ubuntu-archive-keyring.gpg
 
   # ── Helm ──────────────────────────────────────────────────────────────────
   helm:
@@ -327,8 +354,9 @@ protocols:
       tiers: [tofu, checksum]
       quorum: 1
       tofu: enforce
-      # Helm chart provenance (.prov) is a detached GPG signature. A chart with no
-      # .prov degrades to a lower tier (policy: warn) rather than failing.
+      # Helm chart provenance (.prov) is a detached GPG signature. Public CN
+      # mirrors usually publish NONE — keep warn so missing .prov degrades to tofu.
+      # When you control a signing repo, point keyring at publisher keys (docs/TRUST.md).
       provenance:
         policy: warn
         # keyring: /etc/specula/keyrings/helm-signing.gpg

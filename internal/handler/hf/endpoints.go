@@ -68,6 +68,10 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, hubPath
 			return
 		}
 		h.log.Error("hf: file fetch", "ref", ref, "err", err)
+		if upstream.IsNotFound(err) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "upstream fetch failed", http.StatusBadGateway)
 		return
 	}
@@ -110,6 +114,10 @@ func (h *Handler) serveMutableCached(w http.ResponseWriter, r *http.Request, ref
 			return
 		}
 		h.log.Error("hf: mutable fetch", "ref", ref, "err", fetchErr)
+		if upstream.IsNotFound(fetchErr) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "upstream fetch failed", http.StatusBadGateway)
 		return
 	}

@@ -366,10 +366,10 @@ func TestNpmServeImmutable_LookupError_500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
 
-// ── Tests: serveImmutable upstream 404 → 502 ─────────────────────────────────
+// ── Tests: serveImmutable upstream 404 → 404 ─────────────────────────────────
 
-func TestNpmServeImmutable_Upstream404_BadGateway(t *testing.T) {
-	// Upstream returns 404 → tarball fetch error → 502
+func TestNpmServeImmutable_Upstream404_NotFound(t *testing.T) {
+	// Upstream returns 404 → tarball fetch error → 404
 	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
@@ -383,7 +383,7 @@ func TestNpmServeImmutable_Upstream404_BadGateway(t *testing.T) {
 	resp, err := http.Get(srv.URL + "/react/-/react-18.2.0.tgz")
 	require.NoError(t, err)
 	defer resp.Body.Close()
-	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 // ── Tests: privateDownServeStale ──────────────────────────────────────────────

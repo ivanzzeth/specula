@@ -153,6 +153,57 @@ func TestDockerInsecureHost(t *testing.T) {
 	}
 }
 
+func TestIntegrateContainerdCertsOverridePath(t *testing.T) {
+	home := t.TempDir()
+	r := integrateContainerdCerts(home, "http://127.0.0.1:7732", false, true)
+	if r.Action != "added" {
+		t.Fatalf("%+v", r)
+	}
+	codeberg := filepath.Join(home, ".config", "specula", "certs.d", "codeberg.org", "hosts.toml")
+	b, err := os.ReadFile(codeberg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "override_path = true") {
+		t.Fatalf("missing override_path:\n%s", s)
+	}
+	if !strings.Contains(s, `host."http://127.0.0.1:7732/v2/codeberg.org"`) {
+		t.Fatalf("missing path-style host key:\n%s", s)
+	}
+	docker := filepath.Join(home, ".config", "specula", "certs.d", "docker.io", "hosts.toml")
+	db, err := os.ReadFile(docker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(db), "override_path") {
+		t.Fatalf("docker.io must not use override_path:\n%s", db)
+	}
+	r2 := integrateContainerdCerts(home, "http://127.0.0.1:7732", false, true)
+	if r2.Action != "already" {
+		t.Fatalf("want already, got %+v", r2)
+	}
+}
+
+func TestIntegrateOCIDryRunIncludesContainerd(t *testing.T) {
+	home := t.TempDir()
+	rep, err := Run(Options{
+		Addr:      "http://127.0.0.1:7732",
+		Protocols: []string{"oci"},
+		Home:      home,
+		DryRun:    true,
+		SkipRoot:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Protocol != "oci" {
+		t.Fatalf("%+v", rep)
+	}
+	if !strings.Contains(rep.Results[0].Detail, "containerd") {
+		t.Fatalf("detail missing containerd: %+v", rep.Results[0])
+	}
+}
 
 func TestRunUnknownProtocol(t *testing.T) {
 	rep, err := Run(Options{

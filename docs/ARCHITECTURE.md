@@ -506,7 +506,7 @@ graph TB
 
 - **无 leader election**：实例同质；写同 blob 幂等；MetadataStore upsert。
 - **stampede**：同副本 singleflight；跨副本 redsync；`FetchLocked` 在 Acquire 后 Lookup 再回源。
-- **Helm 安装**：见 [`deploy/helm/specula/README.md`](../deploy/helm/specula/README.md)；本地验收 `./scripts/ha-minikube.sh`。
+- **Helm 安装**：见 [`deploy/helm/specula/README.md`](../deploy/helm/specula/README.md)；本地验收 `./scripts/ha-minikube.sh`（暖 manifest → 杀副本 → 再拉仍 200）。
 
 ### Bootstrap / 中国自举
 

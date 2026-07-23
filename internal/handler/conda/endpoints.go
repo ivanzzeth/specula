@@ -13,6 +13,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/cache"
 	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
 type staler interface {
@@ -68,6 +69,10 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 			return
 		}
 		h.log.Error("conda: mutable fetch", "ref", ref, "err", fetchErr)
+		if upstream.IsNotFound(fetchErr) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "upstream fetch failed", http.StatusBadGateway)
 		return
 	}
@@ -108,6 +113,10 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 			return
 		}
 		h.log.Error("conda: package fetch", "ref", ref, "err", err)
+		if upstream.IsNotFound(err) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "upstream fetch failed", http.StatusBadGateway)
 		return
 	}

@@ -532,7 +532,7 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 | **v0.4** | npm（scope 绑定 + 共识）+ apt（GPG 端到端验证）| ✅ done（npm scope/dep-confusion + apt GPG；npm consensus 受 sha512-only metadata 限制停在 tofu）|
 | **v0.5** | cosign keyed（OCI signed 档）+ Helm（.prov signed 档）| ✅ done（cosign keyed 校验 + 签名发现均已接线）|
 | **v0.6** | git clone 加速（bare mirror + 签名 ref 验证 + force-push 告警）| ✅ done |
-| **v0.7** | PostgreSQL HA + 分布式 stampede 锁 + 跨节点统计聚合 | ◐ partial（PG + coalesce 已落地）|
+| **v0.7** | PostgreSQL HA + 分布式 stampede 锁 + 跨节点统计聚合 | ✅ done（PG + redis coalesce + `scripts/ha-minikube.sh`：暖缓存 / 杀副本 / 再拉命中）|
 | **v0.8** | tarball + consensus 档（多镜像 quorum + origin-check）+ CN mirror profile | ◐ partial（tarball + consensus 引擎已落地；tarball metadata-only 共识不可用停在 tofu）|
 | **v0.9** | Cargo sparse + conda channel + Hugging Face Hub（`HF_ENDPOINT`）| ✅ done |
 | **v1.0** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）| ☐ planned |

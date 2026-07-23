@@ -24,6 +24,24 @@ func NewClientWithRuntime(rt *Runtime) Client {
 	return intupstream.NewClientWithRuntime(rt)
 }
 
+// NewOfflineClient returns a Client that rejects every Fetch/Revalidate.
+func NewOfflineClient() Client {
+	return intupstream.NewOfflineClient()
+}
+
+// MaybeOffline returns an OfflineClient when offline is true.
+func MaybeOffline(inner Client, offline bool) Client {
+	return intupstream.MaybeOffline(inner, offline)
+}
+
+// IsNotFound reports offline mode or upstream HTTP 404.
+func IsNotFound(err error) bool {
+	return intupstream.IsNotFound(err)
+}
+
+// ErrOffline is returned when server.mode=offline blocks an outbound fetch.
+var ErrOffline = intupstream.ErrOffline
+
 // NewRuntime constructs an empty per-protocol Runtime.
 func NewRuntime(protocol string) *Runtime {
 	return intupstream.NewRuntime(protocol)

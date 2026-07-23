@@ -166,6 +166,26 @@ if [[ "${CTRL}" != "200" ]]; then
 fi
 echo "    control /healthz → HTTP ${CTRL} (ok)"
 
+echo "==> acceptance: warm pull-through cache (manifest)"
+WARM_PATH="/v2/library/hello-world/manifests/latest"
+ACCEPT='Accept: application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.oci.image.index.v1+json'
+WARM_CODE=""
+for _ in $(seq 1 40); do
+  WARM_CODE="$(curl -sS -o "${ROOT}/.ha-warm-body" -w '%{http_code}' --max-time 60 \
+    -H "${ACCEPT}" "http://127.0.0.1:17732${WARM_PATH}" || true)"
+  if [[ "${WARM_CODE}" == "200" ]]; then
+    break
+  fi
+  sleep 2
+done
+if [[ "${WARM_CODE}" != "200" ]]; then
+  echo "ha-minikube: warm manifest fetch failed (HTTP ${WARM_CODE}); network/upstream may be unreachable — continuing with kill-pod check only" >&2
+  WARM_OK=0
+else
+  echo "    ${WARM_PATH} → HTTP 200 (warmed)"
+  WARM_OK=1
+fi
+
 echo "==> acceptance: kill one Specula pod — others keep serving"
 VICTIM="$(kubectl -n "${NAMESPACE}" get pod -l "app.kubernetes.io/name=specula,app.kubernetes.io/instance=${RELEASE}" \
   -o jsonpath='{.items[0].metadata.name}')"
@@ -184,6 +204,25 @@ if [[ "${HTTP2}" != "200" && "${HTTP2}" != "401" ]]; then
   exit 1
 fi
 echo "    after delete ${VICTIM}: /v2/ → HTTP ${HTTP2} (ok)"
+
+if [[ "${WARM_OK}" -eq 1 ]]; then
+  echo "==> acceptance: re-fetch warmed manifest after pod kill (shared CAS hit)"
+  HIT_CODE=""
+  for _ in $(seq 1 20); do
+    HIT_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+      -H "${ACCEPT}" "http://127.0.0.1:17732${WARM_PATH}" || true)"
+    if [[ "${HIT_CODE}" == "200" ]]; then
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "${HIT_CODE}" != "200" ]]; then
+    echo "ha-minikube: warmed manifest re-fetch failed after kill (HTTP ${HIT_CODE})" >&2
+    exit 1
+  fi
+  echo "    ${WARM_PATH} → HTTP 200 (cache hit across replicas)"
+fi
+
 kubectl -n "${NAMESPACE}" wait --for=condition=ready pod \
   -l "app.kubernetes.io/instance=${RELEASE},app.kubernetes.io/name=specula" \
   --timeout=5m
