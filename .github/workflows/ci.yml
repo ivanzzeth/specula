@@ -1,0 +1,67 @@
+# CI — unit tests + independent trust oracles
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: go test
+        run: go test ./...
+
+  trust-oracle:
+    name: Trust oracle (CN mirrors)
+    runs-on: ubuntu-latest
+    # Network + real mirrors; flaky links should not block every PR forever.
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install apt keyring tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gnupg ubuntu-keyring
+      - name: make test-trust-oracle
+        run: make test-trust-oracle
+        env:
+          # Aliyun/tuna can be slow from GH runners; keep defaults (small artifacts).
+          KEEP_WORK: ""
+
+  trust-oracle-signed:
+    name: Trust oracle (cosign + helm .prov)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: v2.4.1
+      - name: Install gpg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq gnupg
+      - name: make test-trust-oracle-signed
+        run: make test-trust-oracle-signed

@@ -349,7 +349,7 @@ test-mutation:
 	bash scripts/mutation-gate.sh
 
 ## test-all: every dimension (needs: everything above — network, docker, node, clients)
-test-all: test-unit test-integration test-postgres test-ui test-conformance test-realclient
+test-all: test-unit test-integration test-postgres test-ui test-conformance test-realclient test-trust-oracle test-trust-oracle-signed
 
 ## cover: coverage report only, no gate (needs: nothing)
 # `|| true` tolerates the covdata noise documented under test-unit; coverage.out stays valid.

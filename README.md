@@ -526,6 +526,7 @@ NodePort, containerd `certs.d` DaemonSet — no busybox). Local smoke (container
 |-----|----------|
 | [docs/LIBRARY.md](docs/LIBRARY.md) | Public `pkg/` API, stability, error contract |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Two-plane design, cache, verify, **HA matrix** |
+| [docs/TRUST.md](docs/TRUST.md) | Cosign / apt GPG / Helm `.prov` / dep-confusion cookbook + oracles |
 | [deploy/helm/specula/README.md](deploy/helm/specula/README.md) | Helm install (Bitnami PG/Redis, optional MinIO) |
 | [deploy/helm/specula-bootstrap/README.md](deploy/helm/specula-bootstrap/README.md) | China / air-gapped self-bootstrap |
 | [docs/PRD.md](docs/PRD.md) | Product requirements |

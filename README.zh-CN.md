@@ -503,6 +503,7 @@ NodePort、containerd `certs.d` DaemonSet，无 busybox）。本机验收（cont
 |------|------|
 | [docs/LIBRARY.md](docs/LIBRARY.md) | 公开 `pkg/` API、稳定性、错误契约 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 双平面、缓存、验证、**HA 矩阵** |
+| [docs/TRUST.md](docs/TRUST.md) | cosign / apt GPG / Helm `.prov` / 依赖混淆一页纸 + oracle |
 | [deploy/helm/specula/README.md](deploy/helm/specula/README.md) | Helm 安装（Bitnami PG/Redis，可选 MinIO） |
 | [deploy/helm/specula-bootstrap/README.md](deploy/helm/specula-bootstrap/README.md) | 中国 / 离线自举 |
 | [docs/PRD.md](docs/PRD.md) | 产品需求 |
