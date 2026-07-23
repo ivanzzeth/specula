@@ -151,6 +151,61 @@ data:
           tiers: [signed, tofu, checksum]
           quorum: 1
           tofu: enforce
+      cargo:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: rsproxy-index
+            base_url: https://rsproxy.cn/index
+            priority: 1
+            official: false
+          - name: index-crates-io
+            base_url: https://index.crates.io
+            priority: 2
+            official: true
+        cargo:
+          dl_upstreams:
+            - name: ustc-crates
+              base_url: https://mirrors.ustc.edu.cn/crates.io
+              priority: 1
+              official: false
+            - name: static-crates-io
+              base_url: https://static.crates.io
+              priority: 2
+              official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      conda:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: tuna-cloud
+            base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
+            priority: 1
+            official: false
+          - name: anaconda-cloud
+            base_url: https://conda.anaconda.org
+            priority: 2
+            official: true
+        verification:
+          tiers: [checksum, tofu]
+          quorum: 1
+          tofu: enforce
+      hf:
+        mutable_ttl_seconds: 120
+        upstreams:
+          - name: hf-mirror
+            base_url: https://hf-mirror.com
+            priority: 1
+            official: false
+          - name: huggingface
+            base_url: https://huggingface.co
+            priority: 2
+            official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
 {{- else }}
       oci:
         mutable_ttl_seconds: 300
@@ -218,6 +273,45 @@ data:
             official: true
         verification:
           tiers: [signed, tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      cargo:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: index-crates-io
+            base_url: https://index.crates.io
+            priority: 1
+            official: true
+        cargo:
+          dl_upstreams:
+            - name: static-crates-io
+              base_url: https://static.crates.io
+              priority: 1
+              official: true
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      conda:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: anaconda-cloud
+            base_url: https://conda.anaconda.org
+            priority: 1
+            official: true
+        verification:
+          tiers: [checksum, tofu]
+          quorum: 1
+          tofu: enforce
+      hf:
+        mutable_ttl_seconds: 120
+        upstreams:
+          - name: huggingface
+            base_url: https://huggingface.co
+            priority: 1
+            official: true
+        verification:
+          tiers: [tofu, checksum]
           quorum: 1
           tofu: enforce
 {{- end }}

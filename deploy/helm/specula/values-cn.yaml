@@ -1,7 +1,8 @@
 # China / GFW overlay for Specula HA.
 # Use with: helm upgrade --install … -f values.yaml -f values-cn.yaml
 #
-# - regionProfile=cn → ConfigMap protocol upstreams (DaoCloud / goproxy.cn / …)
+# - regionProfile=cn → ConfigMap protocol upstreams (DaoCloud / goproxy.cn /
+#   tuna / rsproxy / hf-mirror / … including cargo + conda + hf)
 # - Bitnami subchart images via DaoCloud docker.io mirror (anonymous, no zot hop)
 # - Prefer local shared PVC over MinIO (MinIO image pull is another CN footgun)
 
