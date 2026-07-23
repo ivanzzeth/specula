@@ -145,7 +145,8 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	}
 
 	// 2. Upstream required.
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	ups, upsOK := h.selectUpstreams(ref.Name)
+	if h.upstreamClt == nil || !upsOK {
 		if staleEntry != nil {
 			// Serve-stale with no upstream at all: the body came from cache.
 			metrics.MarkHit(ctx)
@@ -159,7 +160,7 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 
 	// 3. Conditional GET revalidation if we have prior ETag/Last-Modified.
 	if prevMeta, hasPrev := h.getMutableUpstreamMeta(ctx, ref); hasPrev && staleEntry != nil {
-		body, umeta, notModified, revalErr := h.upstreamClt.Revalidate(ctx, ref, prevMeta, h.upstreams)
+		body, umeta, notModified, revalErr := h.upstreamClt.Revalidate(ctx, ref, prevMeta, ups)
 		if revalErr == nil {
 			if notModified {
 				// 304: the upstream sent no body; the bytes we serve came from
@@ -182,7 +183,7 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	}
 
 	// 4. Fresh fetch.
-	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, ups)
 	if fetchErr != nil {
 		if staleEntry != nil {
 			// Serve-stale on upstream failure (H1): body came from cache.
@@ -229,7 +230,10 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 //
 //  1. Try the verified CAS (fast path, no upstream contact).
 //  2. On cache miss: fetch → quarantine → verify-on-write → CAS promotion → serve.
-func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef) {
+//
+// repo is the archive path prefix; poolDir is the unscoped pool/ directory used
+// for upstream Fetch (cache keys may include the archive via ref.Name).
+func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, repo, poolDir string, ref artifact.ArtifactRef) {
 	ctx := r.Context()
 	ct := contentTypeForPool(ref.Version)
 
@@ -248,14 +252,16 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 	}
 
 	// 2. Cache miss — upstream required.
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	ups, upsOK := h.selectUpstreams(repo)
+	if h.upstreamClt == nil || !upsOK {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	fetchRef := poolFetchRef(poolDir, ref.Version)
 
 	// 3. Fetch → quarantine → verify-on-write → CAS promotion.
 	entry, err = h.coalescedFetch(ctx, ref, func() (*artifact.CacheEntry, error) {
-		return h.fetchAndStoreImmutable(ctx, ref)
+		return h.fetchAndStoreImmutable(ctx, ups, fetchRef, ref)
 	})
 	if err != nil {
 		h.log.Error("apt: fetch immutable pool", "name", ref.Name, "version", ref.Version, "err", err)
@@ -282,9 +288,10 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 
 // fetchAndStoreImmutable fetches an immutable pool artifact from the first
 // healthy upstream, streams it through the quarantine/verify-on-write pipeline,
-// and promotes it to the permanent CAS tier.
-func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
-	rc, umeta, err := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+// and promotes it to the permanent CAS tier. fetchRef drives the upstream path;
+// storeRef is the cache key (may be archive-scoped).
+func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ups []upstream.Upstream, fetchRef, storeRef artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)
 	if err != nil {
 		return nil, fmt.Errorf("upstream fetch: %w", err)
 	}
@@ -295,7 +302,7 @@ func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ref artifact.Artif
 		return nil, fmt.Errorf("quarantine: %w", err)
 	}
 
-	entry, storeErr := h.cache.Store(ctx, ref, art)
+	entry, storeErr := h.cache.Store(ctx, storeRef, art)
 	if storeErr != nil {
 		cleanup()
 		return nil, fmt.Errorf("store: %w", storeErr)
@@ -399,13 +406,14 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref art
 // swrRefreshAsync kicks a coalesced background revalidation for an XFetch
 // soft-expired hit (RFC 5861 stale-while-revalidate).
 func (h *Handler) swrRefreshAsync(ref artifact.ArtifactRef) {
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	ups, upsOK := h.selectUpstreams(ref.Name)
+	if h.upstreamClt == nil || !upsOK {
 		return
 	}
 	key := coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest) + "|swr"
 	cache.StartBackgroundRefresh(key, func(ctx context.Context) error {
 		if prevMeta, hasPrev := h.getMutableUpstreamMeta(ctx, ref); hasPrev {
-			body, umeta, notModified, err := h.upstreamClt.Revalidate(ctx, ref, prevMeta, h.upstreams)
+			body, umeta, notModified, err := h.upstreamClt.Revalidate(ctx, ref, prevMeta, ups)
 			if err != nil {
 				return err
 			}
@@ -417,7 +425,7 @@ func (h *Handler) swrRefreshAsync(ref artifact.ArtifactRef) {
 			_, err = h.fetchBodyAndStore(ctx, ref, body, umeta)
 			return err
 		}
-		body, umeta, err := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+		body, umeta, err := h.upstreamClt.Fetch(ctx, ref, ups)
 		if err != nil {
 			return err
 		}

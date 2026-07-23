@@ -70,6 +70,10 @@ type Handler struct {
 	// here as a seam; the Chain wiring happens in cmd/specula.
 	gpgVerifier *verify.GPGVerifier
 
+	// repos is the optional multi-archive allowlist (/apt/<name>/dists|pool/…).
+	// Empty → legacy: path prefix is cache-scoped only; fetch uses upstreams.
+	repos RepositoryMap
+
 	// fetchSF collapses concurrent COLD fetches for the same request identity
 	// (ARCHITECTURE §7): N concurrent cold requests for one artifact become ONE
 	// upstream round trip. Keyed by protocol|name|version|digest — what the
@@ -250,6 +254,10 @@ func poolRef(name, file string) artifact.ArtifactRef {
 // serveDists handles GET/HEAD /dists/... (mutable metadata; always-revalidate by
 // default because InRelease carries its own Valid-Until field).
 func (h *Handler) serveDists(w http.ResponseWriter, r *http.Request, repo, distsPath string) {
+	if _, ok := h.selectUpstreams(repo); !ok && len(h.repos) > 0 && strings.Trim(repo, "/") != "" {
+		writeError(w, http.StatusNotFound, "unknown apt archive")
+		return
+	}
 	ref := distsRef(repo, distsPath)
 	ct := contentTypeForDistsPath(distsPath)
 	h.serveMutable(w, r, ref, ct)
@@ -257,9 +265,12 @@ func (h *Handler) serveDists(w http.ResponseWriter, r *http.Request, repo, dists
 
 // servePool handles GET/HEAD /pool/... (immutable package file; CAS promotion).
 func (h *Handler) servePool(w http.ResponseWriter, r *http.Request, repo, name, file string) {
-	_ = repo // reserved for future per-repo policy scoping
-	ref := poolRef(name, file)
-	h.serveImmutable(w, r, ref)
+	if _, ok := h.selectUpstreams(repo); !ok && len(h.repos) > 0 && strings.Trim(repo, "/") != "" {
+		writeError(w, http.StatusNotFound, "unknown apt archive")
+		return
+	}
+	ref := poolRef(poolCacheName(repo, name), file)
+	h.serveImmutable(w, r, repo, name, ref)
 }
 
 // --------------------------------------------------------------------------

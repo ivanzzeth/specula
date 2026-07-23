@@ -33,3 +33,14 @@ func WithQuarantineDir(dir string) Option          { return intapt.WithQuarantin
 func WithLogger(l *slog.Logger) Option             { return intapt.WithLogger(l) }
 func WithLocker(l coalesce.Locker) Option          { return intapt.WithLocker(l) }
 func WithGPGVerifier(v *verify.GPGVerifier) Option { return intapt.WithGPGVerifier(v) }
+
+type RepositorySpec = intapt.RepositorySpec
+
+func WithRepositories(repos intapt.RepositoryMap) Option {
+	return intapt.WithRepositories(repos)
+}
+
+func RepositoriesFromSpecs(specs []RepositorySpec) intapt.RepositoryMap {
+	return intapt.RepositoriesFromSpecs(specs)
+}
+

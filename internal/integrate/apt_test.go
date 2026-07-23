@@ -18,6 +18,9 @@ func TestIntegrateAptDryRun(t *testing.T) {
 	if r.Action == "added" && !contains(r.Detail, "suite=") {
 		t.Fatalf("expected suite in detail: %s", r.Detail)
 	}
+	if r.Action == "added" && !contains(r.Detail, "archive=ubuntu") {
+		t.Fatalf("expected archive=ubuntu in detail: %s", r.Detail)
+	}
 }
 
 func contains(s, sub string) bool {
