@@ -1438,7 +1438,7 @@ func TestFetchProvBytes_NotFound_ReturnsError(t *testing.T) {
 	up := fakeHelmUpstream(t, map[string][]byte{}) // empty → all 404
 	h := newHelmHandlerWithUpstream(newHelmTestCache(), up.URL, WithQuarantineDir(t.TempDir()))
 
-	_, err := h.fetchProvBytes(context.Background(), chartRef("stable", "nginx-1.2.3.tgz.prov"))
+	_, err := h.fetchProvBytes(context.Background(), h.upstreams, chartRef("stable", "nginx-1.2.3.tgz.prov"))
 	assert.Error(t, err, "missing .prov must return an error")
 }
 
@@ -1451,7 +1451,7 @@ func TestFetchProvBytes_Available_ReturnsBytesAndNoError(t *testing.T) {
 	})
 	h := newHelmHandlerWithUpstream(newHelmTestCache(), up.URL, WithQuarantineDir(t.TempDir()))
 
-	got, err := h.fetchProvBytes(context.Background(), chartRef("stable", "nginx-1.2.3.tgz.prov"))
+	got, err := h.fetchProvBytes(context.Background(), h.upstreams, chartRef("stable", "nginx-1.2.3.tgz.prov"))
 	require.NoError(t, err)
 	assert.Equal(t, provBytes, got)
 }

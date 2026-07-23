@@ -114,7 +114,8 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	}
 
 	// 2. Upstream required for revalidation or a fresh fetch.
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	ups, fetchName, upsOK := h.upstreamForRepo(ref.Name)
+	if h.upstreamClt == nil || !upsOK {
 		if staleEntry != nil {
 			// Serve-stale with no upstream at all: the body came from cache.
 			metrics.MarkHit(ctx)
@@ -125,10 +126,12 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	fetchRef := ref
+	fetchRef.Name = fetchName
 
 	// 3. Conditional GET revalidation if we have prev ETag/Last-Modified.
 	if prevMeta, hasPrev := h.getMutableUpstreamMeta(ctx, ref); hasPrev && staleEntry != nil {
-		body, umeta, notModified, revalErr := h.upstreamClt.Revalidate(ctx, ref, prevMeta, h.upstreams)
+		body, umeta, notModified, revalErr := h.upstreamClt.Revalidate(ctx, fetchRef, prevMeta, ups)
 		if revalErr == nil {
 			if notModified {
 				// 304: the upstream sent no body; the bytes we serve came from
@@ -151,7 +154,7 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	}
 
 	// 4. Fresh fetch.
-	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, fetchRef, ups)
 	if fetchErr != nil {
 		if staleEntry != nil {
 			// Serve-stale on upstream failure (H1): body came from cache.
@@ -213,14 +216,15 @@ func (h *Handler) serveChart(w http.ResponseWriter, r *http.Request, repo, file 
 	}
 
 	// 2. Cache miss — upstream required.
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	ups, fetchName, upsOK := h.upstreamForRepo(repo)
+	if h.upstreamClt == nil || !upsOK {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	// 3. Fetch → quarantine → verify-on-write → CAS promotion.
 	entry, err = h.coalescedFetch(ctx, ref, func() (*artifact.CacheEntry, error) {
-		return h.fetchAndStoreChart(ctx, ref)
+		return h.fetchAndStoreChart(ctx, ups, fetchName, ref)
 	})
 	if err != nil {
 		var ve *cache.VerifyError
@@ -252,8 +256,12 @@ func (h *Handler) serveChart(w http.ResponseWriter, r *http.Request, repo, file 
 // upstream. For .tgz files it additionally tries to fetch the matching .prov
 // and attaches its bytes to UpstreamMeta.Attachments[0], so the
 // HelmProvVerifier inside the verify chain can check the GPG signature.
-func (h *Handler) fetchAndStoreChart(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
-	rc, umeta, err := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+// fetchName is the stripped repository path used for upstream URLs; storeRef
+// keeps the full cache key.
+func (h *Handler) fetchAndStoreChart(ctx context.Context, ups []upstream.Upstream, fetchName string, storeRef artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	fetchRef := storeRef
+	fetchRef.Name = fetchName
+	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)
 	if err != nil {
 		return nil, fmt.Errorf("upstream fetch: %w", err)
 	}
@@ -262,9 +270,9 @@ func (h *Handler) fetchAndStoreChart(ctx context.Context, ref artifact.ArtifactR
 	// For .tgz files, attempt a best-effort .prov fetch and attach the bytes.
 	// A missing or unreadable .prov is not an error — the verifier degrades
 	// gracefully (no .prov → TierTofu/TierChecksum instead of TierSigned).
-	if strings.HasSuffix(ref.Version, extChart) {
-		provRef := chartRef(ref.Name, ref.Version+".prov")
-		if provBytes, provErr := h.fetchProvBytes(ctx, provRef); provErr == nil && len(provBytes) > 0 {
+	if strings.HasSuffix(storeRef.Version, extChart) {
+		provFetch := chartRef(fetchName, storeRef.Version+".prov")
+		if provBytes, provErr := h.fetchProvBytes(ctx, ups, provFetch); provErr == nil && len(provBytes) > 0 {
 			umeta.Attachments = append(umeta.Attachments, provBytes)
 		}
 	}
@@ -274,7 +282,7 @@ func (h *Handler) fetchAndStoreChart(ctx context.Context, ref artifact.ArtifactR
 		return nil, fmt.Errorf("quarantine: %w", err)
 	}
 
-	entry, storeErr := h.cache.Store(ctx, ref, art)
+	entry, storeErr := h.cache.Store(ctx, storeRef, art)
 	if storeErr != nil {
 		cleanup()
 		return nil, storeErr // pass through VerifyError unwrapped
@@ -287,8 +295,8 @@ func (h *Handler) fetchAndStoreChart(ctx context.Context, ref artifact.ArtifactR
 // Returns a nil slice (and non-nil error) when the .prov is absent or the
 // upstream cannot be reached. Callers treat this as "no provenance" and
 // degrade gracefully rather than failing.
-func (h *Handler) fetchProvBytes(ctx context.Context, provRef artifact.ArtifactRef) ([]byte, error) {
-	rc, _, err := h.upstreamClt.Fetch(ctx, provRef, h.upstreams)
+func (h *Handler) fetchProvBytes(ctx context.Context, ups []upstream.Upstream, provRef artifact.ArtifactRef) ([]byte, error) {
+	rc, _, err := h.upstreamClt.Fetch(ctx, provRef, ups)
 	if err != nil {
 		return nil, err
 	}
@@ -415,13 +423,16 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref art
 // swrRefreshAsync kicks a coalesced background revalidation for an XFetch
 // soft-expired hit (RFC 5861 stale-while-revalidate).
 func (h *Handler) swrRefreshAsync(ref artifact.ArtifactRef, transform func([]byte) ([]byte, error)) {
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	ups, fetchName, upsOK := h.upstreamForRepo(ref.Name)
+	if h.upstreamClt == nil || !upsOK {
 		return
 	}
+	fetchRef := ref
+	fetchRef.Name = fetchName
 	key := coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest) + "|swr"
 	cache.StartBackgroundRefresh(key, func(ctx context.Context) error {
 		if prevMeta, hasPrev := h.getMutableUpstreamMeta(ctx, ref); hasPrev {
-			body, umeta, notModified, err := h.upstreamClt.Revalidate(ctx, ref, prevMeta, h.upstreams)
+			body, umeta, notModified, err := h.upstreamClt.Revalidate(ctx, fetchRef, prevMeta, ups)
 			if err != nil {
 				return err
 			}
@@ -433,7 +444,7 @@ func (h *Handler) swrRefreshAsync(ref artifact.ArtifactRef, transform func([]byt
 			_, err = h.fetchBodyAndStore(ctx, ref, body, umeta, transform)
 			return err
 		}
-		body, umeta, err := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
+		body, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)
 		if err != nil {
 			return err
 		}

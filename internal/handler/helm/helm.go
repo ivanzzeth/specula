@@ -74,6 +74,10 @@ type Handler struct {
 	// Injected here as a seam; the Chain wiring happens in cmd/specula.
 	provVerifier *verify.HelmProvVerifier
 
+	// repos is the optional multi-repo allowlist (/helm/<name>/…).
+	// Empty → legacy: repo segment is a subpath under upstreams BaseURL.
+	repos RepositoryMap
+
 	// fetchSF collapses concurrent COLD fetches for the same request identity
 	// (ARCHITECTURE §7): N concurrent cold requests for one artifact become ONE
 	// upstream round trip. Keyed by protocol|name|version|digest — what the

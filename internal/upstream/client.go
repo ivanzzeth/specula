@@ -712,7 +712,13 @@ func buildPath(ref artifact.ArtifactRef) string {
 
 	case "helm":
 		if ref.Mutable {
+			if ref.Name == "" {
+				return "index.yaml"
+			}
 			return ref.Name + "/index.yaml"
+		}
+		if ref.Name == "" {
+			return ref.Version
 		}
 		return ref.Name + "/" + ref.Version
 
