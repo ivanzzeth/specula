@@ -77,6 +77,10 @@ mirror:
   registries:
     - docker.io
     - registry.k8s.io
+    - ghcr.io
+    - quay.io
+    - gcr.io
+    - codeberg.org
   # The mirror endpoint the node dials. Defaults to the host's own NodePort.
   endpoint: "http://127.0.0.1:30732"
   skipVerify: true

@@ -30,7 +30,7 @@ Flags:
 		fs.SetOutput(os.Stderr)
 		_ = fs.String("endpoint", "http://127.0.0.1:30732", "mirror URL the node dials")
 		_ = fs.String("certs-dir", "/etc/containerd/certs.d", "containerd certs.d root")
-		_ = fs.String("registries", "docker.io,registry.k8s.io", "comma-separated registries")
+		_ = fs.String("registries", strings.Join(bootstrap.DefaultOCIRegistries, ","), "comma-separated registries")
 		_ = fs.Bool("skip-verify", true, "set skip_verify on the mirror host entry")
 		_ = fs.Bool("hold", false, "sleep forever after writing (DaemonSet)")
 		fs.PrintDefaults()
@@ -44,7 +44,7 @@ Flags:
 	fs.SetOutput(os.Stderr)
 	endpoint := fs.String("endpoint", "http://127.0.0.1:30732", "mirror URL the node dials")
 	certsDir := fs.String("certs-dir", "/etc/containerd/certs.d", "containerd certs.d root")
-	registries := fs.String("registries", "docker.io,registry.k8s.io", "comma-separated registries")
+	registries := fs.String("registries", strings.Join(bootstrap.DefaultOCIRegistries, ","), "comma-separated registries")
 	skipVerify := fs.Bool("skip-verify", true, "set skip_verify on the mirror host entry")
 	hold := fs.Bool("hold", false, "sleep forever after writing (DaemonSet)")
 	if err := fs.Parse(args[1:]); err != nil {
