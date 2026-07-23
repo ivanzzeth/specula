@@ -487,6 +487,25 @@ source ~/.config/specula/env.sh
 huggingface-cli download hf-internal-testing/tiny-random-bert --local-dir /tmp/hf-tiny
 ```
 
+## Offline / air-gap (`server.mode: offline`)
+
+Warm Specula while online, then restart with `mode: offline`. Cache hits keep
+working; misses return **404** and Specula makes **no outbound** fetches (git
+mirrors are served as-is — no clone/refresh).
+
+```yaml
+server:
+  mode: offline   # restart required to switch; empty/online = normal pull-through
+```
+
+```bash
+# 1) online: warm
+docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
+# 2) set mode: offline, restart daemon
+# 3) hit works; uncached tag fails fast
+./scripts/realclient-offline.sh
+```
+
 ## HA (multi-replica)
 
 Mature-library stack only: Postgres meta + Redis (redsync) stampede lock + shared CAS

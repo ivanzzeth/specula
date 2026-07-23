@@ -465,6 +465,24 @@ source ~/.config/specula/env.sh
 huggingface-cli download hf-internal-testing/tiny-random-bert --local-dir /tmp/hf-tiny
 ```
 
+## 离线 / 气隙（`server.mode: offline`）
+
+先在 online 暖缓存，再改配置重启为 `mode: offline`。命中继续服务；缺失返回
+**404**，且**零外连**（git 只读已有 bare mirror，不 clone/刷新）。
+
+```yaml
+server:
+  mode: offline   # 切换需重启；空 / online = 正常 pull-through
+```
+
+```bash
+# 1) online 暖缓存
+docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
+# 2) mode: offline 后重启
+# 3) 命中成功；未缓存 tag 快速失败
+./scripts/realclient-offline.sh
+```
+
 ## HA（多副本）
 
 只用成熟库：Postgres 元数据 + Redis（redsync）跨副本锁 + 共享 CAS
