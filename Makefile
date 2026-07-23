@@ -238,6 +238,7 @@ test-realclient:
 	bash scripts/realclient-helm.sh
 	bash scripts/realclient-git.sh
 	bash scripts/realclient-docker.sh
+	bash scripts/realclient-oci-remote.sh
 	bash scripts/realclient-cargo.sh
 	bash scripts/realclient-conda.sh
 	bash scripts/realclient-hf.sh

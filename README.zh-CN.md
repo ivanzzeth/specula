@@ -305,34 +305,44 @@ docker info | grep -A5 'Registry Mirrors'
 curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
 ```
 
-会更新 `/etc/docker/daemon.json`：
-- `registry-mirrors` — Specula 前置（保留已有镜像）
-- `insecure-registries` — Specula 为 `http://` 时写入 `127.0.0.1:7732`
+会更新：
+- `/etc/docker/daemon.json`：`registry-mirrors`（**仅 docker.io**）与 `insecure-registries`
+- `/etc/containerd/certs.d/<registry>/hosts.toml`：非 Hub 仓库带 `override_path`，透明重定向到 Specula 路径式回源
 
-无 sudo 时仍会写 `~/.config/docker/daemon.json` 与
-`~/.config/specula/docker-daemon.snippet.json`，但 **dockerd 不读用户路径** — 真正一键请加 sudo。
+无 sudo 时仍会写用户目录下的 daemon.json / `~/.config/specula/certs.d/`，但 **dockerd/containerd 默认不读用户路径** — 真正一键请加 sudo。
 
 手动等价配置：
 
 ```jsonc
-// /etc/docker/daemon.json — docker.io 拉取走 Specula
+// /etc/docker/daemon.json — 仅 docker.io 走 Specula
 {
   "registry-mirrors": ["http://127.0.0.1:7732"],
   "insecure-registries": ["127.0.0.1:7732"]
 }
 ```
 
-```toml
-# containerd hosts.toml（docker.io 示例）
-# /etc/containerd/certs.d/docker.io/hosts.toml
-server = "https://docker.io"
-
-[host."http://127.0.0.1:7732"]
-  capabilities = ["pull", "resolve"]
-```
+`registry-mirrors` **不会**拦截 `ghcr.io` / `codeberg.org` / `quay.io` 等拉取。对这些仓库用路径式，或 containerd `certs.d`：
 
 ```bash
-# 一次性按「具名 registry」拉取
+# 路径式 — 普通 dockerd 可用（镜像名含 registry host）
+docker pull 127.0.0.1:7732/codeberg.org/forgejo/forgejo:12
+docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
+```
+
+```toml
+# containerd：docker.io 不用 override_path；其它 registry 要用
+# /etc/containerd/certs.d/codeberg.org/hosts.toml
+server = "https://codeberg.org"
+[host."http://127.0.0.1:7732/v2/codeberg.org"]
+  capabilities = ["pull", "resolve"]
+  override_path = true
+  skip_verify = true
+```
+
+允许的 host 见 `protocols.oci.oci.remote_registries`（`specula.example.yaml`）。未知 host 前缀直接 404（SSRF allowlist）。
+
+```bash
+# Hub 一次性按「具名 registry」拉取
 docker pull 127.0.0.1:7732/library/nginx:latest
 ```
 
