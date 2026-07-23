@@ -28,6 +28,15 @@ func WithMutableTTL(secs int64) Option                 { return intoci.WithMutab
 func WithQuarantineDir(dir string) Option              { return intoci.WithQuarantineDir(dir) }
 func WithLogger(l *slog.Logger) Option                 { return intoci.WithLogger(l) }
 func WithLocker(l coalesce.Locker) Option              { return intoci.WithLocker(l) }
+func WithRemoteRegistries(regs intoci.RemoteRegistryMap) Option {
+	return intoci.WithRemoteRegistries(regs)
+}
+
+type RemoteRegistrySpec = intoci.RemoteRegistrySpec
+
+func RemoteRegistriesFromSpecs(specs []RemoteRegistrySpec) intoci.RemoteRegistryMap {
+	return intoci.RemoteRegistriesFromSpecs(specs)
+}
 
 // Hosted registry options (daemon multi-tenant write path).
 func WithHostedResolver(r intoci.HostedResolver) Option {

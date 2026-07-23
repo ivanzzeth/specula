@@ -640,6 +640,13 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 			oci.WithUpstream(upstream.NewClientWithRuntime(ups.Runtime("oci")), upstreamsFor("oci", pc.Upstreams)),
 			oci.WithMutableTTL(mutableTTL(pc, cfg)),
 		)
+		if pc.OCI != nil && len(pc.OCI.RemoteRegistries) > 0 {
+			specs := make([]oci.RemoteRegistrySpec, 0, len(pc.OCI.RemoteRegistries))
+			for _, rr := range pc.OCI.RemoteRegistries {
+				specs = append(specs, oci.RemoteRegistrySpec{Host: rr.Host, BaseURL: rr.BaseURL})
+			}
+			opts = append(opts, oci.WithRemoteRegistries(oci.RemoteRegistriesFromSpecs(specs)))
+		}
 	}
 
 	if !registryEnabled {
