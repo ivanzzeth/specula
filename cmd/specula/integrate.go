@@ -30,6 +30,7 @@ func runIntegrate(args []string) error {
 		"comma-separated protocols: go,npm,pypi,oci,helm,git,apt,cargo,conda,hf")
 	dryRun := fs.Bool("dry-run", false, "print planned changes without writing")
 	skipRoot := fs.Bool("skip-root", false, "skip apt /etc/docker actions that need root")
+	configPath := fs.String("config", "", "path to specula.yaml (optional; enables multi-source helm/apt/conda wiring)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage:
   specula integrate [flags]
@@ -67,10 +68,11 @@ Flags:
 	}
 
 	rep, err := integrate.Run(integrate.Options{
-		Addr:      *addr,
-		Protocols: protos,
-		DryRun:    *dryRun,
-		SkipRoot:  *skipRoot,
+		Addr:       *addr,
+		Protocols:  protos,
+		DryRun:     *dryRun,
+		SkipRoot:   *skipRoot,
+		ConfigPath: *configPath,
 	})
 	if err != nil {
 		return err

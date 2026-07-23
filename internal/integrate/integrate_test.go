@@ -282,7 +282,7 @@ func TestIntegrateCargoDryRun(t *testing.T) {
 
 func TestIntegrateCondaChannel(t *testing.T) {
 	home := t.TempDir()
-	r := integrateConda(home, "http://127.0.0.1:7732", false)
+	r := integrateConda(home, "http://127.0.0.1:7732", false, nil)
 	if r.Action != "added" {
 		t.Fatalf("%+v", r)
 	}
@@ -295,7 +295,7 @@ func TestIntegrateCondaChannel(t *testing.T) {
 	if !strings.Contains(s, "http://127.0.0.1:7732/conda/conda-forge") {
 		t.Fatalf("missing channel:\n%s", s)
 	}
-	r2 := integrateConda(home, "http://127.0.0.1:7732", false)
+	r2 := integrateConda(home, "http://127.0.0.1:7732", false, nil)
 	if r2.Action != "already" {
 		t.Fatalf("want already, got %+v", r2)
 	}

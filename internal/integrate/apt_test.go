@@ -11,7 +11,7 @@ func TestDetectAptSuiteFallback(t *testing.T) {
 }
 
 func TestIntegrateAptDryRun(t *testing.T) {
-	r := integrateApt("http://127.0.0.1:7732", true, false)
+	r := integrateApt("http://127.0.0.1:7732", true, false, nil)
 	if r.Action != "added" && r.Action != "already" {
 		t.Fatalf("%+v", r)
 	}

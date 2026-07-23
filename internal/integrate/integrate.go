@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/ivanzzeth/specula/internal/config"
 )
 
 // DefaultProtocols is the set applied when --protocols is omitted.
@@ -29,6 +31,9 @@ type Options struct {
 	// SkipRoot skips actions that require root (apt sources, /etc/docker).
 	// When false, those actions still attempt and report permission errors.
 	SkipRoot bool
+	// ConfigPath is an optional path to specula.yaml. When non-empty, helm/apt/conda
+	// integrate steps read multi-source allowlists from the loaded config.
+	ConfigPath string
 }
 
 // Result is one protocol's integrate outcome.
@@ -65,6 +70,15 @@ func Run(opts Options) (Report, error) {
 		protos = append([]string(nil), DefaultProtocols...)
 	}
 
+	var cfg *config.Config
+	if opts.ConfigPath != "" {
+		loaded, err := config.Load(opts.ConfigPath)
+		if err != nil {
+			return Report{}, fmt.Errorf("load config %q: %w", opts.ConfigPath, err)
+		}
+		cfg = loaded
+	}
+
 	rep := Report{Addr: addr, DryRun: opts.DryRun}
 	for _, p := range protos {
 		p = strings.ToLower(strings.TrimSpace(p))
@@ -84,16 +98,16 @@ func Run(opts Options) (Report, error) {
 			r = mergeOCIResults(dr, cr)
 			r.Protocol = "oci"
 		case "helm":
-			r = integrateHelm(addr, opts.DryRun)
+			r = integrateHelm(addr, opts.DryRun, cfg)
 		case "git":
 			r = integrateGit(home, addr, opts.DryRun)
 		case "apt":
-			r = integrateApt(addr, opts.DryRun, opts.SkipRoot)
+			r = integrateApt(addr, opts.DryRun, opts.SkipRoot, cfg)
 		case "cargo", "crates", "rust":
 			r = integrateCargo(home, addr, opts.DryRun)
 			r.Protocol = "cargo"
 		case "conda":
-			r = integrateConda(home, addr, opts.DryRun)
+			r = integrateConda(home, addr, opts.DryRun, cfg)
 		case "hf", "huggingface":
 			r = integrateHF(home, addr, opts.DryRun)
 			r.Protocol = "hf"

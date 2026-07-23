@@ -5,15 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/ivanzzeth/specula/internal/config"
 )
 
-func integrateHelm(addr string, dryRun bool) Result {
+func integrateHelm(addr string, dryRun bool, cfg *config.Config) Result {
 	base := strings.TrimRight(addr, "/")
-	// Default multi-repo set matching specula.example.yaml helm.repositories.
-	repos := []struct{ name, path string }{
-		{"specula-bitnami", "/helm/bitnami"},
-		{"specula-prometheus-community", "/helm/prometheus-community"},
-	}
+	repos := helmReposFromConfig(cfg)
 	if dryRun {
 		var names []string
 		for _, r := range repos {
@@ -48,31 +46,32 @@ func integrateHelm(addr string, dryRun bool) Result {
 	return Result{Action: "added", Detail: "helm repo add " + strings.Join(added, ","), Path: "helm"}
 }
 
-func integrateApt(addr string, dryRun, skipRoot bool) Result {
+func integrateApt(addr string, dryRun, skipRoot bool, cfg *config.Config) Result {
 	if skipRoot {
 		return Result{Action: "skipped", Detail: "apt integrate requires root (skipped)"}
 	}
 	suite := detectAptSuite()
 	path := "/etc/apt/sources.list.d/specula.list"
 	base := strings.TrimRight(addr, "/")
-	// Point at the allowlisted "ubuntu" archive prefix (protocols.apt.apt.repositories).
-	archive := base + "/apt/ubuntu/"
+	archive := aptArchiveFromConfig(cfg)
+	// Point at the allowlisted archive prefix (protocols.apt.apt.repositories).
+	archiveURL := base + "/apt/" + archive + "/"
 	body := fmt.Sprintf("# Added by `specula integrate` — does not modify sources.list / ubuntu.sources\n"+
 		"# Suite auto-detected from /etc/os-release (override by editing this file).\n"+
-		"# Specula protocols.apt.apt.repositories must include name=ubuntu.\n"+
+		"# Specula protocols.apt.apt.repositories must include name=%s.\n"+
 		"deb [trusted=yes] %s %s main restricted universe multiverse\n"+
 		"deb [trusted=yes] %s %s-updates main restricted universe multiverse\n"+
 		"deb [trusted=yes] %s %s-security main restricted universe multiverse\n",
-		archive, suite, archive, suite, archive, suite)
+		archive, archiveURL, suite, archiveURL, suite, archiveURL, suite)
 	if _, err := os.Stat(path); err == nil {
 		cur, _ := os.ReadFile(path)
-		wantNeedle := archive + " " + suite + " "
+		wantNeedle := archiveURL + " " + suite + " "
 		if strings.Contains(string(cur), wantNeedle) {
-			return Result{Action: "already", Detail: "specula.list already points at Specula (" + suite + ")", Path: path}
+			return Result{Action: "already", Detail: "specula.list already points at Specula (" + suite + ", archive=" + archive + ")", Path: path}
 		}
 	}
 	if dryRun {
-		return Result{Action: "added", Detail: "would write " + path + " (suite=" + suite + ", archive=ubuntu)", Path: path}
+		return Result{Action: "added", Detail: "would write " + path + " (suite=" + suite + ", archive=" + archive + ")", Path: path}
 	}
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		if os.IsPermission(err) {
@@ -80,7 +79,7 @@ func integrateApt(addr string, dryRun, skipRoot bool) Result {
 		}
 		return Result{Action: "error", Err: err.Error(), Path: path}
 	}
-	return Result{Action: "added", Detail: "wrote apt source suite=" + suite + " archive=ubuntu (apt-get update to refresh)", Path: path}
+	return Result{Action: "added", Detail: "wrote apt source suite=" + suite + " archive=" + archive + " (apt-get update to refresh)", Path: path}
 }
 
 // detectAptSuite returns VERSION_CODENAME from /etc/os-release, or "jammy" as fallback.

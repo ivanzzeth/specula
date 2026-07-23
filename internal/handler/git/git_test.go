@@ -478,7 +478,7 @@ func TestProbeGitee_CachesResult(t *testing.T) {
 
 func TestProbeUnsupportedHost(t *testing.T) {
 	checker := newPublicChecker(0, nil)
-	ref := repoRef{Host: "bitbucket.org", ProjectPath: "owner/repo"}
+	ref := repoRef{Host: "example.com", ProjectPath: "owner/repo"}
 	_, err := checker.probe(context.Background(), ref)
 	require.Error(t, err, "unsupported host must return an error")
 }

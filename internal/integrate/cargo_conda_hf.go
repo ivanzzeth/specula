@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ivanzzeth/specula/internal/config"
 )
 
 const cargoConfigMarker = "# managed-by-specula-integrate"
@@ -81,21 +83,34 @@ func stripCargoManaged(s string) string {
 
 const condaMarker = "# managed-by-specula-integrate"
 
-func integrateConda(home, addr string, dryRun bool) Result {
+func integrateConda(home, addr string, dryRun bool, cfg *config.Config) Result {
 	path := filepath.Join(home, ".condarc")
-	channel := strings.TrimRight(addr, "/") + "/conda/conda-forge"
+	channels := condaChannelsFromConfig(cfg, addr)
+	var channelLines strings.Builder
+	for _, ch := range channels {
+		channelLines.WriteString("  - ")
+		channelLines.WriteString(ch)
+		channelLines.WriteByte('\n')
+	}
 	block := fmt.Sprintf(`%s
 channels:
-  - %s
-channel_priority: strict
-`, condaMarker, channel)
+%schannel_priority: strict
+`, condaMarker, channelLines.String())
 
 	existing, _ := os.ReadFile(path)
-	if strings.Contains(string(existing), channel) {
-		return Result{Action: "already", Detail: "conda-forge channel already points at Specula", Path: path}
+	existingStr := string(existing)
+	allPresent := len(existing) > 0
+	for _, ch := range channels {
+		if !strings.Contains(existingStr, ch) {
+			allPresent = false
+			break
+		}
+	}
+	if allPresent && len(existing) > 0 {
+		return Result{Action: "already", Detail: "conda channels already point at Specula", Path: path}
 	}
 	if dryRun {
-		return Result{Action: "added", Detail: "would prepend channel " + channel, Path: path}
+		return Result{Action: "added", Detail: "would prepend channels " + strings.Join(channels, ","), Path: path}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && filepath.Dir(path) != home {
 		// ~/.condarc lives in home; mkdir may be unnecessary
@@ -104,14 +119,12 @@ channel_priority: strict
 	if len(existing) == 0 {
 		out = block
 	} else {
-		// Additive: write a side fragment Specula reads first via env note;
-		// also prepend channel into .condarc channels list when possible.
-		out = block + "\n" + string(existing)
+		out = block + "\n" + existingStr
 	}
 	if err := os.WriteFile(path, []byte(out), 0o644); err != nil {
 		return Result{Action: "error", Err: err.Error(), Path: path}
 	}
-	return Result{Action: "added", Detail: "channel " + channel, Path: path}
+	return Result{Action: "added", Detail: "channels " + strings.Join(channels, ","), Path: path}
 }
 
 func integrateHF(home, addr string, dryRun bool) Result {
