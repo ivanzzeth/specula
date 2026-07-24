@@ -635,12 +635,31 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 // handleEvents → GET /api/v1/admin/events?limit=. Returns EventsResponse.
 //
-// NOTE: no EventStore has been added to Deps yet; the verification event
-// persistence layer is a future addition. An empty list is returned until
-// an EventStore interface and implementation are wired in (missing dep —
-// tracked as TODO).
+// Backed by the in-process events.Store (fail/warn outcomes from verify-on-write).
+// When Deps.Events is nil the response is an empty list.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, EventsResponse{Events: []VerificationEvent{}})
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	out := make([]VerificationEvent, 0)
+	if s.events != nil {
+		for _, e := range s.events.List(r.Context(), limit) {
+			out = append(out, VerificationEvent{
+				ID:       e.ID,
+				Unix:     e.Unix,
+				Protocol: e.Protocol,
+				Artifact: e.Artifact,
+				Digest:   e.Digest,
+				Tier:     e.Tier,
+				Result:   e.Result,
+				Detail:   e.Detail,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, EventsResponse{Events: out})
 }
 
 // ---- internal helpers --------------------------------------------------------

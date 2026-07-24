@@ -7,6 +7,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/config"
+	"github.com/ivanzzeth/specula/internal/events"
 	"github.com/ivanzzeth/specula/internal/grant"
 	"github.com/ivanzzeth/specula/internal/org"
 	"github.com/ivanzzeth/specula/internal/repo"
@@ -14,6 +15,11 @@ import (
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
 )
+
+// EventLister is the narrow slice of events.Store the admin Events UI needs.
+type EventLister interface {
+	List(ctx context.Context, limit int) []events.Event
+}
 
 // BlobUsageReporter is the narrow slice of blob.BlobStore the admin API needs:
 // the backend's total used-byte footprint for the capacity dashboard. Kept as a
@@ -77,6 +83,10 @@ type Deps struct {
 	// snapshot and the mutating upstream endpoints return 501.
 	Upstreams *upstream.Registry
 
+	// Events is the in-process verification outcome feed for GET /admin/events.
+	// Optional: when nil, the endpoint returns an empty list (legacy behaviour).
+	Events EventLister
+
 	// ── runtime settings ─────────────────────────────────────────────────────
 
 	// Settings resolves runtime settings over (bootstrap config/env + the
@@ -111,6 +121,7 @@ type Server struct {
 	repos     repo.RepoStore
 	tags      repo.TagStore
 	upstreams *upstream.Registry
+	events    EventLister
 
 	// runtime settings resolver (nil → the settings endpoints answer 503)
 	settings SettingsResolver
@@ -144,6 +155,7 @@ func New(deps Deps) *Server {
 		repos:     deps.RepoStore,
 		tags:      deps.TagStore,
 		upstreams: deps.Upstreams,
+		events:    deps.Events,
 
 		settings: deps.Settings,
 	}

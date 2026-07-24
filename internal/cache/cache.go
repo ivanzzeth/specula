@@ -121,6 +121,10 @@ type manager struct {
 	// successful entry eviction. Failures from the hook are ignored.
 	onEvict func(ctx context.Context, protocol string, size int64)
 
+	// onVerify is an optional hook fired after every verify outcome (pass/warn/fail).
+	// Used to feed the admin Events UI. Must not block; errors are ignored.
+	onVerify func(ctx context.Context, ref artifact.ArtifactRef, digest string, res artifact.Result)
+
 	// verifyFn is an internal test hook that replaces chain.Verify.
 	// Production code never sets this field.
 	verifyFn func(context.Context, artifact.ArtifactRef, *artifact.Artifact) (artifact.Result, error)
@@ -155,6 +159,13 @@ func WithLogger(l *slog.Logger) Option {
 // (meta deleted). Used to keep Prometheus capacity gauges current.
 func WithEvictHook(fn func(ctx context.Context, protocol string, size int64)) Option {
 	return func(m *manager) { m.onEvict = fn }
+}
+
+// WithVerifyHook registers a callback invoked after each verification outcome
+// (including fail, before the quarantine is discarded). Used for the admin
+// Events feed. The hook must be cheap and non-blocking.
+func WithVerifyHook(fn func(ctx context.Context, ref artifact.ArtifactRef, digest string, res artifact.Result)) Option {
+	return func(m *manager) { m.onVerify = fn }
 }
 
 // New constructs the default CacheManager wiring the CAS BlobStore, the
@@ -346,8 +357,11 @@ func (m *manager) storeOnce(ctx context.Context, ref artifact.ArtifactRef, art *
 		_ = os.Remove(art.Path)
 		return nil, fmt.Errorf("cache: verify chain: %w", err)
 	}
+	if m.onVerify != nil {
+		m.onVerify(ctx, ref, art.Digest, result)
+	}
 	if result.Status == artifact.StatusFail {
-		// FAIL: clean up quarantine and return a typed error (fix C2).
+		// FAIL: clean up quarantine and return a typed error (Invariant C2).
 		_ = os.Remove(art.Path)
 		return nil, &VerifyError{Ref: ref, Result: result}
 	}

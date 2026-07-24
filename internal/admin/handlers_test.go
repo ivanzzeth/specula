@@ -24,6 +24,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/config"
+	"github.com/ivanzzeth/specula/internal/events"
 	"github.com/ivanzzeth/specula/internal/grant"
 	"github.com/ivanzzeth/specula/internal/org"
 	"github.com/ivanzzeth/specula/internal/stats"
@@ -1717,6 +1718,32 @@ func TestHandleEvents(t *testing.T) {
 	decodeJSON(t, rr, &resp)
 	assert.NotNil(t, resp.Events)
 	assert.Empty(t, resp.Events)
+}
+
+func TestHandleEventsWithStore(t *testing.T) {
+	store := events.NewMemory(10)
+	store.Record(context.Background(), events.Event{
+		Protocol: "oci",
+		Artifact: "library/nginx:latest",
+		Digest:   "sha256:abc",
+		Tier:     "checksum",
+		Result:   "fail",
+		Detail:   "digest mismatch",
+	})
+
+	h := newHarness(t)
+	h.srv.events = store
+	_, tok := h.mustCreateAdmin(t)
+
+	rr := h.do("GET", "/api/v1/admin/events?limit=5", tok, nil)
+	assert.Equal(t, http.StatusOK, rr.Code)
+
+	var resp EventsResponse
+	decodeJSON(t, rr, &resp)
+	require.Len(t, resp.Events, 1)
+	assert.Equal(t, "fail", resp.Events[0].Result)
+	assert.Equal(t, "oci", resp.Events[0].Protocol)
+	assert.Equal(t, "digest mismatch", resp.Events[0].Detail)
 }
 
 // ---- auth middleware guards --------------------------------------------------

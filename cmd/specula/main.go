@@ -34,6 +34,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/config"
+	"github.com/ivanzzeth/specula/internal/events"
 	"github.com/ivanzzeth/specula/internal/grant"
 	"github.com/ivanzzeth/specula/internal/handler/registry"
 	"github.com/ivanzzeth/specula/internal/metrics"
@@ -183,6 +184,10 @@ func run() error {
 		"data_plane", cfg.Server.DataPlaneAddr,
 		"control_plane", cfg.Server.ControlPlaneAddr)
 
+	for _, h := range config.UpgradeHints(cfg) {
+		log.Warn(h.Message, "section", h.Section)
+	}
+
 	// Root context cancelled on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -314,7 +319,16 @@ func run() error {
 	}
 
 	// ── Cache manager: two-tier CAS + verify-on-write quarantine ─────────────
-	cmOpts := []cache.Option{cache.WithLogger(log)}
+	eventStore := events.NewMemory(events.DefaultCapacity)
+	cmOpts := []cache.Option{
+		cache.WithLogger(log),
+		cache.WithVerifyHook(func(ctx context.Context, ref artifact.ArtifactRef, digest string, res artifact.Result) {
+			if res.Status != artifact.StatusFail && res.Status != artifact.StatusWarn {
+				return
+			}
+			eventStore.Record(ctx, events.FromVerify(ref, digest, res))
+		}),
+	}
 	if cfg.Cache.MaxBytes > 0 {
 		cmOpts = append(cmOpts,
 			cache.WithMaxBytes(cfg.Cache.MaxBytes),
@@ -425,6 +439,7 @@ func run() error {
 		RepoStore:  repoStore,
 		TagStore:   repoStore,
 		Upstreams:  upstreams,
+		Events:     eventStore,
 		Settings:   resolver,
 	})
 	adminSrv.RegisterRoutes(ctrlMux)

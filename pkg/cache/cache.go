@@ -40,6 +40,11 @@ func WithEvictHook(fn func(ctx context.Context, protocol string, size int64)) Op
 	return intcache.WithEvictHook(fn)
 }
 
+// WithVerifyHook registers a callback invoked after each verification outcome.
+func WithVerifyHook(fn func(ctx context.Context, ref artifact.ArtifactRef, digest string, res artifact.Result)) Option {
+	return intcache.WithVerifyHook(fn)
+}
+
 // Quarantine streams r into a temp file under dir, computing sha256 while writing.
 func Quarantine(ctx context.Context, dir string, r io.Reader, umeta artifact.UpstreamMeta) (*artifact.Artifact, func(), error) {
 	return intcache.Quarantine(ctx, dir, r, umeta)
