@@ -8,11 +8,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ulikunitz/xz"
@@ -356,6 +358,19 @@ func (v *GPGVerifier) verifyInRelease(ctx context.Context, ref artifact.Artifact
 	// "\n", so each line is "<sha256hex> <size> <relpath>".
 	sha256s := parseInReleaseSHA256Field(para.Values["SHA256"])
 
+	// InRelease Date is the monotonic anti-rollback identity (PRD §G2 / H2).
+	// An older-but-still-validly-signed index must not replace a newer one we
+	// have already accepted. Missing/unparseable Date fails closed: we cannot
+	// honestly advance high-water without it.
+	indexDate, err := parseInReleaseDate(para.Values["Date"])
+	if err != nil {
+		return artifact.Result{
+			Status:  artifact.StatusFail,
+			Tier:    artifact.TierSigned,
+			Message: fmt.Sprintf("gpg: InRelease missing or invalid Date field (required for anti-rollback): %v", err),
+		}, nil
+	}
+
 	// Derive suite from the dists path: "noble/InRelease" → "noble".
 	suite := strings.TrimSuffix(ref.Version, "/InRelease")
 	if suite == ref.Version {
@@ -367,12 +382,22 @@ func (v *GPGVerifier) verifyInRelease(ctx context.Context, ref artifact.Artifact
 	// Replace, not merge: this InRelease is now the suite's signed root, so its
 	// pin set is the whole truth for the suite. A path the previous InRelease
 	// listed and this one does not must stop being servable at `signed` —
-	// keeping it would let a superseded signed index be served forever, which is
-	// the index-rollback vector PRD §G2 assigns to anti-rollback.
+	// keeping it would let a superseded signed index be served forever.
+	// ReplaceIndexPins also enforces Date high-water (anti-rollback).
 	//
 	// Pool pins established under the PREVIOUS InRelease are deliberately NOT
 	// touched here: see verifyPool.
-	if err := v.pins.ReplaceIndexPins(ctx, v.scope, ref.Name, suite, sha256s); err != nil {
+	if err := v.pins.ReplaceIndexPins(ctx, v.scope, ref.Name, suite, indexDate, sha256s); err != nil {
+		if errors.Is(err, ErrIndexRollback) || strings.Contains(err.Error(), "anti-rollback") {
+			return artifact.Result{
+				Status: artifact.StatusFail,
+				Tier:   artifact.TierSigned,
+				Message: fmt.Sprintf(
+					"gpg: anti-rollback rejected InRelease for suite %q (Date=%s): %v",
+					suite, indexDate.UTC().Format(time.RFC3339), err,
+				),
+			}, nil
+		}
 		// Fail closed. Silently continuing on an unwritable pin store would
 		// PASS this InRelease and then 502 every .deb behind it, and on another
 		// replica would look like a chain that had never been established.
@@ -386,7 +411,7 @@ func (v *GPGVerifier) verifyInRelease(ctx context.Context, ref artifact.Artifact
 	return artifact.Result{
 		Status:  artifact.StatusPass,
 		Tier:    artifact.TierSigned,
-		Message: fmt.Sprintf("gpg: InRelease GPG verified for suite %q (%d file hashes pinned, key=%q)", suite, len(sha256s), cacheKey),
+		Message: fmt.Sprintf("gpg: InRelease GPG verified for suite %q (Date=%s, %d file hashes pinned, key=%q)", suite, indexDate.UTC().Format(time.RFC3339), len(sha256s), cacheKey),
 	}, nil
 }
 
@@ -682,6 +707,32 @@ func parseInReleaseSHA256Field(value string) map[string]string {
 		}
 	}
 	return result
+}
+
+// parseInReleaseDate parses the InRelease "Date:" field used as the monotonic
+// anti-rollback identity. Debian uses RFC 5322 / RFC 1123 style timestamps.
+func parseInReleaseDate(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, fmt.Errorf("empty Date")
+	}
+	layouts := []string{
+		time.RFC1123Z,
+		time.RFC1123,
+		time.RFC822Z,
+		time.RFC822,
+		"Mon, 2 Jan 2006 15:04:05 -0700",
+		"Mon, 2 Jan 2006 15:04:05 MST",
+	}
+	var last error
+	for _, layout := range layouts {
+		t, err := time.Parse(layout, raw)
+		if err == nil {
+			return t.UTC(), nil
+		}
+		last = err
+	}
+	return time.Time{}, fmt.Errorf("unrecognized Date %q: %w", raw, last)
 }
 
 // loadKeyring reads an OpenPGP keyring from path, trying armored (ASCII) first

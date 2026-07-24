@@ -16,10 +16,19 @@ CI runs the first two on `main` / PRs (see `.github/workflows/ci.yml`).
 
 ---
 
-## 1. OCI — cosign keyed (CN-safe)
+## 1. OCI — cosign signed (CN-safe / air-gap)
 
-Keyless/Fulcio/Rekor are **unsupported** (CN-blocked). Use long-lived keys,
-`tlog: false`.
+Online Rekor (`tlog: true`) is **unsupported**. Two authenticity anchors
+(either or both):
+
+1. **Keys** — long-lived publisher public keys (classic keyed cosign).
+2. **trusted_root** — Sigstore `trusted_root.json` Fulcio CAs; signatures that
+   carry a leaf certificate (`dev.sigstore.cosign/certificate`) are verified
+   offline against those CAs. This is the self-hosted / air-gap “keyless-style”
+   path: you trust whoever your Fulcio issues to. Specula does **not** consult
+   Rekor/CT or enforce OIDC identity policies while `tlog: false`.
+
+### Keyed (recommended for CN mirrors)
 
 ```yaml
 protocols:
@@ -37,7 +46,43 @@ Generate / distribute the **public** key out-of-band (never via the mirror).
 Unsigned images then fail closed under `signed` in the tier list when a key is
 configured. Layer blobs are not cosign-gated (only manifests/indexes).
 
-Verify: `make test-trust-oracle-signed` (builds a real signed image locally).
+### Air-gap Fulcio (trusted_root only or with keys)
+
+```yaml
+      cosign:
+        # keys: [/etc/specula/keys/cosign.pub]   # optional alongside trusted_root
+        tlog: false
+        trusted_root: /etc/specula/sigstore/trusted_root.json
+```
+
+Point `trusted_root` at your **self-hosted** Fulcio CA material (or a pinned
+export). Public Sigstore production roots alone do not help if Rekor/Fulcio are
+unreachable for signing; this path verifies the certificate chain + payload
+signature already attached to the image.
+
+Honesty: without Rekor and without identity subject/issuer matching, any leaf
+chaining to a trusted Fulcio CA passes. Prefer keyed cosign when you can
+distribute publisher keys; use trusted_root when you operate (and trust) Fulcio.
+
+Verify keyed path: `make test-trust-oracle-signed` (builds a real signed image locally).
+
+---
+
+## 1b. Cache inventory SBOM (CycloneDX)
+
+Admin API (auth required):
+
+```http
+GET /api/v1/admin/sbom
+GET /api/v1/admin/sbom?protocol=npm
+GET /api/v1/admin/sbom?limit=500
+```
+
+Returns CycloneDX 1.5 JSON of **immutable CAS entries** Specula has verified and
+cached (name, version, purl, sha256, trust tier). This is an audit export of the
+proxy inventory — **not** a recursive dependency graph of package contents.
+Mutable rows (packuments, indexes) are omitted. `x-specula-truncated: true` when
+the export hit the component ceiling.
 
 ---
 
@@ -104,7 +149,25 @@ protocols:
 ```yaml
 protocols:
   npm:
+    upstreams:
+      - name: npmmirror
+        base_url: https://registry.npmmirror.com
+        official: false
+      - name: huawei-npm
+        base_url: https://repo.huaweicloud.com/repository/npm
+        official: false
+      - name: npm-registry
+        base_url: https://registry.npmjs.org
+        official: true          # origin witness (not a quorum voter)
     verification:
+      # Content-ID consensus: packument dist.integrity (sha512 SSRI) quorum +
+      # body SSRI bind. Never equates integrity with CAS sha256.
+      tiers: [consensus, tofu, checksum]
+      quorum: 2
+      tofu: enforce
+      maturity:
+        min_age: 72h
+        policy: enforce         # without this, hijack publish is a known window
       dependency_confusion:
         private_scopes: ["@myorg"]
         private_unscoped: ["internal-svc"]
@@ -112,8 +175,44 @@ protocols:
         on_private_down: fail_closed
 ```
 
+Hermetic integrity quorum: Go tests in `internal/verify` (`TestConsensusVerifier_NPMContentID_*`).
+Maturity gate: `bash scripts/realclient-maturity.sh`.
+
 When the private upstream is down: **5xx / refuse**, never a public hit for a
 private name. That is the whole point.
+
+### cargo
+
+```yaml
+protocols:
+  cargo:
+    verification:
+      tiers: [consensus, tofu, checksum]
+      quorum: 1                 # raise when ≥2 independent sparse indexes vote
+      tofu: enforce
+      maturity:
+        min_age: 72h
+        policy: enforce
+```
+
+Consensus polls sparse-index `cksum` (indexes without a comparable checksum abstain).
+`.crate` body is bound to the winning cksum before CAS sha256 promotion.
+
+### tarball
+
+No metadata digest → **do not** enable `consensus` (would be a lie or a fail-closed forever). Floor:
+
+```yaml
+protocols:
+  tarball:
+    verification:
+      tiers: [tofu, checksum]
+      tofu: enforce
+```
+
+Callers that need content identity pin `?digest=sha256:…` (mismatch → reject).
+Do **not** default to multi-source full-blob downloads to invent a consensus tier.
+
 
 ### Client anti-patterns (must fix)
 
@@ -137,6 +236,9 @@ malicious version of a real package (npm worm / hijack window). Industry answer
 (JFrog Curation, Socket cool-down): hold versions younger than N until the
 community has had time to yank them.
 
+The shipped example enables maturity for **pypi / npm / cargo** (`min_age: 72h`,
+`policy: enforce`). Turn it off only if you knowingly accept that window.
+
 ```yaml
 protocols:
   npm:   # same shape for pypi / cargo
@@ -144,8 +246,11 @@ protocols:
       tiers: [consensus, tofu, checksum]
       maturity:
         min_age: 72h          # Go duration (e.g. 24h, 168h)
-        policy: warn          # warn | enforce (enforce → verify FAIL → not cached)
+        policy: enforce       # warn | enforce — prefer enforce for harden
 ```
+
+**npm without maturity = known hijack window** even with integrity consensus (consensus
+only stops mirrors disagreeing; it does not wait out a malicious new version).
 
 - Uses registry-advertised publish/upload time when known
   (npm `packument.time[version]`, PyPI PEP 691 `upload-time` / Warehouse
@@ -159,14 +264,29 @@ protocols:
 
 ---
 
-## 6. What “PASS” does and does not mean
+## 6. Anti-rollback (signed index high-water)
+
+Distinct from maturity: this rejects an **older signed index**, not a young package.
+
+| Ecosystem | Monotonic identity | Status |
+|-----------|-------------------|--------|
+| Go sumdb | signed tree size | ✅ (with CDN lag tolerance) |
+| apt | InRelease `Date` | ✅ (`apt_index_highwater` + GPG verifier) |
+| helm / OCI | — | not yet (charts/tags use tofu / cosign) |
+
+Hermetic apt gate: `TestGPGVerifier_AntiRollback_*` / `TestReplaceIndexPins_AntiRollback`.
+
+---
+
+## 7. What “PASS” does and does not mean
 
 - `test-trust-oracle` PASS ≠ cosign or helm `.prov` on public CN mirrors.
 - `test-trust-oracle-signed` PASS ≠ any public mirror serves signatures; it proves
   Specula’s verifier + pull-through reach `signed` against real cosign/helm output.
 - WebUI / Prometheus tiers are **self-reported**; the oracles are the external check.
 - Maturity `PASS` ≠ malware-free — only “older than min_age”.
+- Anti-rollback `PASS` ≠ content is safe — only “this signed index is not older than one we already accepted”.
 
 Authoritative schema: [`specula.example.yaml`](../specula.example.yaml) and
 [`internal/config/config.go`](../internal/config/config.go). Product claims:
-[`docs/PRD.md`](PRD.md) §G2 / §6 / milestone v0.10.
+[`docs/PRD.md`](PRD.md) §G2 / §6 / milestone v0.12.

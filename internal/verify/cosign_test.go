@@ -127,7 +127,7 @@ func TestNewCosignVerifier_RejectsTlog(t *testing.T) {
 }
 
 func TestNewCosignVerifier_RejectsEmptyKeys(t *testing.T) {
-	_, err := NewCosignVerifier(CosignConfig{Keys: nil, Tlog: false}, nil)
+	_, err := NewCosignVerifier(CosignConfig{Keys: nil, TrustedRoot: "", Tlog: false}, nil)
 	require.Error(t, err, "empty key list must be rejected")
 	assert.Contains(t, err.Error(), "key")
 }

@@ -22,6 +22,13 @@ import (
 // cosign's "simple signing" layout stores the base64 signature.
 const cosignSignatureAnnotation = "dev.cosignproject.cosign/signature"
 
+// cosignCertificateAnnotation / cosignChainAnnotation are Fulcio leaf + chain
+// PEM annotations written by cosign for keyless-style signatures.
+const (
+	cosignCertificateAnnotation = "dev.sigstore.cosign/certificate"
+	cosignChainAnnotation       = "dev.sigstore.cosign/chain"
+)
+
 // maxCosignPayloadBytes bounds a single cosign simple-signing payload read. The
 // payload is a small JSON document; anything larger is treated as hostile.
 const maxCosignPayloadBytes = 1 << 20 // 1 MiB
@@ -178,7 +185,14 @@ func signaturesFromImage(img v1.Image) ([]CosignSignature, error) {
 		if err != nil {
 			return nil, fmt.Errorf("cosign: read sig payload %s: %w", layer.Digest, err)
 		}
-		out = append(out, CosignSignature{Payload: payload, Base64Sig: b64})
+		cert := []byte(strings.TrimSpace(layer.Annotations[cosignCertificateAnnotation]))
+		chain := []byte(strings.TrimSpace(layer.Annotations[cosignChainAnnotation]))
+		out = append(out, CosignSignature{
+			Payload:   payload,
+			Base64Sig: b64,
+			CertPEM:   cert,
+			ChainPEM:  chain,
+		})
 	}
 	return out, nil
 }

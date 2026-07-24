@@ -252,24 +252,30 @@ flowchart LR
     tier -->|apt| gpg[GPG InRelease链]
     tier -->|go| sumdb[sumdb 签名tree head<br/>+inclusion/consistency]
     tier -->|helm| prov[.prov GPG]
-    tier -->|oci| cosign[cosign keyed<br/>关闭tlog]
+    tier -->|oci| cosign[cosign keyed / trusted_root<br/>关闭tlog]
     tier -->|git| signed[签名 tag/commit<br/>allowed-signers]
-    tier -->|npm/pypi/tarball| consensus[跨源 quorum<br/>+ origin-check]
+    tier -->|npm/pypi/cargo| consensus[跨源 quorum<br/>+ origin-check]
+    tier -->|tarball| tofuOnly[tofu + digest pin]
     gpg & sumdb & prov & cosign & signed & consensus --> tofu[TOFU pin<br/>+ 变更告警]
+    tofuOnly --> tofu
 ```
 
 **四档落地要点**：
-- `signed`：见上表锚。cosign 默认 `keyed --insecure-ignore-tlog`（CN Rekor 被墙）；sumdb 走
+- `signed`：见上表锚。cosign 默认 `tlog: false`（在线 Rekor 不支持）：keyed 公钥和/或 `trusted_root` Fulcio 证书链离线验签；sumdb 走
   `sum.golang.google.cn`；apt/helm 用本地 keyring；git 用 allowed-signers。
-- `consensus`：从 N 个独立镜像**并行取 digest/manifest**（HEAD/metadata 阶段，不下载全 blob），
+- `consensus`：从 N 个独立镜像**并行取 metadata identity**（HEAD/packument/index，不下载全 blob），
   ≥quorum 一致才 PASS；可选 origin-check 经出口代理直连官方源比对。
-- `tofu`：首次锁定 digest 入库，后续同一不可变版本变更即告警/fail。git 额外检测非快进 ref 更新（force-push/改史）。
+  OCI/PyPI 比对 CAS sha256；npm 比对 `dist.integrity`（SSRI）并绑定正文；cargo 比对索引
+  `cksum` 并绑定正文。**永不**把 npm sha512 integrity 与 CAS sha256 假相等。tarball 无
+  metadata identity → 不宣称 consensus（tofu + 调用方 `?digest=`）。- `tofu`：首次锁定 digest 入库，后续同一不可变版本变更即告警/fail。git 额外检测非快进 ref 更新（force-push/改史）。
 - **maturity / cool-down**（v0.10，**策略闸而非信任档**）：对 npm/PyPI/Cargo，优先用
   registry 公布的发布时间（npm `packument.time`、PyPI PEP 691 / Warehouse、
   crates.io `created_at`），否则回退 `Last-Modified`；距今 `< min_age` 时按
   `warn|enforce` 告警或拒绝入缓存。用于压缩维护者劫持后毒版首发窗口；无发布时间则
   Skip（不伪造年龄）。**不**等同 anti-rollback。
-- **anti-rollback**（v0.12 规划，修 H2）：per-channel 单调版本状态——拒绝比已见更低版本的**已签名索引**。
+- **anti-rollback**（v0.12，修 H2）：per-channel 单调版本状态——拒绝比已见更低版本的**已签名索引**。
+  Go sumdb：持久化 tree size 高水位；apt：持久化 InRelease `Date` 高水位（旧索引即便签名合法也拒绝）。
+  **不**等同 maturity（冷静期）。
 
 **dependency confusion guard**（修 H3/H4）：见 DESIGN-REVIEW §4 + [TRUST.md](./TRUST.md)。
 私有名私有源宕机 **fail-closed**。客户端必须 sole-index；`integrate` 不得把旧 PyPI 源塞进
@@ -584,7 +590,7 @@ specula/
 | 语言 | Go 1.22+ | 单静态二进制 |
 | HTTP | `net/http`（Go 1.22 method+pattern 路由） | 无魔法 |
 | OCI | `google/go-containerregistry` | crane/skopeo 同底座 |
-| cosign | `sigstore/sigstore`（keyed） | CN 离线可验 |
+| cosign | `sigstore/sigstore`（keyed + trusted_root 证书链） | CN/气隙离线可验；不做在线 Rekor |
 | Go sumdb | `golang.org/x/mod/sumdb` | 签名 tree head + 证明验证 |
 | git | bare mirror + `git http-backend` | 公共 clone 加速 |
 | S3 | `aws-sdk-go-v2` | R2/MinIO/OSS 通用 |

@@ -59,6 +59,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/v1/admin/config", adminOnly(s.handleConfig))
 	mux.Handle("GET /api/v1/admin/events", adminOnly(s.handleEvents))
 	mux.Handle("GET /api/v1/admin/events/series", adminOnly(s.handleEventsSeries))
+	mux.Handle("GET /api/v1/admin/sbom", adminOnly(s.handleSBOM))
 
 	// Runtime settings (ported settings layer): the writable counterpart to the
 	// read-only /admin/config echo above. GET lists every known setting with its

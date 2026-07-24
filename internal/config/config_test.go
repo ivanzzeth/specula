@@ -773,6 +773,7 @@ func TestValidate_ConsensusRequiresQuorum(t *testing.T) {
 					"npm": {
 						Upstreams: []config.UpstreamConfig{
 							{Name: "npmmirror", BaseURL: "https://registry.npmmirror.com", Priority: 1},
+							{Name: "huawei", BaseURL: "https://repo.huaweicloud.com/repository/npm", Priority: 2},
 						},
 						Verification: config.VerificationConfig{
 							Tiers:  []string{"consensus", "tofu"},

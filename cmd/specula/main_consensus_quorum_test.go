@@ -133,20 +133,39 @@ func TestBuildConsensusVerifier_NotEnabled_NoError(t *testing.T) {
 	assert.Nil(t, v)
 }
 
-// TestBuildConsensusVerifier_MetadataOnlyImpossible_NoError: npm/tarball cannot do
-// metadata-only consensus; that is a documented downgrade to tofu, not an error.
-func TestBuildConsensusVerifier_MetadataOnlyImpossible_NoError(t *testing.T) {
+// TestBuildConsensusVerifier_TarballMetadataOnlyImpossible_NoError: tarball cannot
+// do metadata-only consensus; that is a documented downgrade to tofu, not an error.
+func TestBuildConsensusVerifier_TarballMetadataOnlyImpossible_NoError(t *testing.T) {
 	cfg := &config.Config{
 		Protocols: map[string]config.ProtocolConfig{
-			"npm": {
+			"tarball": {
 				Upstreams: []config.UpstreamConfig{
-					{Name: "npmmirror", BaseURL: "https://registry.npmmirror.com"},
+					{Name: "gh", BaseURL: "https://github.com"},
 				},
 				Verification: config.VerificationConfig{Tiers: []string{"consensus"}, Quorum: 5},
 			},
 		},
 	}
-	v, err := buildConsensusVerifier("npm", cfg, verify.NewHTTPMirrorDigestFetcher(0), slog.Default())
-	require.NoError(t, err, "npm consensus is documented as unachievable metadata-only → tofu")
+	v, err := buildConsensusVerifier("tarball", cfg, verify.NewHTTPMirrorDigestFetcher(0), slog.Default())
+	require.NoError(t, err, "tarball consensus is documented as unachievable → tofu")
 	assert.Nil(t, v)
+}
+
+// TestBuildConsensusVerifier_NPMContentID_Wires: npm consensus is Content-ID mode.
+func TestBuildConsensusVerifier_NPMContentID_Wires(t *testing.T) {
+	cfg := &config.Config{
+		Protocols: map[string]config.ProtocolConfig{
+			"npm": {
+				Upstreams: []config.UpstreamConfig{
+					{Name: "npmmirror", BaseURL: "https://registry.npmmirror.com"},
+					{Name: "huawei", BaseURL: "https://repo.huaweicloud.com/repository/npm"},
+					{Name: "npmjs", BaseURL: "https://registry.npmjs.org", Official: true},
+				},
+				Verification: config.VerificationConfig{Tiers: []string{"consensus"}, Quorum: 2},
+			},
+		},
+	}
+	v, err := buildConsensusVerifier("npm", cfg, verify.NewHTTPMirrorDigestFetcher(0), slog.Default())
+	require.NoError(t, err)
+	require.NotNil(t, v)
 }

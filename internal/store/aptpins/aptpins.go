@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ErrAmbiguousPoolPin mirrors verify.ErrAmbiguousPoolPin. It is declared here to
@@ -25,6 +26,9 @@ import (
 // interface). The verifier fails closed on ANY error from PoolPin, so the two
 // need not be the same value.
 var ErrAmbiguousPoolPin = errors.New("apt pins: pool path pinned to conflicting hashes by two repositories under the same trust anchor")
+
+// ErrIndexRollback mirrors verify.ErrIndexRollback (anti-rollback on InRelease Date).
+var ErrIndexRollback = errors.New("apt pins: anti-rollback: signed InRelease Date is older than persisted high-water")
 
 // Dialect selects placeholder syntax.
 type Dialect int
@@ -86,11 +90,15 @@ func (s *Store) rewrite(q string) string {
 const batchRows = 1000
 
 // ReplaceIndexPins atomically makes pins the complete pin set for
-// (scope, repo, suite).
+// (scope, repo, suite) and advances the InRelease Date high-water mark.
 //
 // Delete-then-insert inside ONE transaction, so a concurrent reader on another
 // replica sees either the old InRelease's pin set or the new one — never a
 // half-applied mixture, which could fail a Packages file that is in fact pinned.
+//
+// Anti-rollback: if a persisted high-water Date is strictly newer than
+// indexDate, the transaction aborts with ErrIndexRollback and leaves pins
+// untouched.
 //
 // Concurrency: two replicas verifying the same InRelease race here. Both run the
 // same DELETE predicate first, so the second blocks on the first's row locks
@@ -99,12 +107,32 @@ const batchRows = 1000
 // transactions can never grab the same locks in opposite orders and deadlock —
 // Go map iteration order is randomised, so relying on it would make deadlock a
 // rare, load-dependent flake.
-func (s *Store) ReplaceIndexPins(ctx context.Context, scope, repo, suite string, pins map[string]string) error {
+func (s *Store) ReplaceIndexPins(ctx context.Context, scope, repo, suite string, indexDate time.Time, pins map[string]string) error {
+	if indexDate.IsZero() {
+		return fmt.Errorf("apt pins: ReplaceIndexPins requires a non-zero InRelease Date")
+	}
+	dateUnix := indexDate.UTC().Unix()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("apt pins: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	var hw sql.NullInt64
+	err = tx.QueryRowContext(ctx,
+		s.rewrite(`SELECT date_unix FROM apt_index_highwater WHERE scope = ? AND repo = ? AND suite = ?`),
+		scope, repo, suite,
+	).Scan(&hw)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("apt pins: read high-water (suite=%q): %w", suite, err)
+	}
+	if hw.Valid && dateUnix < hw.Int64 {
+		return fmt.Errorf("%w: got %s, high-water %s",
+			ErrIndexRollback,
+			indexDate.UTC().Format(time.RFC3339),
+			time.Unix(hw.Int64, 0).UTC().Format(time.RFC3339))
+	}
 
 	if _, err := tx.ExecContext(ctx,
 		s.rewrite(`DELETE FROM apt_index_pins WHERE scope = ? AND repo = ? AND suite = ?`),
@@ -134,6 +162,14 @@ func (s *Store) ReplaceIndexPins(ctx context.Context, scope, repo, suite string,
 		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
 			return fmt.Errorf("apt pins: insert index pins (suite=%q): %w", suite, err)
 		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		s.rewrite(`INSERT INTO apt_index_highwater (scope, repo, suite, date_unix) VALUES (?, ?, ?, ?)
+			ON CONFLICT (scope, repo, suite) DO UPDATE SET date_unix = excluded.date_unix`),
+		scope, repo, suite, dateUnix,
+	); err != nil {
+		return fmt.Errorf("apt pins: upsert high-water (suite=%q): %w", suite, err)
 	}
 
 	if err := tx.Commit(); err != nil {

@@ -106,18 +106,33 @@ func TestValidate_CosignTlogTrue(t *testing.T) {
 }
 
 // TestValidate_CosignKeysEmpty covers the
-// "protocols.<name>.verification.cosign.keys: at least one public key" rule.
+// "protocols.<name>.verification.cosign: at least one of keys or trusted_root" rule.
 func TestValidate_CosignKeysEmpty(t *testing.T) {
 	cfg := validCfg()
 	proto := cfg.Protocols["oci"]
 	proto.Verification.Cosign = &config.CosignConfig{
 		Tlog: false,
-		Keys: nil, // no keys
+		Keys: nil, // no keys and no trusted_root
 	}
 	cfg.Protocols["oci"] = proto
 
 	err := config.Validate(cfg)
-	assertValidationErr(t, err, "cosign.keys: at least one public key")
+	assertValidationErr(t, err, "at least one of keys or trusted_root")
+}
+
+// TestValidate_CosignTrustedRootOnly allows keys to be empty when trusted_root is set.
+func TestValidate_CosignTrustedRootOnly(t *testing.T) {
+	cfg := validCfg()
+	proto := cfg.Protocols["oci"]
+	proto.Verification.Cosign = &config.CosignConfig{
+		Tlog:        false,
+		TrustedRoot: "/etc/specula/sigstore/trusted_root.json",
+	}
+	cfg.Protocols["oci"] = proto
+
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("expected valid cosign with trusted_root only, got: %v", err)
+	}
 }
 
 // TestValidate_MutableTTLBelowMinusOne covers the
@@ -211,19 +226,27 @@ func TestValidate_ConsensusQuorumSatisfiable(t *testing.T) {
 }
 
 // TestValidate_ConsensusQuorumNonMetadataProtocol pins that the check is gated by
-// consensus ACHIEVABILITY: npm advertises sha512 integrity, never a metadata-only
-// sha256, so its consensus tier is a documented no-op that downgrades to tofu at
-// boot (cmd/specula) and must NOT be rejected here — rejecting it would break a
-// config the server actually starts.
+// consensus ACHIEVABILITY: tarball advertises no content identity, so its
+// consensus tier is a documented no-op that downgrades to tofu at boot and must
+// NOT be rejected here — rejecting it would break a config the server starts.
 func TestValidate_ConsensusQuorumNonMetadataProtocol(t *testing.T) {
 	cfg := pypiLikeConsensusCfg(1, 2)
-	// Re-key the protocol as npm (non-metadata-consensus-capable).
+	proto := cfg.Protocols["pypi"]
+	delete(cfg.Protocols, "pypi")
+	cfg.Protocols["tarball"] = proto
+	if err := config.Validate(cfg); err != nil {
+		t.Fatalf("tarball consensus quorum>mirrors must NOT be rejected (downgrades to tofu), got: %v", err)
+	}
+}
+
+// TestValidate_ConsensusQuorumNPMUnsatisfiable: npm is now Content-ID capable, so
+// quorum > mirrors must hard-fail validation.
+func TestValidate_ConsensusQuorumNPMUnsatisfiable(t *testing.T) {
+	cfg := pypiLikeConsensusCfg(1, 2)
 	proto := cfg.Protocols["pypi"]
 	delete(cfg.Protocols, "pypi")
 	cfg.Protocols["npm"] = proto
-	if err := config.Validate(cfg); err != nil {
-		t.Fatalf("npm consensus quorum>mirrors must NOT be rejected (downgrades to tofu), got: %v", err)
-	}
+	assertValidationErr(t, config.Validate(cfg), "consensus quorum 2 exceeds")
 }
 
 // TestValidate_ProvenancePolicyInvalid covers the

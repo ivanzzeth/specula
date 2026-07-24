@@ -275,13 +275,11 @@ func run() error {
 	// Each configured protocol gets its OWN protocol-scoped consensus verifier so
 	// one protocol's mirror set never acts on another's artifacts (the shared
 	// chain would otherwise let it). The digest fetcher is metadata-only (HEAD /
-	// index page, never the blob) and returns sha256 — so consensus is wired for
-	// the ecosystems whose metadata publishes a sha256 (oci, pypi). npm (sha512
-	// integrity) and tarball (no advertised digest) cannot be cross-checked
-	// metadata-only, so their consensus request is logged and left at tofu rather
-	// than fail-closing every real fetch.
+	// packument / index page, never the blob). OCI/PyPI compare votes to CAS
+	// sha256; npm/cargo use Content-ID quorum (integrity / cksum) + body bind.
+	// Generic tarball has no advertised identity, so consensus stays off (tofu).
 	mirrorFetcher := verify.NewHTTPMirrorDigestFetcher(0)
-	for _, protocol := range []string{"oci", "pypi", "npm", "tarball"} {
+	for _, protocol := range []string{"oci", "pypi", "npm", "cargo", "tarball"} {
 		cv, err := buildConsensusVerifier(protocol, cfg, mirrorFetcher, log)
 		if err != nil {
 			// Unsatisfiable consensus config: refuse to start rather than serve
@@ -1316,13 +1314,12 @@ func policyOrWarn(p string) string {
 }
 
 // consensusMetadataProtocols is the set of protocols for which a mirror's
-// sha256 digest is obtainable metadata-only (HEAD / index page) and therefore
-// directly comparable to the artifact's CAS digest. pypi publishes a PEP 503
-// "#sha256=" per file; oci returns Docker-Content-Digest on a manifest/blob
-// HEAD. npm (sha512 integrity) and generic tarballs (no advertised digest)
-// cannot be cross-checked without downloading the blob, so consensus is not
-// enabled for them (it would fail-close every real fetch).
-var consensusMetadataProtocols = map[string]bool{"oci": true, "pypi": true}
+// content identity is obtainable metadata-only (HEAD / packument / index) and
+// consensus is therefore buildable. Kept in sync with
+// config.MetadataConsensusProtocols.
+var consensusMetadataProtocols = map[string]bool{
+	"oci": true, "pypi": true, "npm": true, "cargo": true,
+}
 
 // consensusEnabled reports whether a protocol's verification config asks for the
 // consensus tier — either via the tiers list or a structured consensus block.
@@ -1366,7 +1363,7 @@ func buildConsensusVerifier(protocol string, cfg *config.Config, fetcher verify.
 	if !consensusMetadataProtocols[protocol] {
 		log.Warn("specula: consensus requested but not achievable metadata-only — staying at tofu",
 			"protocol", protocol,
-			"reason", "mirror metadata advertises no sha256 (npm uses sha512 integrity; tarball advertises none)")
+			"reason", "mirror metadata advertises no comparable content identity (tarball has none; use tofu + ?digest= pin)")
 		return nil, nil
 	}
 
@@ -1418,22 +1415,30 @@ func buildConsensusVerifier(protocol string, cfg *config.Config, fetcher verify.
 			protocol, quorum, len(mirrors), protocol, len(mirrors), quorum-len(mirrors))
 	}
 
+	identityMode := verify.IdentityCAS
+	if protocol == "npm" || protocol == "cargo" {
+		identityMode = verify.IdentityContentID
+	}
+
 	cv := verify.NewConsensusVerifier(verify.ConsensusConfig{
-		Quorum:      quorum,
-		Mirrors:     mirrors,
-		OriginCheck: origin,
+		Quorum:       quorum,
+		Mirrors:      mirrors,
+		OriginCheck:  origin,
+		IdentityMode: identityMode,
 	}, fetcher)
 	log.Info("specula: cross-source consensus enabled",
-		"protocol", protocol, "quorum", quorum, "mirrors", len(mirrors), "origin_check", origin.URL != "")
+		"protocol", protocol, "quorum", quorum, "mirrors", len(mirrors),
+		"origin_check", origin.URL != "", "identity_mode", identityMode)
 	return newProtocolScopedVerifier(cv, protocol), nil
 }
 
-// buildCosignVerifier constructs the keyed cosign verifier for the oci protocol
-// from configured public keys (structured cosign.keys, or the flat cosign_key
-// back-compat field), or returns nil when no keys are set. The transparency log
-// is always disabled (CN-offline keyed mode). Signature discovery is wired to
-// go-containerregistry over the configured oci registries. A key load failure
-// warns and downgrades oci to consensus/tofu rather than crashing.
+// buildCosignVerifier constructs the OCI cosign verifier from configured public
+// keys (structured cosign.keys, or the flat cosign_key back-compat field)
+// and/or cosign.trusted_root, or returns nil when neither authenticity anchor
+// is set. The transparency log is always disabled (CN-offline / air-gap).
+// Signature discovery is wired to go-containerregistry over the configured oci
+// registries. A key/root load failure warns and downgrades oci to
+// consensus/tofu rather than crashing.
 func buildCosignVerifier(cfg *config.Config, log *slog.Logger) *verify.CosignVerifier {
 	pc, ok := cfg.Protocols["oci"]
 	if !ok {
@@ -1441,14 +1446,16 @@ func buildCosignVerifier(cfg *config.Config, log *slog.Logger) *verify.CosignVer
 	}
 	vc := pc.Verification
 	var keys []string
+	var trustedRoot string
 	if vc.Cosign != nil {
 		keys = vc.Cosign.Keys
+		trustedRoot = strings.TrimSpace(vc.Cosign.TrustedRoot)
 	}
 	if len(keys) == 0 && strings.TrimSpace(vc.CosignKey) != "" {
 		keys = []string{vc.CosignKey}
 	}
-	if len(keys) == 0 {
-		log.Warn("specula: oci cosign keys not configured — oci tops out at consensus/tofu tier")
+	if len(keys) == 0 && trustedRoot == "" {
+		log.Warn("specula: oci cosign keys/trusted_root not configured — oci tops out at consensus/tofu tier")
 		return nil
 	}
 
@@ -1458,14 +1465,19 @@ func buildCosignVerifier(cfg *config.Config, log *slog.Logger) *verify.CosignVer
 	}
 	fetcher := verify.NewOCISignatureFetcher(registries)
 
-	v, err := verify.NewCosignVerifier(verify.CosignConfig{Keys: keys, Tlog: false}, fetcher)
+	v, err := verify.NewCosignVerifier(verify.CosignConfig{
+		Keys:        keys,
+		Tlog:        false,
+		TrustedRoot: trustedRoot,
+	}, fetcher)
 	if err != nil {
-		log.Warn("specula: oci cosign verifier disabled (key load failed) — downgrading oci to consensus/tofu",
-			"keys", len(keys), "err", err)
+		log.Warn("specula: oci cosign verifier disabled (load failed) — downgrading oci to consensus/tofu",
+			"keys", len(keys), "trusted_root", trustedRoot != "", "err", err)
 		return nil
 	}
-	log.Info("specula: oci cosign keyed signed verification enabled",
-		"keys", len(keys), "registries", len(registries), "tlog", false)
+	log.Info("specula: oci cosign signed verification enabled",
+		"keys", len(keys), "trusted_root", trustedRoot != "",
+		"registries", len(registries), "tlog", false)
 	return v
 }
 

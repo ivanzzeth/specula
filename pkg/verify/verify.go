@@ -33,6 +33,10 @@ type (
 const (
 	PolicyEnforce = intverify.PolicyEnforce
 	PolicyWarn    = intverify.PolicyWarn
+
+	// Consensus identity modes (see internal/verify ConsensusConfig.IdentityMode).
+	IdentityCAS       = intverify.IdentityCAS
+	IdentityContentID = intverify.IdentityContentID
 )
 
 // NewChain builds a verification Chain from an ordered list of verifiers.

@@ -755,14 +755,17 @@ func protocolTrustView(pc config.ProtocolConfig) ProtocolTrustView {
 	tv := ProtocolTrustView{Tofu: strings.TrimSpace(v.Tofu)}
 
 	keyCount := 0
+	trustedRoot := false
 	if v.Cosign != nil {
 		keyCount = len(v.Cosign.Keys)
+		trustedRoot = strings.TrimSpace(v.Cosign.TrustedRoot) != ""
 	}
 	if strings.TrimSpace(v.CosignKey) != "" {
 		keyCount++
 	}
 	tv.CosignKeyCount = keyCount
-	tv.CosignConfigured = keyCount > 0
+	tv.CosignConfigured = keyCount > 0 || trustedRoot
+	tv.TrustedRootConfigured = trustedRoot
 
 	if v.Maturity != nil && strings.TrimSpace(v.Maturity.MinAge) != "" {
 		tv.MaturityEnabled = true

@@ -80,6 +80,9 @@ func expandConfigPaths(cfg *Config) error {
 					return err
 				}
 			}
+			if err := expandPathField(&v.Cosign.TrustedRoot); err != nil {
+				return err
+			}
 		}
 		if v.GPG != nil {
 			if err := expandPathField(&v.GPG.Keyring); err != nil {

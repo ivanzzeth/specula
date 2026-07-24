@@ -560,16 +560,24 @@ type OriginCheckConfig struct {
 	ViaProxy string `koanf:"via_proxy"`
 }
 
-// CosignConfig is the keyed-cosign OCI verification block with the transparency
-// log disabled (DESIGN-REVIEW §1.1). Keyless/tlog verification is unsupported
-// (Rekor/Fulcio are CN-blocked), so Tlog must be false.
+// CosignConfig is the OCI cosign verification block with the transparency log
+// disabled (DESIGN-REVIEW §1.1). Online Rekor (tlog:true) is unsupported.
+// Authenticity anchors: long-lived Keys and/or a Sigstore TrustedRoot (Fulcio
+// CAs) for offline cert-backed signatures — see docs/TRUST.md.
 type CosignConfig struct {
 	// Keys are filesystem paths to long-lived cosign PUBLIC keys (PEM). A
 	// signature verifying against any listed key passes (supports key rotation).
+	// Optional when TrustedRoot is set.
 	Keys []string `koanf:"keys"`
-	// Tlog MUST be false: keyless/transparency-log verification is unsupported.
+	// Tlog MUST be false: online transparency-log verification is unsupported.
 	// Validate rejects a true value.
 	Tlog bool `koanf:"tlog"`
+	// TrustedRoot is an optional path to a Sigstore trusted_root.json. When set,
+	// Specula verifies Fulcio leaf certificates on attached signatures against
+	// the CAs in that file (offline; no Rekor). Self-hosted / air-gap keyless-
+	// style path. Optional when Keys is set. At least one of Keys or TrustedRoot
+	// is required when the cosign block is present.
+	TrustedRoot string `koanf:"trusted_root"`
 }
 
 // GPGConfig is the apt GPG chain-verification block (PRD §6 apt).

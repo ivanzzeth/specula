@@ -58,13 +58,21 @@ type ConsensusConfig struct {
 	Mirrors []ConsensusMirror
 	// OriginCheck optionally adds the official source as an authoritative witness.
 	OriginCheck OriginCheck
+	// IdentityMode selects what mirrors vote on:
+	//   IdentityCAS (default) — votes must match art.Digest (sha256 CAS; OCI/PyPI)
+	//   IdentityContentID — mirrors quorum on an advertised content ID (npm
+	//     integrity / cargo cksum), then the quarantine body is bound to that ID.
+	//     Never compares sha512 integrity to art.Digest.
+	IdentityMode string
 }
 
 // ConsensusVerifier attests the cross-source consensus tier (TierConsensus,
-// DESIGN-REVIEW §1.2): it fetches ONLY the digest/manifest from N independent
-// mirrors in parallel and PASSes when >= Quorum of them agree with the digest
-// computed for the quarantined artifact. When an official source is configured
-// it acts as an authoritative witness — any disagreement there fails closed.
+// DESIGN-REVIEW §1.2): it fetches ONLY metadata identities from N independent
+// mirrors in parallel. In CAS mode it PASSes when >= Quorum mirrors agree with
+// art.Digest. In Content-ID mode it PASSes when >= Quorum mirrors agree on the
+// same advertised ID and the quarantine body matches that ID (SSRI / checksum).
+// When an official source is configured it acts as an authoritative witness —
+// any disagreement there fails closed.
 //
 // This is NOT cryptographic authenticity: it raises the bar so an attacker must
 // consistently poison every configured mirror to pass, and is the strongest
@@ -111,16 +119,15 @@ type mirrorFetchResult struct {
 }
 
 // Verify polls the configured mirrors (and optional official source) for the
-// artifact's digest and applies the quorum rule. All mirror fetches (including
+// artifact's identity and applies the quorum rule. All mirror fetches (including
 // the optional origin check) are issued in parallel; results are aggregated
 // after all goroutines complete.
 //
 //   - Skipped (StatusSkip) for mutable/undigested refs.
 //   - Fail-closed (error) when no digest fetcher is wired.
-//   - StatusFail when the official source disagrees, or fewer than Quorum
-//     independent mirrors agree with the artifact digest.
-//   - StatusPass (TierConsensus) when >= Quorum mirrors agree and the official
-//     source (if configured and reachable) agrees.
+//   - StatusFail when the official source disagrees, body/content-id bind fails,
+//     or fewer than Quorum independent mirrors agree.
+//   - StatusPass (TierConsensus) when quorum (and origin/body bind) succeed.
 func (v *ConsensusVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
 	// Self-gate: consensus only applies to a resolved, immutable digest.
 	if ref.Mutable || art.Digest == "" {
@@ -146,20 +153,12 @@ func (v *ConsensusVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef
 	}
 
 	hasOrigin := v.cfg.OriginCheck.URL != ""
-
-	// Launch all fetches in parallel: origin (if configured) + every mirror.
-	// Using a buffered channel the size of all concurrent fetches so goroutines
-	// never block on send regardless of receive order.
 	total := len(v.cfg.Mirrors)
 	if hasOrigin {
 		total++
 	}
 	resultCh := make(chan mirrorFetchResult, total)
 
-	// Origin check goroutine — the official source is an authoritative witness.
-	// The production fetcher is responsible for routing through ViaProxy; the
-	// verifier passes OriginCheck.URL as the BaseURL of a synthetic mirror named
-	// "origin".
 	if hasOrigin {
 		originMirror := ConsensusMirror{Name: "origin", BaseURL: v.cfg.OriginCheck.URL}
 		go func() {
@@ -168,26 +167,19 @@ func (v *ConsensusVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef
 		}()
 	}
 
-	// Per-mirror goroutines — each mirror is polled independently.
 	for _, m := range v.cfg.Mirrors {
-		m := m // capture for goroutine
+		m := m
 		go func() {
 			got, err := v.fetcher.FetchDigest(ctx, m, ref)
 			resultCh <- mirrorFetchResult{mirror: m, digest: got, err: err, isOrigin: false}
 		}()
 	}
 
-	// Collect all results from the channel (all goroutines write before
-	// returning, so this drains exactly `total` items without a WaitGroup).
 	var (
 		originDigest    string
 		originReachable bool
-
-		agree         int
-		polled        int
-		disagreements []string
+		votes           []mirrorFetchResult
 	)
-
 	for i := 0; i < total; i++ {
 		r := <-resultCh
 		if r.isOrigin {
@@ -195,14 +187,35 @@ func (v *ConsensusVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef
 				originReachable = true
 				originDigest = r.digest
 			}
-			// Unreachable origin is not a vote — mirror quorum governs.
 			continue
 		}
-		// Mirror result: down/error means no vote.
 		if r.err != nil {
 			continue
 		}
-		polled++
+		votes = append(votes, r)
+	}
+
+	if v.cfg.IdentityMode == IdentityContentID {
+		return v.verifyContentIDQuorum(ref, art, votes, quorum, hasOrigin, originReachable, originDigest)
+	}
+	return v.verifyCASQuorum(ref, art, votes, quorum, hasOrigin, originReachable, originDigest)
+}
+
+// verifyCASQuorum is the OCI/PyPI path: mirror digests must match art.Digest
+// (streaming sha256). digestsEqual only normalizes the sha256: prefix — it must
+// never be used to equate npm sha512 integrity with CAS digests.
+func (v *ConsensusVerifier) verifyCASQuorum(
+	ref artifact.ArtifactRef,
+	art *artifact.Artifact,
+	votes []mirrorFetchResult,
+	quorum int,
+	hasOrigin, originReachable bool,
+	originDigest string,
+) (artifact.Result, error) {
+	agree := 0
+	polled := len(votes)
+	var disagreements []string
+	for _, r := range votes {
 		if digestsEqual(r.digest, art.Digest) {
 			agree++
 		} else {
@@ -210,9 +223,6 @@ func (v *ConsensusVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef
 		}
 	}
 
-	// Origin-check decision: the official source is authoritative. A reachable
-	// disagreement is fatal regardless of mirror quorum (DESIGN-REVIEW §1.2
-	// "官方源比对"). An unreachable origin is silently skipped.
 	if hasOrigin && originReachable && !digestsEqual(originDigest, art.Digest) {
 		return artifact.Result{
 			Status: artifact.StatusFail,
@@ -224,7 +234,6 @@ func (v *ConsensusVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef
 		}, nil
 	}
 
-	// Quorum decision: at least Quorum independent mirrors must agree.
 	if agree < quorum {
 		disagreeStr := strings.Join(disagreements, ", ")
 		if disagreeStr == "" {
@@ -250,10 +259,110 @@ func (v *ConsensusVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef
 	}, nil
 }
 
-// digestsEqual compares two digest strings, tolerating an absent "sha256:"
-// algorithm prefix on either side (some HEAD/metadata paths return the bare hex).
+// verifyContentIDQuorum is the npm/cargo path: mirrors must agree on an
+// advertised content ID among themselves; the body must match that ID; origin
+// (if reachable) must match. art.Digest (CAS sha256) is never used as the
+// comparison target.
+func (v *ConsensusVerifier) verifyContentIDQuorum(
+	ref artifact.ArtifactRef,
+	art *artifact.Artifact,
+	votes []mirrorFetchResult,
+	quorum int,
+	hasOrigin, originReachable bool,
+	originDigest string,
+) (artifact.Result, error) {
+	counts := map[string]int{}
+	voters := map[string][]string{}
+	for _, r := range votes {
+		id := r.digest
+		counts[id]++
+		voters[id] = append(voters[id], r.mirror.Name)
+	}
+
+	var candidates []string
+	for id, n := range counts {
+		if n >= quorum {
+			candidates = append(candidates, id)
+		}
+	}
+	if len(candidates) == 0 {
+		detail := make([]string, 0, len(votes))
+		for _, r := range votes {
+			detail = append(detail, fmt.Sprintf("%s=%s", r.mirror.Name, r.digest))
+		}
+		if len(detail) == 0 {
+			detail = []string{"none"}
+		}
+		return artifact.Result{
+			Status: artifact.StatusFail,
+			Tier:   artifact.TierConsensus,
+			Message: fmt.Sprintf(
+				"consensus: content-id quorum not met for %s: need %d agreeing mirrors; polled %d (%s)",
+				refKey(ref), quorum, len(votes), strings.Join(detail, ", "),
+			),
+		}, nil
+	}
+	if len(candidates) > 1 {
+		return artifact.Result{
+			Status: artifact.StatusFail,
+			Tier:   artifact.TierConsensus,
+			Message: fmt.Sprintf(
+				"consensus: content-id split brain for %s: multiple IDs met quorum %d (%s)",
+				refKey(ref), quorum, strings.Join(candidates, ", "),
+			),
+		}, nil
+	}
+	winning := candidates[0]
+
+	if hasOrigin && originReachable && !contentIDsEqual(originDigest, winning) {
+		return artifact.Result{
+			Status: artifact.StatusFail,
+			Tier:   artifact.TierConsensus,
+			Message: fmt.Sprintf(
+				"consensus: OFFICIAL SOURCE disagrees for %s: origin=%s content-id=%s — possible mirror poisoning",
+				refKey(ref), originDigest, winning,
+			),
+		}, nil
+	}
+
+	if err := verifyBodyContentID(art.Path, winning); err != nil {
+		return artifact.Result{
+			Status: artifact.StatusFail,
+			Tier:   artifact.TierConsensus,
+			Message: fmt.Sprintf(
+				"consensus: body does not match content-id %s for %s: %v",
+				winning, refKey(ref), err,
+			),
+		}, nil
+	}
+
+	return artifact.Result{
+		Status: artifact.StatusPass,
+		Tier:   artifact.TierConsensus,
+		Message: fmt.Sprintf(
+			"consensus: %d/%d mirrors agreed on integrity=%s for %s (voters: %s; quorum %d; cas=%s)",
+			counts[winning], len(v.cfg.Mirrors), winning, refKey(ref),
+			strings.Join(voters[winning], ","), quorum, art.Digest,
+		),
+	}, nil
+}
+
+// digestsEqual compares two CAS sha256 digest strings, tolerating an absent
+// "sha256:" algorithm prefix on either side. It must NOT be used for npm SSRI
+// (sha512-…) or other non-sha256 content IDs.
 func digestsEqual(a, b string) bool {
-	return strings.TrimPrefix(a, "sha256:") == strings.TrimPrefix(b, "sha256:") && a != "" && b != ""
+	if a == "" || b == "" {
+		return false
+	}
+	// Refuse to "equal" SSRI-form identities via sha256: stripping — that would
+	// let a sha512 integrity accidentally compare equal to a CAS digest.
+	if strings.Contains(a, "-") && !strings.HasPrefix(a, "sha256:") {
+		return false
+	}
+	if strings.Contains(b, "-") && !strings.HasPrefix(b, "sha256:") {
+		return false
+	}
+	return strings.TrimPrefix(a, "sha256:") == strings.TrimPrefix(b, "sha256:")
 }
 
 // refKey renders a compact identity for messages.

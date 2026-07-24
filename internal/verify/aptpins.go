@@ -2,9 +2,18 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
+
+// ErrIndexRollback is returned when ReplaceIndexPins is asked to accept an
+// InRelease whose Date is strictly older than the persisted high-water mark for
+// that (scope, repo, suite). This is the TUF-style anti-rollback gate (PRD §G2 /
+// DESIGN-REVIEW H2): an old-but-still-validly-signed index must not replace a
+// newer one Specula has already accepted.
+var ErrIndexRollback = errors.New("apt pins: anti-rollback: signed InRelease Date is older than persisted high-water")
 
 // AptPinStore persists the apt trust chain's pinned hashes.
 //
@@ -49,14 +58,18 @@ import (
 type AptPinStore interface {
 	// ReplaceIndexPins atomically makes pins the COMPLETE pin set for
 	// (scope, repo, suite), removing any pins a previous InRelease established
-	// for that suite.
+	// for that suite, and advances the InRelease Date high-water mark.
 	//
 	// Replace — not merge — because InRelease is the mutable-tier root of its
 	// suite (ARCHITECTURE §3). A path the newest signed InRelease no longer
 	// lists must stop being servable at `signed`; merging would let a
-	// superseded signed index be served indefinitely, which is precisely the
-	// index-rollback vector PRD §G2 assigns to anti-rollback.
-	ReplaceIndexPins(ctx context.Context, scope, repo, suite string, pins map[string]string) error
+	// superseded signed index be served indefinitely.
+	//
+	// Anti-rollback: if a high-water Date is already persisted and indexDate is
+	// strictly earlier, the call returns ErrIndexRollback and leaves pins
+	// unchanged. Equal or newer Dates are accepted (idempotent re-fetch OK).
+	// indexDate must be non-zero.
+	ReplaceIndexPins(ctx context.Context, scope, repo, suite string, indexDate time.Time, pins map[string]string) error
 
 	// IndexPins returns the pins established by the most recent verified
 	// InRelease for (scope, repo, suite). An empty map means no InRelease has
@@ -106,16 +119,18 @@ var ErrAmbiguousPoolPin = fmt.Errorf("apt pins: pool path pinned to conflicting 
 // It is NOT suitable for the PRD §G3 topology; cmd/specula wires the metadata
 // store instead and fails fast if it cannot.
 type memAptPinStore struct {
-	mu    sync.RWMutex
-	index map[string]map[string]string // scope\x00repo\x00suite → relpath → sha256
-	pool  map[string]map[string]string // scope\x00poolPath → repo → sha256
+	mu        sync.RWMutex
+	index     map[string]map[string]string // scope\x00repo\x00suite → relpath → sha256
+	highwater map[string]time.Time         // scope\x00repo\x00suite → InRelease Date
+	pool      map[string]map[string]string // scope\x00poolPath → repo → sha256
 }
 
 // NewMemAptPinStore returns an in-memory AptPinStore.
 func NewMemAptPinStore() AptPinStore {
 	return &memAptPinStore{
-		index: make(map[string]map[string]string),
-		pool:  make(map[string]map[string]string),
+		index:     make(map[string]map[string]string),
+		highwater: make(map[string]time.Time),
+		pool:      make(map[string]map[string]string),
 	}
 }
 
@@ -130,14 +145,22 @@ func memKey(parts ...string) string {
 	return out
 }
 
-func (m *memAptPinStore) ReplaceIndexPins(_ context.Context, scope, repo, suite string, pins map[string]string) error {
+func (m *memAptPinStore) ReplaceIndexPins(_ context.Context, scope, repo, suite string, indexDate time.Time, pins map[string]string) error {
+	if indexDate.IsZero() {
+		return fmt.Errorf("apt pins: ReplaceIndexPins requires a non-zero InRelease Date")
+	}
 	cp := make(map[string]string, len(pins))
 	for k, v := range pins {
 		cp[k] = v
 	}
+	k := memKey(scope, repo, suite)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.index[memKey(scope, repo, suite)] = cp
+	if hw, ok := m.highwater[k]; ok && indexDate.Before(hw) {
+		return fmt.Errorf("%w: got %s, high-water %s", ErrIndexRollback, indexDate.UTC().Format(time.RFC3339), hw.UTC().Format(time.RFC3339))
+	}
+	m.index[k] = cp
+	m.highwater[k] = indexDate.UTC()
 	return nil
 }
 

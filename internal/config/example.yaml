@@ -174,12 +174,14 @@ protocols:
         official: true
 
     verification:
-      # Without cosign keys, OCI tops out at consensus or tofu.
-      # Copy-paste for signed (CN-safe keyed; tlog MUST stay false):
+      # Without cosign keys / trusted_root, OCI tops out at consensus or tofu.
+      # Copy-paste for signed (CN-safe; tlog MUST stay false):
       #   tiers: [signed, tofu, checksum]
       #   cosign:
       #     keys: [/etc/specula/keys/cosign.pub]
       #     tlog: false
+      #     # Or air-gap Fulcio CAs (offline cert-backed; no Rekor):
+      #     # trusted_root: /etc/specula/sigstore/trusted_root.json
       # Full cookbook: docs/TRUST.md
       tiers: [tofu, checksum]
       quorum: 2
@@ -229,9 +231,9 @@ protocols:
       tofu: enforce   # pin digest on first fetch; alert on later change
       # Cool-down / maturity (PRD v0.10; docs/TRUST.md §5) — policy gate, not a trust tier.
       # Hold versions younger than min_age to shrink maintainer-hijack publish windows.
-      # maturity:
-      #   min_age: 72h
-      #   policy: warn          # warn | enforce
+      maturity:
+        min_age: 72h
+        policy: enforce
       # Dependency-confusion guard (DESIGN-REVIEW §4 / docs/TRUST.md):
       # PyPI is a FLAT namespace — list exact private names you own.
       # dependency_confusion:
@@ -250,22 +252,29 @@ protocols:
         base_url: https://registry.npmmirror.com
         priority: 1
         official: false
+      - name: huawei-npm
+        base_url: https://repo.huaweicloud.com/repository/npm
+        priority: 2
+        official: false
       - name: npm-registry
         base_url: https://registry.npmjs.org
-        priority: 2
+        priority: 3
         official: true
 
     verification:
       # npm provenance uses Sigstore/Rekor (blocked in CN) with ~3–12% coverage.
-      # Best achievable: consensus + TOFU.
+      # Consensus = packument dist.integrity (sha512 SSRI) quorum across mirrors
+      # + body SSRI bind — NOT a fake sha256↔CAS compare. Stack with maturity +
+      # sole-index / dep-confusion (docs/TRUST.md).
       tiers: [consensus, tofu, checksum]
       quorum: 2
       tofu: enforce
-      # maturity:
-      #   min_age: 72h
-      #   policy: warn
+      # Cool-down: without maturity, a hijacked publish is a known window.
+      maturity:
+        min_age: 72h
+        policy: enforce
       # Dependency-confusion guard (docs/TRUST.md): scopes are resistant by
-      # design; unscoped private names need an explicit denylist.
+      # design; unscoped private names need an explicit denylist + sole registry=.
       # dependency_confusion:
       #   private_scopes: ["@myorg"]
       #   private_unscoped: ["internal-svc"]
@@ -407,8 +416,11 @@ protocols:
         official: true
 
     verification:
-      # tarball upstreams rarely advertise digests for cross-mirror consensus —
-      # prefer tofu (immutable pin) unless you configure multiple digest-capable mirrors.
+      # No metadata digest to cross-check — NEVER claim consensus. Floor:
+      # tofu enforce + caller ?digest=sha256:… pin (handler rejects mismatch).
+      # Optional SSRF allowlist / origin is separate. Cross-source content
+      # equality requires the caller-pinned digest (or a future explicit
+      # multi-blob strategy — not default).
       tiers: [tofu, checksum]
       quorum: 1
       tofu: enforce   # tarball content is immutable once cached; pin its digest
@@ -491,12 +503,15 @@ protocols:
           base_url: https://rsproxy.cn/index
 
     verification:
-      tiers: [tofu, checksum]
+      # Consensus = sparse-index cksum quorum (Content-ID) + body bind; indexes
+      # without cksum abstain. With one non-official index, quorum stays 1
+      # (official index is the origin witness). Raise quorum when adding indexes.
+      tiers: [consensus, tofu, checksum]
       quorum: 1
       tofu: enforce
-      # maturity:
-      #   min_age: 72h
-      #   policy: warn
+      maturity:
+        min_age: 72h
+        policy: enforce
 
   # ── conda (channel proxy) ─────────────────────────────────────────────────
   conda:

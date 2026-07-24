@@ -38,18 +38,24 @@ var validOnPrivateDown = map[string]bool{
 }
 
 // MetadataConsensusProtocols is the set of protocols for which cross-source
-// consensus is actually BUILDABLE metadata-only: their mirror metadata advertises
-// a per-file sha256 that independent mirrors can be polled for without fetching
-// the blob (pypi's PEP 503 `#sha256=`, oci's manifest digest). npm advertises
-// sha512 integrity and tarball advertises nothing, so their consensus tier is a
-// documented no-op that downgrades to tofu at boot — those protocols must NOT be
-// subjected to the quorum-vs-mirrors check below, since the tier never runs.
+// consensus is actually BUILDABLE from metadata-only mirror polls (no full-blob
+// multi-download):
+//
+//   - oci / pypi: advertised sha256 comparable to CAS art.Digest
+//   - npm: packument dist.integrity (SSRI sha512) — Content-ID quorum + body bind
+//   - cargo: sparse-index cksum — Content-ID quorum + body bind
+//
+// Generic tarball advertises nothing, so its consensus tier stays a documented
+// no-op that downgrades to tofu at boot — it must NOT be subjected to the
+// quorum-vs-mirrors check below.
 //
 // This is the single source of truth for that capability; cmd/specula's verifier
 // build reads the same fact (kept in sync deliberately — see buildConsensusVerifier).
 var MetadataConsensusProtocols = map[string]bool{
-	"oci":  true,
-	"pypi": true,
+	"oci":   true,
+	"pypi":  true,
+	"npm":   true,
+	"cargo": true,
 }
 
 // countConsensusMirrors returns the number of independent mirrors a consensus
@@ -241,8 +247,8 @@ func Validate(cfg *Config) error {
 		// upstream becomes the origin WITNESS, not a mirror, so two upstreams with
 		// quorum:2 leaves a single voter and the tier can never pass — every fetch
 		// of that protocol would then fail closed forever. Only checked for
-		// protocols whose consensus is genuinely buildable metadata-only; npm/tarball
-		// downgrade to tofu and must not be rejected. effectiveQuorum >= 1 is assumed
+		// protocols whose consensus is genuinely buildable; tarball downgrades to
+		// tofu and must not be rejected. effectiveQuorum >= 1 is assumed
 		// (the guard above already fired otherwise, but we still want a clean number).
 		if hasConsensus && MetadataConsensusProtocols[name] && effectiveQuorum >= 1 {
 			if mirrors := countConsensusMirrors(proto); effectiveQuorum > mirrors {
@@ -256,16 +262,16 @@ func Validate(cfg *Config) error {
 		}
 
 		// cosign block (only meaningful for "oci"): tlog must be false
-		// (keyless/transparency-log verification is unsupported) and at least
-		// one public key is required.
+		// (online Rekor is unsupported) and at least one authenticity anchor
+		// (keys and/or trusted_root) is required.
 		if cs := proto.Verification.Cosign; cs != nil {
 			if cs.Tlog {
 				add("protocols.%s.verification.cosign.tlog: must be false "+
-					"(keyless/transparency-log verification is unsupported)", name)
+					"(online transparency-log verification is unsupported)", name)
 			}
-			if len(cs.Keys) == 0 {
-				add("protocols.%s.verification.cosign.keys: at least one public "+
-					"key is required when the cosign block is set", name)
+			if len(cs.Keys) == 0 && strings.TrimSpace(cs.TrustedRoot) == "" {
+				add("protocols.%s.verification.cosign: at least one of keys or "+
+					"trusted_root is required when the cosign block is set", name)
 			}
 		}
 

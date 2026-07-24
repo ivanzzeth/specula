@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/ProtonMail/go-crypto/openpgp"
 	"github.com/ProtonMail/go-crypto/openpgp/armor"
@@ -80,12 +81,18 @@ func writeQuarantine(t *testing.T, content []byte) (path, digestFull string) {
 
 // signInRelease creates a clear-signed InRelease document that pins the provided
 // suite-relative file SHA256s. The format matches what GPGVerifier.verifyInRelease
-// expects: a clear-signed RFC2822 paragraph with a "SHA256:" multi-line field.
+// expects: a clear-signed RFC2822 paragraph with Date + "SHA256:" multi-line field.
 //
 // Each entry in sums is "<sha256hex> <size> <relpath>".
 func signInRelease(t *testing.T, key *aptTestKey, sums []string) []byte {
+	return signInReleaseAt(t, key, time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC), sums)
+}
+
+// signInReleaseAt is signInRelease with an explicit Date (anti-rollback tests).
+func signInReleaseAt(t *testing.T, key *aptTestKey, date time.Time, sums []string) []byte {
 	t.Helper()
-	body := "Suite: noble\nCodename: noble\nSHA256:\n"
+	body := fmt.Sprintf("Origin: Ubuntu\nLabel: Ubuntu\nSuite: noble\nCodename: noble\nDate: %s\nSHA256:\n",
+		date.Format(time.RFC1123Z))
 	for _, s := range sums {
 		body += " " + s + "\n"
 	}

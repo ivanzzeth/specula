@@ -77,12 +77,12 @@
 | apt | **signed** | 发行版 keyring（预置，离线可验） | 端到端金标准 |
 | Go | **signed** | sumdb Ed25519 签名 tree head + Merkle 证明 | 经代理透传仍可验 |
 | Helm (repo) | **signed**（需配 keyring 且上游发布 `.prov`） | `.prov` GPG 签名 + keyring | 无 `.prov` 降级到 tofu（不谎称 signed）。**已验证**：`helm package --sign` 产出的真实 `.prov` 经 Specula 验证达到 signed（`TestHelmProv_RealHelm_*` + `scripts/trust-oracle-signed.sh`）。**注意**：这证明的是「我们的验证器接受真实 helm 产出的 `.prov`」，**不**代表任何公网 CN 镜像发布 `.prov`——`mirror.azure.cn/kubernetes/charts` 一个都不发（见 `scripts/trust-oracle.sh`）。故 CN 实务中 helm 通常停在 tofu，除非 operator 指向自建/发布 `.prov` 的仓库并配 keyring |
-| OCI | **signed**（需配公钥且镜像被签名） | cosign keyed（关闭 tlog）；否则 consensus/tofu | keyless 在 CN 默认不可用。**已端到端验证**：真实 `cosign sign --key --tlog-upload=false` 签名的镜像经 Specula 拉取达到 signed，未签名/被篡改（他人密钥签名）均 fail-closed 且真正到达验证器（`TestCosign_RealBinary_*`、`TestCosignVerifier_RealFetcher_*` + `scripts/trust-oracle-signed.sh`）。cosign CLI 在 CN 可经 goproxy.cn 从源码构建。**验证器只作用于镜像 manifest/index**（按上游 content-type 门控），layer/config blob 跳过——否则每个未签名的 layer 会 fail-close 整个 pull |
+| OCI | **signed**（需配公钥或 trusted_root，且镜像被签名） | cosign keyed 和/或 trusted_root Fulcio 证书链（关闭 tlog）；否则 consensus/tofu | 在线 Rekor（`tlog:true`）不支持。**keyed 已端到端验证**：真实 `cosign sign --key --tlog-upload=false`。**trusted_root**：离线校验证书链 + 叶子公钥签名（气隙自建 Fulcio）；不做 Rekor / OIDC identity 策略。验证器只作用于镜像 manifest/index |
 | git | **signed**（可选） | 签名 tag/commit（配 allowed-signers）；否则 tofu | git 对象天然 Merkle |
-| npm | **consensus / tofu** | provenance CN 不可用且覆盖 ~3–12% | 实务上 TOFU + 依赖混淆 guard；metadata 仅暴露 sha512 integrity/sha1 shasum，metadata-only 的 sha256 跨源共识不可用，故默认停在 tofu |
+| npm | **consensus / tofu** | provenance CN 不可用且覆盖 ~3–12% | **integrity 共识已接线**：packument `dist.integrity`（sha512 SSRI）跨源 quorum + 正文 SSRI 绑定（永不把 integrity 与 CAS sha256 假相等）。实务叠闸：`tofu: enforce` + `maturity.policy: enforce` + sole-index / dep-confusion |
 | PyPI | **consensus / tofu** | PEP 740 CN 不可用且覆盖 ~5% | 已接线：consensus（PEP 503 simple-index `#sha256=` 跨源 quorum 比对，metadata-only）+ TOFU |
-| tarball | **consensus / tofu** | 无原生签名 | metadata 无 sha256，metadata-only 共识不可用，默认停在 tofu；可配官方源比对 |
-| Cargo | **tofu / checksum** | sparse 索引无跨源 sha256 共识 | 索引 TOFU；`.crate` 流式 checksum，有上游 digest 则 pin |
+| tarball | **tofu** | 无原生签名 / 无 metadata digest | **不虚报 consensus**；`tofu: enforce` + 调用方 `?digest=sha256:…` 强校验；不做默认多源全量下包 |
+| Cargo | **consensus / tofu** | 无原生签名 | **索引 cksum 共识已接线**（与 npm Content-ID 同构）+ `tofu: enforce`；建议叠 maturity |
 | conda | **checksum / tofu** | repodata 提供 sha256/md5 | 包按 repodata digest pin；repodata 本身短 TTL + TOFU |
 | Hugging Face | **tofu / checksum** | 公开 Hub 对象 | 带 Authorization/cookie 透传不缓存；CDN/LFS URL 重写到 `/hf/` |
 
@@ -91,7 +91,8 @@
 - **Dependency confusion guard** — 分生态（npm scope 绑定 / PyPI 唯一 index private-first / Go 域名限定），
   私有名**私有源宕机时 fail-closed 绝不回落公网**（见 DESIGN-REVIEW §4）
 - **Anti-rollback** — TUF 式**单调版本状态**（拒绝比已见更低版本的已签名索引），
-  **不是**"按 artifact 年龄拒绝"（后者误杀钉版依赖且不防 rollback）
+  **不是**"按 artifact 年龄拒绝"（后者误杀钉版依赖且不防 rollback）。
+  已落地：Go sumdb tree-size 高水位；apt InRelease `Date` 高水位（旧但签名仍合法的索引被拒绝）。
 
 ### G3 — 高可用，进程内无共享状态
 
@@ -115,7 +116,7 @@ Specula 实例**无状态**。持久状态在：
 - 默认上游含 CN 镜像（DaoCloud、tuna、aliyun、npmmirror、goproxy.cn）
 - 镜像 fallback：主源失败试下一个；自动 block/unblock（Nexus 模式）
 - Go sumdb 走 `sum.golang.google.cn` 或 goproxy.cn `/sumdb/` 透传
-- cosign 默认 keyed（keyless 需连 Fulcio/Rekor，CN 被墙）
+- cosign 默认 `tlog: false`：keyed 公钥和/或 `trusted_root` Fulcio 证书链；在线 Rekor 不支持
 
 ### G6 — 管理平面（WebUI + 用户管理）【v0.2 新增】
 
@@ -205,11 +206,11 @@ protocols:
       tiers: [tofu, checksum]
       quorum: 2
       tofu: enforce          # 首次锁定 digest，变更告警
-      # 达到 signed 档需配 cosign 公钥。keyed 模式（CN 可用）；
-      # keyless 需 Fulcio/Rekor（CN 被墙，不支持）。
+      # 达到 signed 档需配 cosign 公钥和/或 trusted_root（tlog 必须 false）。
       # cosign:
       #   keys: [/etc/specula/keys/cosign.pub]
-      #   tlog: false          # keyless/tlog 在 CN 默认不可用
+      #   tlog: false
+      #   # trusted_root: /etc/specula/sigstore/trusted_root.json  # 气隙 Fulcio CA
       # 跨源共识（可选，抬高攻击门槛）:
       # consensus:
       #   quorum: 2
@@ -249,6 +250,7 @@ protocols:
 
   # ── npm ──────────────────────────────────────────────────────────────────────
   # scope 绑定防依赖混淆；unscoped 私有名用显式 denylist。
+  # consensus = packument dist.integrity（sha512 SSRI）跨源 quorum + 正文绑定。
   npm:
     mutable_ttl_seconds: 120
     upstreams:
@@ -256,9 +258,13 @@ protocols:
         base_url: https://registry.npmmirror.com
         priority: 1
         official: false
+      - name: huawei-npm
+        base_url: https://repo.huaweicloud.com/repository/npm
+        priority: 2
+        official: false
       - name: npm-registry
         base_url: https://registry.npmjs.org
-        priority: 2
+        priority: 3
         official: true
     verification:
       tiers: [consensus, tofu, checksum]
@@ -529,7 +535,7 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 | **v0.1** | OCI proxy + **CAS blob store** + 二层缓存 + verify-on-write + checksum/tofu 档 | ✅ done |
 | **v0.2** | 管理平面：内嵌 WebUI + 邮箱认证（首个=admin）+ 缓存统计仪表盘 | ✅ done |
 | **v0.3** | Go module proxy（sumdb 透传验证）+ PyPI（单 index + 共识 + dep-confusion）| ✅ done（PyPI consensus 已接线，metadata-only sha256）|
-| **v0.4** | npm（scope 绑定 + 共识）+ apt（GPG 端到端验证）| ✅ done（npm scope/dep-confusion + apt GPG；npm consensus 受 sha512-only metadata 限制停在 tofu）|
+| **v0.4** | npm（scope 绑定 + 共识）+ apt（GPG 端到端验证）| ✅ done（npm scope/dep-confusion + apt GPG；npm **integrity Content-ID 共识**已接线）|
 | **v0.5** | cosign keyed（OCI signed 档）+ Helm（.prov signed 档）| ✅ done（cosign keyed 校验 + 签名发现均已接线）|
 | **v0.6** | git clone 加速（bare mirror + 签名 ref 验证 + force-push 告警）| ✅ done |
 | **v0.7** | PostgreSQL HA + 分布式 stampede 锁 + 跨节点统计聚合 | ✅ done（PG + redis coalesce + `scripts/ha-minikube.sh`：暖缓存 / 杀副本 / 再拉命中）|
@@ -537,7 +543,7 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 | **v0.9** | Cargo sparse + conda channel + Hugging Face Hub（`HF_ENDPOINT`）| ✅ done |
 | **v0.10** | 供应链入口治理：新版本冷静期（maturity）+ 依赖混淆防呆 + Events 可行动化 | ✅ done |
 | **v0.11** | HA coalesce 补齐：`lock_driver=postgres`（PGAdvisoryLocker）+ tarball `WithLocker`；文档对齐 redis/postgres 双驱动 | ✅ done |
-| **v0.12** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）| ☐ planned |
+| **v0.12** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）| ◐ partial（anti-rollback：apt Date + sumdb tree-size；**SBOM**：`GET /api/v1/admin/sbom` CycloneDX 缓存库存；**trusted_root**：离线 Fulcio 证书链验签已接线，`tlog:false` 仍不做在线 Rekor / OIDC identity）|
 | **v1.0** | **稳定发布门槛**（非功能大包）：API/配置兼容承诺、默认路径 hardening 收口、回归与运维手册齐套；不把未验证能力塞进 1.0 | ☐ planned |
 
 > **v0.x vs v1.0**：功能里程碑继续走 `0.12+`；**v1.0 只表示「可以当稳定产品依赖」**，不是下一批功能的堆叠窗口。
@@ -553,4 +559,4 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 > 堵住客户端双源；用 **Events 持久化 + TOFU 漂移** 让告警可行动。明确不承诺防 XZ 类
 > 「仍带合法签名的长线投毒」。
 
-> v0.2-hardening / main 说明：11 协议数据面 + 四档诚实信任模型（checksum/tofu/consensus/signed）已端到端接线。consensus 引擎（quorum + origin-check + 并行取 digest）与 cosign keyed 锚均已实现并从 config 自动装配、按协议自门控。metadata-only 的 sha256 跨源共识当前仅对 OCI（Docker-Content-Digest）与 PyPI（PEP 503 `#sha256=`）可用；npm/tarball/cargo 因 metadata 不暴露跨源 sha256 默认停在 tofu，绝不 fail-close 真实拉取。
+> v0.2-hardening / main 说明：11 协议数据面 + 四档诚实信任模型（checksum/tofu/consensus/signed）已端到端接线。consensus 引擎（quorum + origin-check + 并行取 digest）与 cosign keyed 锚均已实现并从 config 自动装配、按协议自门控。CAS-sha256 跨源共识：OCI（Docker-Content-Digest）、PyPI（PEP 503 `#sha256=`）。Content-ID 共识：npm（packument `dist.integrity` SSRI）与 cargo（sparse-index `cksum`）——镜子 quorum + 正文绑定，**永不**把 sha512 integrity 与 CAS sha256 假相等。tarball 无 metadata identity → 诚实停在 tofu + `?digest=` pin，不做默认多源全量下包。

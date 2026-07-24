@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,6 +22,8 @@ import (
 )
 
 const testScope = "anchor-fingerprint-digest"
+
+var testDate = time.Date(2024, 6, 15, 12, 0, 0, 0, time.UTC)
 
 func newStore(t *testing.T) *aptpins.Store {
 	t.Helper()
@@ -42,7 +45,7 @@ func TestIndexPins_RoundTrip(t *testing.T) {
 		"main/binary-amd64/Packages.xz": "aaa",
 		"main/i18n/Translation-en":      "bbb",
 	}
-	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", want))
+	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", testDate, want))
 
 	got, err := s.IndexPins(ctx, testScope, "ubuntu", "noble")
 	require.NoError(t, err)
@@ -60,6 +63,22 @@ func TestIndexPins_AbsentSuite_IsEmptyNotError(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestReplaceIndexPins_AntiRollback(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	older := testDate.Add(-24 * time.Hour)
+	newer := testDate
+
+	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", newer, map[string]string{"p": "new"}))
+	err := s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", older, map[string]string{"p": "old"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, aptpins.ErrIndexRollback)
+
+	got, err := s.IndexPins(ctx, testScope, "ubuntu", "noble")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"p": "new"}, got, "pins must be unchanged after rejected rollback")
+}
+
 // TestReplaceIndexPins_Replaces asserts REPLACE semantics: a path the previous
 // InRelease listed and the new one does not must be gone. Merging would let a
 // superseded signed index be served forever.
@@ -67,11 +86,11 @@ func TestReplaceIndexPins_Replaces(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", map[string]string{
+	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", testDate, map[string]string{
 		"old/Packages":  "old-hash",
 		"kept/Packages": "v1",
 	}))
-	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", map[string]string{
+	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", testDate, map[string]string{
 		"kept/Packages": "v2",
 	}))
 
@@ -87,12 +106,12 @@ func TestReplaceIndexPins_ScopedBySuiteAndRepo(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", map[string]string{"p": "noble-hash"}))
-	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "jammy", map[string]string{"p": "jammy-hash"}))
-	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "debian", "noble", map[string]string{"p": "debian-hash"}))
+	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", testDate, map[string]string{"p": "noble-hash"}))
+	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "jammy", testDate, map[string]string{"p": "jammy-hash"}))
+	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "debian", "noble", testDate, map[string]string{"p": "debian-hash"}))
 
 	// Rotate only ubuntu/noble.
-	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", map[string]string{"p": "noble-hash-2"}))
+	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", testDate, map[string]string{"p": "noble-hash-2"}))
 
 	for _, tc := range []struct{ repo, suite, want string }{
 		{"ubuntu", "noble", "noble-hash-2"},
@@ -111,7 +130,7 @@ func TestReplaceIndexPins_ScopedByAnchor(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.ReplaceIndexPins(ctx, "anchor-A", "ubuntu", "noble", map[string]string{"p": "hash-A"}))
+	require.NoError(t, s.ReplaceIndexPins(ctx, "anchor-A", "ubuntu", "noble", testDate, map[string]string{"p": "hash-A"}))
 
 	got, err := s.IndexPins(ctx, "anchor-B", "ubuntu", "noble")
 	require.NoError(t, err)
@@ -130,7 +149,7 @@ func TestReplaceIndexPins_LargeIndex_CrossesBatchBoundary(t *testing.T) {
 	for i := range n {
 		pins[fmt.Sprintf("main/binary-amd64/part-%04d", i)] = fmt.Sprintf("hash-%04d", i)
 	}
-	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", pins))
+	require.NoError(t, s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", testDate, pins))
 
 	got, err := s.IndexPins(ctx, testScope, "ubuntu", "noble")
 	require.NoError(t, err)
@@ -281,7 +300,7 @@ func TestReplaceIndexPins_ConcurrentSameInRelease(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs[i] = s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", pins)
+			errs[i] = s.ReplaceIndexPins(ctx, testScope, "ubuntu", "noble", testDate, pins)
 		}()
 	}
 	wg.Wait()

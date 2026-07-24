@@ -350,10 +350,13 @@ type ProtocolConfigView struct {
 // It answers "will OCI reach signed?" and "is maturity on?" without dumping
 // secrets or filesystem paths into the browser.
 type ProtocolTrustView struct {
-	// CosignConfigured is true when at least one keyed cosign public key is set.
+	// CosignConfigured is true when keyed cosign keys and/or trusted_root is set.
 	CosignConfigured bool `json:"cosign_configured"`
 	// CosignKeyCount is the number of configured public keys (0 when none).
 	CosignKeyCount int `json:"cosign_key_count"`
+	// TrustedRootConfigured is true when cosign.trusted_root is set (Fulcio CA
+	// material for offline cert-backed verification; tlog still disabled).
+	TrustedRootConfigured bool `json:"trusted_root_configured"`
 	// Tofu is "enforce" | "warn" | "" (tiers alone govern TOFU when empty).
 	Tofu string `json:"tofu,omitempty"`
 	// MaturityEnabled is true when maturity.min_age is set.

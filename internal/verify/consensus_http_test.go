@@ -392,30 +392,8 @@ func TestHTTPMirrorDigestFetcher_PyPI_ServerError(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FetchDigest — unsupported protocols
+// FetchDigest — unsupported protocols (no metadata content identity)
 // ─────────────────────────────────────────────────────────────────────────────
+// Covered in consensus_npm_cargo_http_test.go (npm/cargo now supported; tarball
+// and others still error).
 
-// TestHTTPMirrorDigestFetcher_UnsupportedProtocol verifies that protocols without
-// metadata-only sha256 availability (npm, gomod, apt, helm, tarball, git) return
-// an error so they never claim consensus they didn't actually check.
-//
-// DESIGN-REVIEW §1.2: "For ecosystems whose metadata does NOT expose a sha256,
-// FetchDigest returns an error: that mirror simply casts no vote."
-func TestHTTPMirrorDigestFetcher_UnsupportedProtocol(t *testing.T) {
-	unsupported := []string{"npm", "gomod", "apt", "helm", "tarball", "git"}
-	f := NewHTTPMirrorDigestFetcher(5 * time.Second)
-	mirror := ConsensusMirror{Name: "test", BaseURL: "http://example.com"}
-
-	for _, proto := range unsupported {
-		t.Run(proto, func(t *testing.T) {
-			ref := artifact.ArtifactRef{
-				Protocol: proto,
-				Name:     "example",
-				Version:  "1.0.0",
-			}
-			_, err := f.FetchDigest(t.Context(), mirror, ref)
-			require.Error(t, err, "%s: unsupported protocol must return error", proto)
-			assert.Contains(t, err.Error(), proto)
-		})
-	}
-}
