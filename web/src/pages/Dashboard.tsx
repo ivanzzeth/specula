@@ -14,7 +14,8 @@
  * an ops-page detail — they are this page's primary content.
  *
  * HONESTY CONTRACT (REGISTRY-DESIGN §5.0):
- *   · No hit/miss ratio — the API does not expose one. We do not invent it.
+ *   · Hit rate uses cache_hits_total / cache_misses_total (body origin). When
+ *     both are 0, render "—" — never invent a 0%.
  *   · No tier distribution here — that needs per-protocol cache queries; the
  *     Cache Browser answers "was this verified?" per entry instead.
  *   · `backend_disk_*` is the backend store's disk, not necessarily the host's.
@@ -25,8 +26,8 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 
-import { getStats, getStatsSeries } from '@/api/client';
-import type { StatsResponse, SeriesResponse } from '@/api/types';
+import { getEventsSeries, getStats, getStatsSeries } from '@/api/client';
+import type { StatsResponse, SeriesResponse, EventsSeriesResponse } from '@/api/types';
 import { Card, CardContent, CardHeader, CardTitle, Readout } from '@/components/ui/card';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import {
@@ -46,16 +47,22 @@ export function Dashboard() {
   const { t } = useTranslation();
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [series, setSeries] = useState<SeriesResponse | null>(null);
+  const [eventsSeries, setEventsSeries] = useState<EventsSeriesResponse | null>(null);
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // The series is supplementary: if it fails, the page is still useful, so it
-    // must not take the whole overview down with it.
-    Promise.all([getStats(), getStatsSeries().catch(() => null)])
-      .then(([s, sr]) => {
+    // Series / events trend are supplementary: if either fails, the page is
+    // still useful, so they must not take the whole overview down with them.
+    Promise.all([
+      getStats(),
+      getStatsSeries().catch(() => null),
+      getEventsSeries({ window: 86400, bucket: 3600 }).catch(() => null),
+    ])
+      .then(([s, sr, es]) => {
         setStats(s);
         setSeries(sr);
+        setEventsSeries(es);
       })
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
@@ -109,7 +116,16 @@ export function Dashboard() {
   const perProtocol = stats.per_protocol ?? [];
   const hasPerProtocol = perProtocol.length > 0;
   const hasSeries = (series?.points?.length ?? 0) > 0;
-  const showCharts = hasPerProtocol || hasSeries;
+  const hasEventsSeries = (eventsSeries?.points?.length ?? 0) > 0;
+  const showCharts = hasPerProtocol || hasSeries || hasEventsSeries;
+
+  const hits = stats.cache_hits_total ?? 0;
+  const misses = stats.cache_misses_total ?? 0;
+  const outcomeTotal = hits + misses;
+  const hitRateLabel =
+    outcomeTotal > 0
+      ? `${Math.round((hits / outcomeTotal) * 1000) / 10}%`
+      : t('dashboard.hitRateNone');
 
   return (
     <div className="space-y-3">
@@ -118,7 +134,7 @@ export function Dashboard() {
       {/* ── Readout tiles ─────────────────────────────────────────────────────
           Hairline grid: the 1px gap IS the border (gap-px over a slate-800
           field), so tiles read as one instrument cluster rather than cards. */}
-      <div className="grid grid-cols-2 gap-px border border-slate-800 bg-slate-800 sm:grid-cols-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-px border border-slate-800 bg-slate-800 sm:grid-cols-3 lg:grid-cols-6">
         <Readout
           label={t('dashboard.totalObjects')}
           value={stats.total_objects.toLocaleString()}
@@ -128,6 +144,12 @@ export function Dashboard() {
         <Readout
           label={t('dashboard.totalCached')}
           value={formatBytes(stats.total_bytes)}
+          className="bg-slate-900"
+        />
+        <Readout
+          label={t('dashboard.hitRate')}
+          value={hitRateLabel}
+          hint={t('dashboard.hitRateHint')}
           className="bg-slate-900"
         />
         <Readout
@@ -285,7 +307,11 @@ export function Dashboard() {
                 </div>
               }
             >
-              <CacheCharts protocolStats={perProtocol} seriesPoints={series?.points ?? []} />
+              <CacheCharts
+                protocolStats={perProtocol}
+                seriesPoints={series?.points ?? []}
+                eventsPoints={eventsSeries?.points ?? []}
+              />
             </Suspense>
           </CardContent>
         </Card>

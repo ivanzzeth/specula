@@ -52,11 +52,16 @@ type StatsResponse struct {
 	CachedObjects int64 `json:"cached_objects"`
 	BackendDiskFree int64 `json:"backend_disk_free"`
 	BackendDiskUsed int64 `json:"backend_disk_used"`
-	// MaxBytes is cache.max_bytes (0 = unlimited).
+	// MaxBytes is the effective cache.max_bytes ceiling (0 = unlimited).
 	MaxBytes int64 `json:"max_bytes"`
 	// EvictedBytes/Objects are process-lifetime eviction totals (reset on restart).
 	EvictedBytes   int64 `json:"evicted_bytes"`
 	EvictedObjects int64 `json:"evicted_objects"`
+	// CacheHitsTotal / CacheMissesTotal are process-lifetime request outcomes
+	// (body origin: hit = served without upstream body fetch). Reset on restart.
+	// When both are 0, the UI must render "—" for hit rate (no data), not 0%.
+	CacheHitsTotal   uint64 `json:"cache_hits_total"`
+	CacheMissesTotal uint64 `json:"cache_misses_total"`
 }
 
 // InstanceStatsResponse is GET /api/v1/stats: cache occupancy plus live traffic.
@@ -296,6 +301,25 @@ type EventsResponse struct {
 	Events []VerificationEvent `json:"events"`
 }
 
+// EventsSeriesPoint is one time bucket of verification outcomes for the
+// dashboard alert trend (REGISTRY-DESIGN §5.3).
+type EventsSeriesPoint struct {
+	Unix     int64 `json:"unix"` // bucket start (Unix seconds)
+	Fail     int   `json:"fail"`
+	Warn     int   `json:"warn"`
+	Maturity int   `json:"maturity"` // subset of fail/warn with kind=maturity
+	Tofu     int   `json:"tofu"`     // subset with kind=tofu
+}
+
+// EventsSeriesResponse is GET /api/v1/admin/events/series.
+type EventsSeriesResponse struct {
+	// BucketSeconds is the bucket width used (default 3600).
+	BucketSeconds int64               `json:"bucket_seconds"`
+	// WindowSeconds is how far back from now was considered.
+	WindowSeconds int64               `json:"window_seconds"`
+	Points        []EventsSeriesPoint `json:"points"`
+}
+
 // ---- config snapshot (GET /api/v1/admin/config) ------------------------------
 
 // UpstreamView is a redacted upstream entry for the config snapshot.
@@ -312,10 +336,39 @@ type ProtocolConfigView struct {
 	Upstreams     []UpstreamView `json:"upstreams"`
 	VerifyTiers   []string       `json:"verify_tiers"`
 	MutableTTLSec int64          `json:"mutable_ttl_seconds"`
+	// Trust summarises verification / policy knobs that decide whether a
+	// protocol can honestly reach signed / enforce cool-down / guard confusion.
+	// Paths to keys are not echoed; only configured / counts / policy strings.
+	Trust ProtocolTrustView `json:"trust"`
 	// Sources lists multi-root allowlist entries (apt archives, helm repos,
 	// conda channels, cargo registries, oci remote_registries). Empty when
 	// the protocol has no named-source allowlist configured.
 	Sources []NamedSourceView `json:"sources,omitempty"`
+}
+
+// ProtocolTrustView is the operator-facing trust/policy posture for one protocol.
+// It answers "will OCI reach signed?" and "is maturity on?" without dumping
+// secrets or filesystem paths into the browser.
+type ProtocolTrustView struct {
+	// CosignConfigured is true when at least one keyed cosign public key is set.
+	CosignConfigured bool `json:"cosign_configured"`
+	// CosignKeyCount is the number of configured public keys (0 when none).
+	CosignKeyCount int `json:"cosign_key_count"`
+	// Tofu is "enforce" | "warn" | "" (tiers alone govern TOFU when empty).
+	Tofu string `json:"tofu,omitempty"`
+	// MaturityEnabled is true when maturity.min_age is set.
+	MaturityEnabled bool `json:"maturity_enabled"`
+	// MaturityMinAge echoes the configured duration (e.g. "72h").
+	MaturityMinAge string `json:"maturity_min_age,omitempty"`
+	// MaturityPolicy is "warn" | "enforce" when maturity is enabled.
+	MaturityPolicy string `json:"maturity_policy,omitempty"`
+	// DepConfusionEnabled is true when a dependency_confusion block is present.
+	DepConfusionEnabled bool `json:"dep_confusion_enabled"`
+	// PrivateNameCount / PrivateScopeCount summarise private package bindings.
+	PrivateNameCount  int `json:"private_name_count,omitempty"`
+	PrivateScopeCount int `json:"private_scope_count,omitempty"`
+	// KeyringConfigured is true when apt/helm GPG keyring path is set.
+	KeyringConfigured bool `json:"keyring_configured"`
 }
 
 // NamedSourceView is one allowlisted named upstream root (archive/repo/channel).
@@ -328,11 +381,17 @@ type NamedSourceView struct {
 // ConfigResponse is the running configuration snapshot with all secrets
 // (JWT secret, admin key, S3 credentials) redacted.
 type ConfigResponse struct {
-	DataPlaneAddr    string               `json:"data_plane_addr"`
-	ControlPlaneAddr string               `json:"control_plane_addr"`
-	BlobDriver       string               `json:"blob_driver"`
-	MetaDriver       string               `json:"meta_driver"`
-	Protocols        []ProtocolConfigView `json:"protocols"`
+	DataPlaneAddr    string `json:"data_plane_addr"`
+	ControlPlaneAddr string `json:"control_plane_addr"`
+	BlobDriver       string `json:"blob_driver"`
+	MetaDriver       string `json:"meta_driver"`
+	// HA echoes server.ha (multi-replica posture).
+	HA bool `json:"ha"`
+	// Mode is "online" or "offline" (empty from YAML → "online").
+	Mode string `json:"mode"`
+	// LockDriver is the effective coalesce lock backend: local | redis | postgres.
+	LockDriver string `json:"lock_driver"`
+	Protocols  []ProtocolConfigView `json:"protocols"`
 }
 
 // ---- orgs (GET/POST /api/v1/orgs, GET /api/v1/orgs/{id}) --------------------

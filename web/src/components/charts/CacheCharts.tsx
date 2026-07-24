@@ -63,12 +63,17 @@ import {
   LabelList,
   AreaChart,
   Area,
+  LineChart,
+  Line,
+  Legend,
 } from 'recharts';
-import type { ProtocolStat, SeriesPoint } from '@/api/types';
+import type { ProtocolStat, SeriesPoint, EventsSeriesPoint } from '@/api/types';
 import { formatBytes } from '@/lib/utils';
 
 // ── Design-system tokens (must stay in sync with tailwind.config.js) ─────────
 const AMBER = '#ffb02e';
+const RED = '#e35d5d';
+const TOFU = '#c4a35a';
 const SLATE_950 = '#0a0908'; // app bg (active dot ring)
 const SLATE_800 = '#1c1a16'; // hairline border / grid
 const SLATE_900 = '#131210'; // panel surface / tooltip bg
@@ -217,17 +222,118 @@ function BytesTimeSeriesChart({ points }: { points: SeriesPoint[] }) {
   );
 }
 
+// ── Verification alert trend — stacked lines ─────────────────────────────────
+
+function EventsTrendChart({ points }: { points: EventsSeriesPoint[] }) {
+  const { t, i18n } = useTranslation();
+  const data = points.map((p) => ({
+    date: new Date(p.unix * 1000).toLocaleTimeString(i18n.language, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+    }),
+    fail: p.fail,
+    warn: p.warn,
+    maturity: p.maturity,
+    tofu: p.tofu,
+  }));
+  const hasSignal = points.some((p) => p.fail + p.warn + p.maturity + p.tofu > 0);
+  if (!hasSignal) return null;
+
+  return (
+    <ResponsiveContainer width="100%" height={152}>
+      <LineChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke={SLATE_800} vertical={false} />
+        <XAxis
+          dataKey="date"
+          tick={{ fill: SLATE_400, fontSize: 11, fontFamily: 'inherit' }}
+          axisLine={false}
+          tickLine={false}
+        />
+        <YAxis
+          allowDecimals={false}
+          tick={{ fill: SLATE_400, fontSize: 11, fontFamily: 'inherit' }}
+          axisLine={false}
+          tickLine={false}
+          width={28}
+        />
+        <Tooltip
+          contentStyle={TOOLTIP_STYLE}
+          labelStyle={TOOLTIP_LABEL_STYLE}
+          cursor={TOOLTIP_CURSOR_LINE}
+        />
+        <Legend
+          wrapperStyle={{ fontSize: 11, color: SLATE_400 }}
+          formatter={(value: string) => {
+            const labels: Record<string, string> = {
+              fail: t('charts.tooltipFail'),
+              warn: t('charts.tooltipWarn'),
+              maturity: t('charts.tooltipMaturity'),
+              tofu: t('charts.tooltipTofu'),
+            };
+            return labels[value] ?? value;
+          }}
+        />
+        <Line
+          type="monotone"
+          dataKey="fail"
+          name="fail"
+          stroke={RED}
+          strokeWidth={1.5}
+          dot={false}
+          isAnimationActive={false}
+        />
+        <Line
+          type="monotone"
+          dataKey="warn"
+          name="warn"
+          stroke={TOFU}
+          strokeWidth={1.5}
+          dot={false}
+          isAnimationActive={false}
+        />
+        <Line
+          type="monotone"
+          dataKey="maturity"
+          name="maturity"
+          stroke={AMBER}
+          strokeWidth={1}
+          strokeDasharray="4 3"
+          dot={false}
+          isAnimationActive={false}
+        />
+        <Line
+          type="monotone"
+          dataKey="tofu"
+          name="tofu"
+          stroke={SLATE_400}
+          strokeWidth={1}
+          strokeDasharray="2 3"
+          dot={false}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
 // ── Default export: combined charts container (for React.lazy) ─────────────────
 
 export interface CacheChartsProps {
   protocolStats: ProtocolStat[];
   seriesPoints: SeriesPoint[];
+  eventsPoints?: EventsSeriesPoint[];
 }
 
-export default function CacheCharts({ protocolStats, seriesPoints }: CacheChartsProps) {
+export default function CacheCharts({
+  protocolStats,
+  seriesPoints,
+  eventsPoints = [],
+}: CacheChartsProps) {
   const { t } = useTranslation();
   const hasBytes = protocolStats.some((s) => s.bytes > 0);
   const hasSeries = seriesPoints.length > 0;
+  const hasEvents = eventsPoints.some((p) => p.fail + p.warn + p.maturity + p.tofu > 0);
 
   return (
     <div className="space-y-5">
@@ -241,6 +347,12 @@ export default function CacheCharts({ protocolStats, seriesPoints }: CacheCharts
         <div>
           <p className="section-label mb-2">{t('charts.cacheGrowth')}</p>
           <BytesTimeSeriesChart points={seriesPoints} />
+        </div>
+      )}
+      {hasEvents && (
+        <div>
+          <p className="section-label mb-2">{t('charts.alertTrend')}</p>
+          <EventsTrendChart points={eventsPoints} />
         </div>
       )}
     </div>

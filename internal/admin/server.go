@@ -87,12 +87,23 @@ type Deps struct {
 	// Optional: when nil, the endpoint returns an empty list (legacy behaviour).
 	Events EventLister
 
+	// Capacity reports/updates the pull-through cache max_bytes ceiling.
+	// Optional: when nil, stats fall back to Config.Cache.MaxBytes.
+	Capacity CacheCapacity
+
 	// ── runtime settings ─────────────────────────────────────────────────────
 
 	// Settings resolves runtime settings over (bootstrap config/env + the
 	// encrypted configstore), backing /api/v1/admin/settings. Optional: when nil
 	// the settings endpoints return 503.
 	Settings SettingsResolver
+}
+
+// CacheCapacity is the narrow slice of the cache manager used for capacity
+// stats and runtime max_bytes hot-reload.
+type CacheCapacity interface {
+	MaxBytes() int64
+	SetMaxBytes(n int64)
 }
 
 // Server holds the admin API dependencies and serves the /api/v1 routes.
@@ -122,6 +133,7 @@ type Server struct {
 	tags      repo.TagStore
 	upstreams *upstream.Registry
 	events    EventLister
+	capacity  CacheCapacity
 
 	// runtime settings resolver (nil → the settings endpoints answer 503)
 	settings SettingsResolver
@@ -156,6 +168,7 @@ func New(deps Deps) *Server {
 		tags:      deps.TagStore,
 		upstreams: deps.Upstreams,
 		events:    deps.Events,
+		capacity:  deps.Capacity,
 
 		settings: deps.Settings,
 	}

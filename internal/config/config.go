@@ -625,6 +625,36 @@ type DependencyConfusionConfig struct {
 	OnPrivateDown string `koanf:"on_private_down"`
 }
 
+
+// EffectiveMode returns "online" or "offline". Empty Mode is treated as online.
+func (c *Config) EffectiveMode() string {
+	if c == nil {
+		return "online"
+	}
+	m := strings.ToLower(strings.TrimSpace(c.Server.Mode))
+	if m == "offline" {
+		return "offline"
+	}
+	return "online"
+}
+
+// EffectiveLockDriver returns the coalesce lock backend used at runtime:
+// "redis", "postgres", or "local". Empty lock_driver under HA defaults to redis;
+// empty outside HA means in-process only ("local").
+func (c *Config) EffectiveLockDriver() string {
+	if c == nil {
+		return "local"
+	}
+	ld := strings.ToLower(strings.TrimSpace(c.Coalesce.LockDriver))
+	if c.Server.HA && ld == "" {
+		return "redis"
+	}
+	if ld == "" || ld == "local" {
+		return "local"
+	}
+	return ld
+}
+
 // Load reads and parses the YAML config file at path, applies SPECULA_*
 // environment variable overrides (highest precedence), validates the result,
 // and returns the populated Config.

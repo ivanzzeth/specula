@@ -537,7 +537,10 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 | **v0.9** | Cargo sparse + conda channel + Hugging Face Hub（`HF_ENDPOINT`）| ✅ done |
 | **v0.10** | 供应链入口治理：新版本冷静期（maturity）+ 依赖混淆防呆 + Events 可行动化 | ✅ done |
 | **v0.11** | HA coalesce 补齐：`lock_driver=postgres`（PGAdvisoryLocker）+ tarball `WithLocker`；文档对齐 redis/postgres 双驱动 | ✅ done |
-| **v1.0** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）| ☐ planned |
+| **v0.12** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）| ☐ planned |
+| **v1.0** | **稳定发布门槛**（非功能大包）：API/配置兼容承诺、默认路径 hardening 收口、回归与运维手册齐套；不把未验证能力塞进 1.0 | ☐ planned |
+
+> **v0.x vs v1.0**：功能里程碑继续走 `0.12+`；**v1.0 只表示「可以当稳定产品依赖」**，不是下一批功能的堆叠窗口。
 
 > **v0.11 动机**：v0.7 已用 redis/redsync 接线跨副本 stampede；`PGAdvisoryLocker` 与 live PG 测试早已存在，
 > 但 validate 拒绝 `lock_driver=postgres`，ARCHITECTURE §7 仍写「未接线」。v0.11 允许 Redis-free HA

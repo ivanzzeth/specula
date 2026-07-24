@@ -6,6 +6,7 @@ import {
   ApiError,
   getUpstreams,
   patchUpstream,
+  probeUpstream,
   reorderUpstreams,
   unblockUpstream,
 } from '@/api/client';
@@ -122,6 +123,28 @@ export function Upstreams() {
     }
   };
 
+  const onProbe = async (protocol: string, m: UpstreamHealth) => {
+    const key = `${protocol}/${m.name}`;
+    setBusy(key);
+    try {
+      replace(await probeUpstream(protocol, m.name));
+      toast({
+        variant: 'success',
+        title: t('upstreams.toast.probed'),
+        description: `${protocol} · ${m.name}`,
+      });
+    } catch (e: unknown) {
+      toast({
+        variant: 'destructive',
+        title: t('upstreams.toast.probeFailed'),
+        description: errText(e),
+        duration: Infinity,
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   /**
    * onReorder is called by ChainPanel after a successful drag-drop.
    * It sends the new order to the server and updates the chain in place.
@@ -218,6 +241,7 @@ export function Upstreams() {
               busy={busy}
               onToggle={(m) => void onToggle(p.protocol, m)}
               onUnblock={(m) => void onUnblock(p.protocol, m)}
+              onProbe={(m) => void onProbe(p.protocol, m)}
               onReorder={(order) => onReorder(p.protocol, order)}
             />
           </TabsContent>
@@ -263,11 +287,12 @@ interface ChainPanelProps {
   busy: string | null;
   onToggle: (m: UpstreamHealth) => void;
   onUnblock: (m: UpstreamHealth) => void;
+  onProbe: (m: UpstreamHealth) => void;
   /** Called with the full ordered name list after a successful drag-drop. Throws on failure. */
   onReorder: (newOrder: string[]) => Promise<void>;
 }
 
-function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelProps) {
+function ChainPanel({ chain, busy, onToggle, onUnblock, onProbe, onReorder }: ChainPanelProps) {
   /**
    * Drag-reorder state.
    *
@@ -506,6 +531,14 @@ function ChainPanel({ chain, busy, onToggle, onUnblock, onReorder }: ChainPanelP
                           {t('upstreams.unblock')}
                         </Button>
                       )}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={isBusy || !chain.live}
+                        onClick={() => onProbe(m)}
+                      >
+                        {t('upstreams.probe')}
+                      </Button>
                       <Button
                         size="sm"
                         variant="ghost"

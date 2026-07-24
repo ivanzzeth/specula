@@ -112,7 +112,9 @@ type manager struct {
 	coalescer coalesce.Coalescer
 
 	// maxBytes is the hard ceiling on SUM(cache_entries.size). 0 = unlimited.
-	maxBytes int64
+	// Guarded by maxBytesMu so runtime settings can hot-reload the ceiling.
+	maxBytes   int64
+	maxBytesMu sync.RWMutex
 	// evictMu serialises capacity enforcement so concurrent Stores do not
 	// over-evict under a stampede of promotions.
 	evictMu sync.Mutex
@@ -144,6 +146,25 @@ func WithMaxBytes(n int64) Option {
 		}
 		m.maxBytes = n
 	}
+}
+
+// MaxBytes returns the current capacity ceiling (0 = unlimited).
+func (m *manager) MaxBytes() int64 {
+	m.maxBytesMu.RLock()
+	defer m.maxBytesMu.RUnlock()
+	return m.maxBytes
+}
+
+// SetMaxBytes updates the capacity ceiling at runtime (settings hot-reload).
+// Negative values are treated as 0 (unlimited). Does not itself trigger an
+// eviction pass — the next Store over the ceiling will.
+func (m *manager) SetMaxBytes(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	m.maxBytesMu.Lock()
+	m.maxBytes = n
+	m.maxBytesMu.Unlock()
 }
 
 // WithLogger sets the structured logger used for capacity-eviction messages.

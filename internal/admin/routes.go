@@ -41,6 +41,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/admin/upstreams/{protocol}/reorder", adminOnly(s.handleReorderUpstreams))
 	mux.Handle("PATCH /api/v1/admin/upstreams/{protocol}/{id}", adminOnly(s.handlePatchUpstream))
 	mux.Handle("POST /api/v1/admin/upstreams/{protocol}/{id}/unblock", adminOnly(s.handleUnblockUpstream))
+	mux.Handle("POST /api/v1/admin/upstreams/{protocol}/{id}/probe", adminOnly(s.handleProbeUpstream))
 
 	// Cache browser (R3 §5.2): per-protocol paginated listing of what is
 	// actually cached, plus per-entry eviction and pin/protect. Admin-only: the
@@ -57,6 +58,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	mux.Handle("GET /api/v1/admin/config", adminOnly(s.handleConfig))
 	mux.Handle("GET /api/v1/admin/events", adminOnly(s.handleEvents))
+	mux.Handle("GET /api/v1/admin/events/series", adminOnly(s.handleEventsSeries))
 
 	// Runtime settings (ported settings layer): the writable counterpart to the
 	// read-only /admin/config echo above. GET lists every known setting with its

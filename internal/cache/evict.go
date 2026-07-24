@@ -19,7 +19,8 @@ const evictBatch = 64
 // disk is actually freed. Shared digests across remaining entries may cause a
 // temporary "meta hit, blob miss" that Lookup already treats as a miss.
 func (m *manager) enforceCapacity(ctx context.Context, protect artifact.ArtifactRef) error {
-	if m.maxBytes <= 0 {
+	maxBytes := m.MaxBytes()
+	if maxBytes <= 0 {
 		return nil
 	}
 
@@ -30,13 +31,13 @@ func (m *manager) enforceCapacity(ctx context.Context, protect artifact.Artifact
 	if err != nil {
 		return err
 	}
-	if total <= m.maxBytes {
+	if total <= maxBytes {
 		return nil
 	}
 
-	need := total - m.maxBytes
+	need := total - maxBytes
 	m.log.Info("cache: over capacity, evicting",
-		"total_bytes", total, "max_bytes", m.maxBytes, "need_bytes", need)
+		"total_bytes", total, "max_bytes", maxBytes, "need_bytes", need)
 
 	unpinned := false
 	cachedOnly := artifact.OriginCached
@@ -58,7 +59,7 @@ func (m *manager) enforceCapacity(ctx context.Context, protect artifact.Artifact
 		}
 		if len(page.Entries) == 0 {
 			m.log.Warn("cache: still over capacity but no unpinned candidates",
-				"total_bytes", total-freed, "max_bytes", m.maxBytes, "evicted", evicted)
+				"total_bytes", total-freed, "max_bytes", maxBytes, "evicted", evicted)
 			break
 		}
 
@@ -94,14 +95,14 @@ func (m *manager) enforceCapacity(ctx context.Context, protect artifact.Artifact
 		if !progress {
 			// Only the protected entry (or pinned-filtered empties) remained.
 			m.log.Warn("cache: still over capacity; protected/pinned entries block further eviction",
-				"max_bytes", m.maxBytes, "evicted", evicted)
+				"max_bytes", maxBytes, "evicted", evicted)
 			break
 		}
 	}
 
 	if evicted > 0 {
 		m.log.Info("cache: capacity eviction complete",
-			"evicted", evicted, "freed_bytes", freed, "max_bytes", m.maxBytes)
+			"evicted", evicted, "freed_bytes", freed, "max_bytes", maxBytes)
 	}
 	return nil
 }

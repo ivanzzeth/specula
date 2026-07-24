@@ -59,11 +59,17 @@ export interface StatsResponse {
   cached_objects: number;
   backend_disk_free: number;
   backend_disk_used: number;
-  /** cache.max_bytes; 0 = unlimited */
+  /** Effective cache.max_bytes; 0 = unlimited */
   max_bytes: number;
   /** Process-lifetime capacity eviction totals (reset on restart). */
   evicted_bytes: number;
   evicted_objects: number;
+  /**
+   * Process-lifetime cache hit/miss request outcomes (body origin).
+   * When both are 0, render "—" for hit rate — there is no data yet.
+   */
+  cache_hits_total: number;
+  cache_misses_total: number;
 }
 
 export interface SeriesPoint {
@@ -197,11 +203,25 @@ export interface NamedSourceConfig {
   kind: string;
 }
 
+export interface ProtocolTrust {
+  cosign_configured: boolean;
+  cosign_key_count: number;
+  tofu?: string;
+  maturity_enabled: boolean;
+  maturity_min_age?: string;
+  maturity_policy?: string;
+  dep_confusion_enabled: boolean;
+  private_name_count?: number;
+  private_scope_count?: number;
+  keyring_configured: boolean;
+}
+
 export interface ProtocolConfig {
   protocol: string;
   upstreams: UpstreamConfig[];
   verify_tiers: string[];
   mutable_ttl_seconds: number;
+  trust: ProtocolTrust;
   sources?: NamedSourceConfig[];
 }
 
@@ -210,7 +230,27 @@ export interface ConfigResponse {
   control_plane_addr: string;
   blob_driver: string;
   meta_driver: string;
+  /** Multi-replica HA posture. */
+  ha: boolean;
+  /** "online" | "offline" */
+  mode: string;
+  /** Effective coalesce lock: local | redis | postgres */
+  lock_driver: string;
   protocols: ProtocolConfig[];
+}
+
+export interface EventsSeriesPoint {
+  unix: number;
+  fail: number;
+  warn: number;
+  maturity: number;
+  tofu: number;
+}
+
+export interface EventsSeriesResponse {
+  bucket_seconds: number;
+  window_seconds: number;
+  points: EventsSeriesPoint[];
 }
 
 // ---- Admin: runtime settings ------------------------------------------------

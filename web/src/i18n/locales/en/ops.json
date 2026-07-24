@@ -27,6 +27,7 @@
     "override": "override",
     "overrideTitle": "Reordered at runtime. YAML baseline priority: {{priority}}.",
     "unblock": "Unblock",
+    "probe": "Probe",
     "disable": "Disable",
     "enable": "Enable",
     "toast": {
@@ -35,6 +36,8 @@
       "updateFailed": "Could not update mirror",
       "unblocked": "Mirror unblocked",
       "unblockFailed": "Could not unblock mirror",
+      "probed": "Mirror probed",
+      "probeFailed": "Probe failed",
       "orderSaved": "Mirror order saved",
       "reorderFailed": "Reorder failed"
     }
@@ -100,7 +103,28 @@
       "dataPlane": "Data Plane",
       "controlPlane": "Control Plane",
       "blobDriver": "Blob Driver",
-      "metaDriver": "Meta Driver"
+      "metaDriver": "Meta Driver",
+      "ha": "HA",
+      "mode": "Mode",
+      "lockDriver": "Lock driver"
+    },
+    "haOn": "enabled",
+    "haOff": "single-node",
+    "trust": {
+      "title": "Trust / policy",
+      "cosign": "cosign keyed",
+      "cosignOn": "{{n}} key(s)",
+      "cosignOff": "not configured",
+      "tofu": "tofu",
+      "maturity": "maturity",
+      "maturityOn": "{{age}} · {{policy}}",
+      "maturityOff": "off",
+      "depConfusion": "dep-confusion",
+      "depOn": "{{names}} names · {{scopes}} scopes",
+      "depOff": "off",
+      "keyring": "gpg keyring",
+      "keyringOn": "configured",
+      "keyringOff": "not configured"
     },
     "protocols": "Protocols ({{n}})",
     "mutableTtl": "mutable TTL",

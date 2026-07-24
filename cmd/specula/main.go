@@ -348,18 +348,37 @@ func run() error {
 			}
 			eventStore.Record(ctx, events.FromVerify(ref, digest, res))
 		}),
+		cache.WithEvictHook(func(ctx context.Context, protocol string, size int64) {
+			_ = collector.RecordEvict(ctx, protocol, size)
+		}),
 	}
-	if cfg.Cache.MaxBytes > 0 {
-		cmOpts = append(cmOpts,
-			cache.WithMaxBytes(cfg.Cache.MaxBytes),
-			cache.WithEvictHook(func(ctx context.Context, protocol string, size int64) {
-				_ = collector.RecordEvict(ctx, protocol, size)
-			}),
-		)
-		log.Info("specula: cache capacity limit enabled", "max_bytes", cfg.Cache.MaxBytes)
+	maxBytes := cfg.Cache.MaxBytes
+	if v, err := resolver.Effective(ctx, settings.KeyCacheMaxBytes); err == nil && v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			maxBytes = n
+		}
+	}
+	cmOpts = append(cmOpts, cache.WithMaxBytes(maxBytes))
+	if maxBytes > 0 {
+		log.Info("specula: cache capacity limit enabled", "max_bytes", maxBytes)
 	}
 	cm := cache.New(blobs, metaStore, chain, cmOpts...)
-
+	capacity, _ := cm.(admin.CacheCapacity)
+	if capacity != nil {
+		resolver.OnReload(settings.KeyCacheMaxBytes, func(_, effective string) error {
+			n := int64(0)
+			if effective != "" {
+				parsed, err := strconv.ParseInt(effective, 10, 64)
+				if err != nil {
+					return err
+				}
+				n = parsed
+			}
+			capacity.SetMaxBytes(n)
+			log.Info("specula: cache.max_bytes reloaded", "max_bytes", n)
+			return nil
+		})
+	}
 	// Background refresh loop: periodically re-aggregates per-protocol usage into
 	// Prometheus gauges. Stops when ctx is cancelled (SIGINT/SIGTERM).
 	go collector.Run(ctx)
@@ -466,6 +485,7 @@ func run() error {
 		TagStore:   repoStore,
 		Upstreams:  upstreams,
 		Events:     eventStore,
+		Capacity:   capacity,
 		Settings:   resolver,
 	})
 	adminSrv.RegisterRoutes(ctrlMux)

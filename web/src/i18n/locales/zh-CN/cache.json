@@ -153,7 +153,12 @@
   "charts": {
     "bytesByProtocol": "各协议字节数",
     "cacheGrowth": "缓存增长 —— 全部协议",
+    "alertTrend": "验签告警 —— 近 24 小时",
     "tooltipCached": "已缓存",
-    "tooltipBytes": "字节"
+    "tooltipBytes": "字节",
+    "tooltipFail": "失败",
+    "tooltipWarn": "警告",
+    "tooltipMaturity": "冷静期",
+    "tooltipTofu": "tofu"
   }
 }

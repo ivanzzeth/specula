@@ -229,9 +229,13 @@ func (s *Server) collectCacheStats(ctx context.Context) (StatsResponse, error) {
 	if s.cfg != nil {
 		resp.MaxBytes = s.cfg.Cache.MaxBytes
 	}
+	if s.capacity != nil {
+		resp.MaxBytes = s.capacity.MaxBytes()
+	}
 	if s.stats != nil {
 		resp.EvictedBytes, resp.EvictedObjects = s.stats.EvictionTotals()
 	}
+	resp.CacheHitsTotal, resp.CacheMissesTotal = metrics.SnapshotCacheOutcome()
 	if s.meta != nil {
 		if byOrigin, oerr := s.meta.CacheSizeByOrigin(ctx); oerr == nil {
 			if h, ok := byOrigin[artifact.OriginHosted]; ok {
@@ -598,6 +602,9 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		ControlPlaneAddr: s.cfg.Server.ControlPlaneAddr,
 		BlobDriver:       s.cfg.Storage.Blob.Driver,
 		MetaDriver:       s.cfg.Storage.Meta.Driver,
+		HA:               s.cfg.Server.HA,
+		Mode:             s.cfg.EffectiveMode(),
+		LockDriver:       s.cfg.EffectiveLockDriver(),
 		Protocols:        make([]ProtocolConfigView, 0, len(s.cfg.Protocols)),
 	}
 
@@ -611,6 +618,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 			// distinguish an unset protocol from the 0 sentinel.
 			MutableTTLSec: s.cfg.EffectiveMutableTTL(pc),
 			VerifyTiers:   pc.Verification.Tiers,
+			Trust:         protocolTrustView(pc),
 			Upstreams:     make([]UpstreamView, 0, len(pc.Upstreams)),
 		}
 		if pv.VerifyTiers == nil {
@@ -667,7 +675,120 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, EventsResponse{Events: out})
 }
 
+// handleEventsSeries → GET /api/v1/admin/events/series?window=86400&bucket=3600.
+// Buckets recent verification fail/warn (and maturity/tofu kinds) for the
+// dashboard alert trend. Drawn from the same EventLister as /admin/events.
+func (s *Server) handleEventsSeries(w http.ResponseWriter, r *http.Request) {
+	window := int64(24 * 3600)
+	bucket := int64(3600)
+	if raw := r.URL.Query().Get("window"); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			window = n
+		}
+	}
+	if raw := r.URL.Query().Get("bucket"); raw != "" {
+		if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+			bucket = n
+		}
+	}
+	now := time.Now().UTC().Unix()
+	cutoff := now - window
+	byBucket := map[int64]*EventsSeriesPoint{}
+
+	if s.events != nil {
+		for _, e := range s.events.List(r.Context(), 500) {
+			if e.Unix < cutoff {
+				continue
+			}
+			if e.Result != "fail" && e.Result != "warn" {
+				continue
+			}
+			b := e.Unix - (e.Unix % bucket)
+			p := byBucket[b]
+			if p == nil {
+				p = &EventsSeriesPoint{Unix: b}
+				byBucket[b] = p
+			}
+			switch e.Result {
+			case "fail":
+				p.Fail++
+			case "warn":
+				p.Warn++
+			}
+			kind := e.Kind
+			if kind == "" {
+				kind = events.KindOf(e.Detail)
+			}
+			switch kind {
+			case "maturity":
+				p.Maturity++
+			case "tofu":
+				p.Tofu++
+			}
+		}
+	}
+
+	// Emit a contiguous series so the chart does not invent gaps as zeros
+	// silently — we fill empty buckets with explicit zeros.
+	start := cutoff - (cutoff % bucket)
+	points := make([]EventsSeriesPoint, 0, int(window/bucket)+2)
+	for t := start; t <= now; t += bucket {
+		if p, ok := byBucket[t]; ok {
+			points = append(points, *p)
+		} else {
+			points = append(points, EventsSeriesPoint{Unix: t})
+		}
+	}
+	writeJSON(w, http.StatusOK, EventsSeriesResponse{
+		BucketSeconds: bucket,
+		WindowSeconds: window,
+		Points:        points,
+	})
+}
+
 // ---- internal helpers --------------------------------------------------------
+
+// protocolTrustView projects verification / policy knobs without leaking key
+// material or filesystem paths.
+func protocolTrustView(pc config.ProtocolConfig) ProtocolTrustView {
+	v := pc.Verification
+	tv := ProtocolTrustView{Tofu: strings.TrimSpace(v.Tofu)}
+
+	keyCount := 0
+	if v.Cosign != nil {
+		keyCount = len(v.Cosign.Keys)
+	}
+	if strings.TrimSpace(v.CosignKey) != "" {
+		keyCount++
+	}
+	tv.CosignKeyCount = keyCount
+	tv.CosignConfigured = keyCount > 0
+
+	if v.Maturity != nil && strings.TrimSpace(v.Maturity.MinAge) != "" {
+		tv.MaturityEnabled = true
+		tv.MaturityMinAge = strings.TrimSpace(v.Maturity.MinAge)
+		tv.MaturityPolicy = strings.TrimSpace(v.Maturity.Policy)
+		if tv.MaturityPolicy == "" {
+			tv.MaturityPolicy = "warn"
+		}
+	}
+
+	if v.DependencyConfusion != nil {
+		tv.DepConfusionEnabled = true
+		tv.PrivateNameCount = len(v.DependencyConfusion.PrivateNames) + len(v.DependencyConfusion.PrivateUnscoped)
+		tv.PrivateScopeCount = len(v.DependencyConfusion.PrivateScopes)
+	}
+
+	keyring := strings.TrimSpace(v.Keyring)
+	if v.GPG != nil && strings.TrimSpace(v.GPG.Keyring) != "" {
+		keyring = strings.TrimSpace(v.GPG.Keyring)
+	}
+	if v.Provenance != nil && strings.TrimSpace(v.Provenance.Keyring) != "" {
+		keyring = strings.TrimSpace(v.Provenance.Keyring)
+	}
+	tv.KeyringConfigured = keyring != ""
+	return tv
+}
 
 func protocolSourcesView(pc config.ProtocolConfig) []NamedSourceView {
 	var out []NamedSourceView

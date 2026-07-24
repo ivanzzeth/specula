@@ -114,6 +114,11 @@ const (
 	// (0 = unlimited; default 1). System-admin paths are not subject to it.
 	// HotReload: the create-org handler reads the effective value per request.
 	KeyOrgMaxPerUser = "org.max_per_user"
+
+	// KeyCacheMaxBytes is the pull-through cache capacity ceiling in bytes
+	// (0 = unlimited). HotReload: updates the CacheManager ceiling immediately;
+	// eviction runs on the next Store that exceeds the limit.
+	KeyCacheMaxBytes = "cache.max_bytes"
 )
 
 // DefaultOrgMaxPerUser is the bootstrap default for org.max_per_user: one
@@ -160,6 +165,10 @@ func DefaultRegistry() *Registry {
 		Setting{Key: KeyOrgMaxPerUser, Kind: KindInt, HotReload: true,
 			Desc: "Maximum orgs a single user may self-create (default 1; 0 = unlimited). " +
 				"System admins are not subject to this limit. Hot-reloaded: takes effect on the next request."},
+		Setting{Key: KeyCacheMaxBytes, Kind: KindInt, HotReload: true,
+			Desc: "Pull-through cache capacity ceiling in bytes (0 = unlimited). " +
+				"When usage exceeds this ceiling, the oldest unpinned entries are evicted on the next store. " +
+				"Hot-reloaded: the new ceiling applies immediately; hosted (org-owned) content is never counted."},
 	)
 }
 

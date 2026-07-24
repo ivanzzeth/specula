@@ -15,6 +15,7 @@ import type {
   PatchUpstreamRequest,
   UsersResponse,
   EventsResponse,
+  EventsSeriesResponse,
   ConfigResponse,
   SettingsResponse,
   SettingView,
@@ -251,6 +252,16 @@ export function patchUpstream(
  */
 export function unblockUpstream(protocol: string, name: string): Promise<ProtocolUpstreams> {
   return reqJSON<ProtocolUpstreams>(`/admin/upstreams/${seg(protocol)}/${seg(name)}/unblock`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * POST /admin/upstreams/{protocol}/{name}/probe — manual reachability check.
+ * Updates the live Runtime (latency / health) and returns the refreshed chain.
+ */
+export function probeUpstream(protocol: string, name: string): Promise<ProtocolUpstreams> {
+  return reqJSON<ProtocolUpstreams>(`/admin/upstreams/${seg(protocol)}/${seg(name)}/probe`, {
     method: 'POST',
   });
 }
@@ -529,4 +540,17 @@ export function deleteSetting(key: string): Promise<SettingView> {
 export function getEvents(limit?: number): Promise<EventsResponse> {
   const qs = limit != null ? `?limit=${limit}` : '';
   return reqJSON<EventsResponse>(`/admin/events${qs}`);
+}
+
+/** GET /admin/events/series — bucketted fail/warn trend for the dashboard. */
+export function getEventsSeries(opts?: {
+  window?: number;
+  bucket?: number;
+}): Promise<EventsSeriesResponse> {
+  return reqJSON<EventsSeriesResponse>(
+    `/admin/events/series${qs({
+      window: opts?.window,
+      bucket: opts?.bucket,
+    })}`,
+  );
 }

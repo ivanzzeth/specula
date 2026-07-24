@@ -151,7 +151,12 @@
   "charts": {
     "bytesByProtocol": "bytes by protocol",
     "cacheGrowth": "cache growth — all protocols",
+    "alertTrend": "verification alerts — last 24h",
     "tooltipCached": "cached",
-    "tooltipBytes": "bytes"
+    "tooltipBytes": "bytes",
+    "tooltipFail": "fail",
+    "tooltipWarn": "warn",
+    "tooltipMaturity": "maturity",
+    "tooltipTofu": "tofu"
   }
 }

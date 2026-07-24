@@ -99,11 +99,24 @@ func (s *requestScope) flush() {
 	switch outcome(s.state.Load()) {
 	case outcomeHit:
 		CacheHitsTotal.WithLabelValues(s.protocol).Inc()
+		lifetimeHits.Add(1)
 	case outcomeMiss:
 		CacheMissesTotal.WithLabelValues(s.protocol).Inc()
+		lifetimeMisses.Add(1)
 	case outcomeNone:
 		// Request never consulted the cache: neither counter moves.
 	}
+}
+
+var (
+	lifetimeHits   atomic.Uint64
+	lifetimeMisses atomic.Uint64
+)
+
+// SnapshotCacheOutcome returns process-lifetime request hit/miss totals
+// (reset on restart). When both are zero the UI must render "—", not 0%.
+func SnapshotCacheOutcome() (hits, misses uint64) {
+	return lifetimeHits.Load(), lifetimeMisses.Load()
 }
 
 type scopeKeyType struct{}

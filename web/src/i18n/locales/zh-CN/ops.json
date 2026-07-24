@@ -27,6 +27,7 @@
     "override": "已覆盖",
     "overrideTitle": "运行时已重排。YAML 基线优先级：{{priority}}。",
     "unblock": "解除阻断",
+    "probe": "探测",
     "disable": "禁用",
     "enable": "启用",
     "toast": {
@@ -35,6 +36,8 @@
       "updateFailed": "无法更新镜像源",
       "unblocked": "已解除阻断",
       "unblockFailed": "无法解除阻断",
+      "probed": "探测完成",
+      "probeFailed": "探测失败",
       "orderSaved": "已保存镜像源顺序",
       "reorderFailed": "重排失败"
     }
@@ -98,7 +101,28 @@
       "dataPlane": "数据平面",
       "controlPlane": "控制平面",
       "blobDriver": "Blob 驱动",
-      "metaDriver": "Meta 驱动"
+      "metaDriver": "Meta 驱动",
+      "ha": "HA",
+      "mode": "模式",
+      "lockDriver": "锁驱动"
+    },
+    "haOn": "已启用",
+    "haOff": "单节点",
+    "trust": {
+      "title": "信任 / 策略",
+      "cosign": "cosign keyed",
+      "cosignOn": "{{n}} 个公钥",
+      "cosignOff": "未配置",
+      "tofu": "tofu",
+      "maturity": "冷静期",
+      "maturityOn": "{{age}} · {{policy}}",
+      "maturityOff": "关闭",
+      "depConfusion": "防依赖混淆",
+      "depOn": "{{names}} 个私有名 · {{scopes}} 个 scope",
+      "depOff": "关闭",
+      "keyring": "gpg 密钥环",
+      "keyringOn": "已配置",
+      "keyringOff": "未配置"
     },
     "protocols": "协议（{{n}}）",
     "mutableTtl": "可变 TTL",

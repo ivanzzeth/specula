@@ -1,9 +1,13 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ivanzzeth/specula/internal/config"
@@ -297,4 +301,92 @@ func (s *Server) handleUnblockUpstream(w http.ResponseWriter, r *http.Request) {
 	rt.Unblock(name)
 	s.log.Info("admin: upstream mirror unblocked", "protocol", protocol, "mirror", name)
 	writeJSON(w, http.StatusOK, protocolChain(protocol, pc, rt))
+}
+
+// probeHTTPClient is shared by manual upstream probes (short timeout; no
+// cookie jar). Body is never read beyond a tiny discard — we only care about
+// reachability / time-to-headers.
+var probeHTTPClient = &http.Client{
+	Timeout: 5 * time.Second,
+	CheckRedirect: func(_ *http.Request, via []*http.Request) error {
+		if len(via) >= 3 {
+			return http.ErrUseLastResponse
+		}
+		return nil
+	},
+}
+
+// handleProbeUpstream → POST /api/v1/admin/upstreams/{protocol}/{id}/probe.
+// Performs a best-effort HEAD (fallback GET) against the mirror BaseURL and
+// records the outcome into the protocol Runtime so the operator view updates
+// immediately. Returns the updated ProtocolUpstreams chain.
+func (s *Server) handleProbeUpstream(w http.ResponseWriter, r *http.Request) {
+	protocol := r.PathValue("protocol")
+	rt, pc, ok := s.requireUpstreamRuntime(w, protocol)
+	if !ok {
+		return
+	}
+	name := r.PathValue("id")
+	baseURL := ""
+	for _, u := range pc.Upstreams {
+		if u.Name == name {
+			baseURL = strings.TrimRight(u.BaseURL, "/")
+			break
+		}
+	}
+	if baseURL == "" {
+		writeError(w, http.StatusNotFound, "unknown mirror")
+		return
+	}
+
+	start := time.Now()
+	latency, err := probeUpstreamURL(r.Context(), baseURL)
+	if err != nil {
+		rt.RecordFailure(name, err, true)
+		s.log.Info("admin: upstream probe failed",
+			"protocol", protocol, "mirror", name, "err", err, "latency_ms", time.Since(start).Milliseconds())
+	} else {
+		rt.RecordServe(name, latency)
+		s.log.Info("admin: upstream probe ok",
+			"protocol", protocol, "mirror", name, "latency_ms", latency.Milliseconds())
+	}
+	writeJSON(w, http.StatusOK, protocolChain(protocol, pc, rt))
+}
+
+// probeUpstreamURL HEADs (then GETs on method-not-allowed) the mirror root.
+// Success is any response that proves the TCP/TLS/HTTP stack answered — including
+// 401/403/404 — because many registry roots reject anonymous root GETs while
+// still being healthy. Network errors and timeouts are failures.
+func probeUpstreamURL(ctx context.Context, baseURL string) (time.Duration, error) {
+	try := func(method string) (time.Duration, int, error) {
+		req, err := http.NewRequestWithContext(ctx, method, baseURL+"/", nil)
+		if err != nil {
+			return 0, 0, err
+		}
+		req.Header.Set("User-Agent", "specula-probe/1")
+		start := time.Now()
+		resp, err := probeHTTPClient.Do(req)
+		lat := time.Since(start)
+		if err != nil {
+			return lat, 0, err
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+		return lat, resp.StatusCode, nil
+	}
+
+	lat, code, err := try(http.MethodHead)
+	if err != nil {
+		return lat, err
+	}
+	if code == http.StatusMethodNotAllowed || code == http.StatusNotImplemented {
+		lat, code, err = try(http.MethodGet)
+		if err != nil {
+			return lat, err
+		}
+	}
+	if code >= 500 {
+		return lat, fmt.Errorf("HTTP %d", code)
+	}
+	return lat, nil
 }

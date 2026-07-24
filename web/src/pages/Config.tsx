@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { ApiError, getConfig } from '@/api/client';
 import { translateServerError } from '@/i18n/server-errors';
 import type { ConfigResponse } from '@/api/types';
+import type { ProtocolTrust } from '@/api/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { SkeletonRows } from '@/components/ui/skeleton';
 import { SettingsPanel } from '@/pages/settings/SettingsPanel';
@@ -133,6 +134,12 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
     { key: 'controlPlane', value: config.control_plane_addr },
     { key: 'blobDriver', value: config.blob_driver },
     { key: 'metaDriver', value: config.meta_driver },
+    {
+      key: 'ha',
+      value: config.ha ? t('config.haOn') : t('config.haOff'),
+    },
+    { key: 'mode', value: config.mode || 'online' },
+    { key: 'lockDriver', value: config.lock_driver || 'local' },
   ];
 
   return (
@@ -169,7 +176,7 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
             <Card key={p.protocol}>
               <CardHeader>
                 <CardTitle>{p.protocol}</CardTitle>
-                <div className="flex items-center gap-3 text-data text-slate-400">
+                <div className="flex flex-wrap items-center gap-3 text-data text-slate-400">
                   <span>
                     {t('config.mutableTtl')}{' '}
                     <span className="tnum text-slate-200">
@@ -188,6 +195,7 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
                     </>
                   )}
                 </div>
+                {p.trust && <TrustSummary trust={p.trust} />}
               </CardHeader>
 
               {p.upstreams && p.upstreams.length > 0 ? (
@@ -280,6 +288,67 @@ function ConfigTab({ config }: { config: ConfigResponse | null }) {
           </CardContent>
         </Card>
       )}
+    </div>
+  );
+}
+
+function TrustSummary({ trust }: { trust: ProtocolTrust }) {
+  const { t } = useTranslation();
+  const rows: { label: string; value: string; on: boolean }[] = [
+    {
+      label: t('config.trust.cosign'),
+      value: trust.cosign_configured
+        ? t('config.trust.cosignOn', { n: trust.cosign_key_count })
+        : t('config.trust.cosignOff'),
+      on: trust.cosign_configured,
+    },
+    {
+      label: t('config.trust.tofu'),
+      value: trust.tofu || '—',
+      on: Boolean(trust.tofu),
+    },
+    {
+      label: t('config.trust.maturity'),
+      value: trust.maturity_enabled
+        ? t('config.trust.maturityOn', {
+            age: trust.maturity_min_age,
+            policy: trust.maturity_policy,
+          })
+        : t('config.trust.maturityOff'),
+      on: trust.maturity_enabled,
+    },
+    {
+      label: t('config.trust.depConfusion'),
+      value: trust.dep_confusion_enabled
+        ? t('config.trust.depOn', {
+            names: trust.private_name_count ?? 0,
+            scopes: trust.private_scope_count ?? 0,
+          })
+        : t('config.trust.depOff'),
+      on: trust.dep_confusion_enabled,
+    },
+    {
+      label: t('config.trust.keyring'),
+      value: trust.keyring_configured
+        ? t('config.trust.keyringOn')
+        : t('config.trust.keyringOff'),
+      on: trust.keyring_configured,
+    },
+  ];
+
+  return (
+    <div className="mt-2 space-y-1 border-t border-slate-800 pt-2">
+      <p className="text-micro font-semibold uppercase tracking-wide text-slate-500">
+        {t('config.trust.title')}
+      </p>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-data">
+        {rows.map((r) => (
+          <span key={r.label} className="text-slate-400">
+            {r.label}{' '}
+            <span className={r.on ? 'text-tier-signed' : 'text-slate-500'}>{r.value}</span>
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

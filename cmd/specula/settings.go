@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 
 	"github.com/ivanzzeth/specula/internal/config"
 	"github.com/ivanzzeth/specula/internal/configstore"
@@ -88,6 +89,9 @@ func buildSettingsResolver(cfg *config.Config, store configstore.Store, regKeyPE
 	if regKeyPEM != "" {
 		boot[settings.KeyRegistryTokenKey] = regKeyPEM
 	}
+	// Always seed cache.max_bytes from YAML (including 0 = unlimited) so the
+	// Settings UI shows the bootstrap value and runtime overrides have a baseline.
+	boot[settings.KeyCacheMaxBytes] = strconv.FormatInt(cfg.Cache.MaxBytes, 10)
 
 	return settings.NewResolver(reg, store, boot)
 }
