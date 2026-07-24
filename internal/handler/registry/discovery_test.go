@@ -253,6 +253,18 @@ func TestListTagsUnknownRepo404(t *testing.T) {
 // subjectDigest is a syntactically valid sha256 digest used as a referrers subject.
 const subjectDigest = "sha256:" + "cafe" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"
 
+
+// seedBlob puts body (default "{}") under digest so putManifest's CAS ref check passes.
+func seedBlob(t *testing.T, blobs *memBlobStore, digest string, body []byte) {
+	t.Helper()
+	if body == nil {
+		body = []byte("{}")
+	}
+	if err := blobs.Put(context.Background(), digest, bytes.NewReader(body), int64(len(body))); err != nil {
+		t.Fatalf("seed blob %s: %v", digest, err)
+	}
+}
+
 // putManifestBody pushes a manifest body and returns the response recorder.
 func putManifestBody(t *testing.T, h *registry.Handler, ref string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
@@ -361,11 +373,14 @@ func TestReferrersInvalidDigest400(t *testing.T) {
 func TestReferrersIndexedOnSubjectPush(t *testing.T) {
 	blobs, tags, meta := newMemBlobStore(), newMemTagStore(), newMemMetaStore()
 	h := newDiscoveryHandler(blobs, tags, meta, &allowAuthz{r: testRepo("org1", "org1/myrepo")})
+	zeroCfg := "sha256:" + strings.Repeat("0", 64)
+	seedBlob(t, blobs, zeroCfg, []byte("{}"))
+	seedBlob(t, blobs, subjectDigest, []byte("subject"))
 
 	body := []byte(`{"schemaVersion":2,` +
 		`"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
 		`"artifactType":"application/vnd.example.sbom.v1",` +
-		`"config":{"mediaType":"application/vnd.oci.empty.v1+json","digest":"sha256:` + strings.Repeat("0", 64) + `","size":2},` +
+		`"config":{"mediaType":"application/vnd.oci.empty.v1+json","digest":"` + zeroCfg + `","size":2},` +
 		`"layers":[],` +
 		`"subject":{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + subjectDigest + `","size":123},` +
 		`"annotations":{"org.example.key":"value"}}`)
@@ -417,12 +432,16 @@ func TestReferrersIndexedOnSubjectPush(t *testing.T) {
 // TestReferrersArtifactTypeFallsBackToConfigMediaType pins the image-spec rule
 // that a manifest without artifactType is indexed under its config mediaType.
 func TestReferrersArtifactTypeFallsBackToConfigMediaType(t *testing.T) {
-	h := newDiscoveryHandler(newMemBlobStore(), newMemTagStore(), newMemMetaStore(),
+	blobs := newMemBlobStore()
+	h := newDiscoveryHandler(blobs, newMemTagStore(), newMemMetaStore(),
 		&allowAuthz{r: testRepo("org1", "org1/myrepo")})
+	zeroCfg := "sha256:" + strings.Repeat("0", 64)
+	seedBlob(t, blobs, zeroCfg, []byte("{}"))
+	seedBlob(t, blobs, subjectDigest, []byte("subject"))
 
 	body := []byte(`{"schemaVersion":2,` +
 		`"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
-		`"config":{"mediaType":"application/vnd.example.config.v1+json","digest":"sha256:` + strings.Repeat("0", 64) + `","size":2},` +
+		`"config":{"mediaType":"application/vnd.example.config.v1+json","digest":"` + zeroCfg + `","size":2},` +
 		`"layers":[],` +
 		`"subject":{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"` + subjectDigest + `","size":123}}`)
 
@@ -442,8 +461,10 @@ func TestReferrersArtifactTypeFallsBackToConfigMediaType(t *testing.T) {
 // TestReferrersRePushIsIdempotent verifies re-pushing the same referrer does not
 // duplicate its entry (spec: duplicate entries SHOULD NOT be created).
 func TestReferrersRePushIsIdempotent(t *testing.T) {
-	h := newDiscoveryHandler(newMemBlobStore(), newMemTagStore(), newMemMetaStore(),
+	blobs := newMemBlobStore()
+	h := newDiscoveryHandler(blobs, newMemTagStore(), newMemMetaStore(),
 		&allowAuthz{r: testRepo("org1", "org1/myrepo")})
+	seedBlob(t, blobs, subjectDigest, []byte("subject"))
 
 	body := []byte(`{"schemaVersion":2,` +
 		`"mediaType":"application/vnd.oci.image.manifest.v1+json",` +

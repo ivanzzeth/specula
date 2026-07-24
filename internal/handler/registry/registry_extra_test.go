@@ -542,3 +542,27 @@ func TestStoreReferrers_BlobPutError(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, rec.Code,
 		"storeReferrers failure must be non-fatal — manifest push must still return 201: %s", rec.Body)
 }
+
+// TestPutManifestRejectsUnknownBlobRefs verifies Distribution Spec blob existence
+// checks: a manifest whose config digest is not in the CAS is rejected with
+// MANIFEST_BLOB_UNKNOWN before the manifest blob is stored.
+func TestPutManifestRejectsUnknownBlobRefs(t *testing.T) {
+	blobs := newMemBlobStore()
+	tags := newMemTagStore()
+	repoObj := testRepo("org1", "org1/myrepo")
+	h := newTestHandler(blobs, tags, &allowAuthz{r: repoObj})
+
+	missing := "sha256:" + strings.Repeat("d", 64)
+	body := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json",` +
+		`"config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"` + missing + `","size":2},` +
+		`"layers":[]}`)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/v2/org1/myrepo/manifests/v1", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+	h.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Contains(t, rec.Body.String(), "MANIFEST_BLOB_UNKNOWN")
+	assert.False(t, blobs.has(sha256Digest(body)), "rejected manifest must not land in CAS")
+}

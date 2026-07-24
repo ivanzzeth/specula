@@ -539,8 +539,8 @@ func (h *Handler) uploadStatus(w http.ResponseWriter, r *http.Request, name, uui
 // blob in the CAS and records the tag→digest pointer (or no-op for a
 // by-digest push). The Authorizer lazily creates the repo row on a first push.
 //
-// TODO(R2+): validate that every blob digest referenced inside the manifest
-// body exists in the CAS before accepting the push (OCI Distribution §4.2.2).
+// Referenced blob digests (config, layers, index manifests, subject) are
+// checked against the CAS before accept (OCI Distribution §"Pushing Manifests").
 func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref string) {
 	repoRow, err := h.authz.Authorize(r.Context(), name, actionPush)
 	if err != nil {
@@ -588,6 +588,18 @@ func (h *Handler) putManifest(w http.ResponseWriter, r *http.Request, name, ref 
 	if isDigestRef(ref) && ref != computedDigest {
 		writeError(w, http.StatusBadRequest, "DIGEST_INVALID",
 			fmt.Sprintf("digest mismatch: declared %s actual %s", ref, computedDigest))
+		return
+	}
+
+	// Distribution Spec: every blob the manifest references MUST exist before
+	// accept. Validate BEFORE storing the manifest so a reject leaves no orphan.
+	if missing, err := ensureReferencedBlobsExist(r.Context(), h.blobs, body); err != nil {
+		h.log.Error("registry: manifest blob existence check", "name", name, "err", err)
+		writeError(w, http.StatusInternalServerError, "UNKNOWN", "failed to validate manifest references")
+		return
+	} else if missing != "" {
+		writeError(w, http.StatusBadRequest, "MANIFEST_BLOB_UNKNOWN",
+			fmt.Sprintf("blob unknown to registry: %s", missing))
 		return
 	}
 

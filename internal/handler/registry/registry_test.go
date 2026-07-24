@@ -451,10 +451,13 @@ func TestManifestPutCreatesTag(t *testing.T) {
 	repoObj := testRepo("org1", "org1/myapp")
 	h := newTestHandler(blobs, tags, &allowAuthz{r: repoObj})
 
+	cfgDigest := "sha256:" + strings.Repeat("ab", 32)
+	_ = blobs.Put(context.Background(), cfgDigest, bytes.NewReader([]byte("{}")), 2)
+
 	manifest := []byte(`{
 		"schemaVersion": 2,
 		"mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-		"config": {"mediaType": "application/vnd.docker.container.image.v1+json","digest": "sha256:abc","size": 3},
+		"config": {"mediaType": "application/vnd.docker.container.image.v1+json","digest": "` + cfgDigest + `","size": 2},
 		"layers": []
 	}`)
 	wantDigest := sha256Digest(manifest)
