@@ -490,6 +490,9 @@ protocols:
       tiers: [tofu, checksum]
       quorum: 1
       tofu: enforce
+      # maturity:
+      #   min_age: 72h
+      #   policy: warn
 
   # ── conda (channel proxy) ─────────────────────────────────────────────────
   conda:
