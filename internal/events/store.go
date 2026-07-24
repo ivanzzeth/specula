@@ -1,9 +1,10 @@
-// Package events is an in-process ring buffer of verification outcomes for the
-// admin Events UI (GET /api/v1/admin/events).
+// Package events is a bounded feed of verification outcomes for the admin
+// Events UI (GET /api/v1/admin/events).
 //
-// Fail and warn results from the cache verify-on-write path are appended here.
-// The store is intentionally process-local (not replicated across HA replicas):
-// it is an operator live feed, not a durable audit log. Capacity is bounded.
+// Fail and warn results from the cache verify-on-write path are appended here
+// (including TOFU first-lock warns and digest-change fails). Persistence uses
+// the meta database when available (Fanout of SQLStore + Memory); otherwise
+// the process-local Memory ring buffer alone.
 package events
 
 import (
