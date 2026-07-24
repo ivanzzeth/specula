@@ -10,6 +10,7 @@ Independent gates (do not trust Specula’s own counters alone):
 |------|---------|--------|
 | CN-mirror oracle | `make test-trust-oracle` | apt GPG, Go sumdb, PyPI consensus, helm tofu (no `.prov` on CN mirrors) |
 | Signed lab oracle | `make test-trust-oracle-signed` | OCI cosign keyed + Helm `.prov` (hermetic; needs docker/cosign/helm/gpg) |
+| trusted_root RealFetcher | `go test ./internal/verify/ -run RealFetcher_TrustedRoot` | OCI Fulcio cert annotation over in-process registry (no live Fulcio/Rekor) |
 | Meta-gate | `make test-trust-oracle-mutations` | Proves the oracle catches planted lies |
 
 CI runs the first two on `main` / PRs (see `.github/workflows/ci.yml`).
@@ -63,6 +64,12 @@ signature already attached to the image.
 Honesty: without Rekor and without identity subject/issuer matching, any leaf
 chaining to a trusted Fulcio CA passes. Prefer keyed cosign when you can
 distribute publisher keys; use trusted_root when you operate (and trust) Fulcio.
+
+Verify cert-backed path (production fetcher + in-process registry):
+
+```text
+go test ./internal/verify/ -run 'RealFetcher_TrustedRoot' -count=1
+```
 
 Verify keyed path: `make test-trust-oracle-signed` (builds a real signed image locally).
 
