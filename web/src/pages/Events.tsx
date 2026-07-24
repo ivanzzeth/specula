@@ -22,27 +22,17 @@ import { cn, formatRelative, formatUnix } from '@/lib/utils';
 /**
  * Events — verification/alert list (REGISTRY-DESIGN §5.3).
  *
- * Shows the last 200 verification events: tier failures, digest changes, force-push
- * alerts. Auto-refreshes every 30 seconds so an operator leaving this tab open
- * sees a live feed without a manual reload.
- *
- * Result → badge mapping:
- *   pass → tier-signed (green) — the happy path
- *   warn → tier-tofu  (lemon) — something changed but not a hard failure
- *   fail → health-blocked (red) — a verification failure; warrants action
- *
- * An unknown result renders neutral rather than guessing a severity.
- *
- * Owned by: the Ops UI agent.
+ * Kind separates maturity cool-down policy hits from TOFU digest drift even when
+ * both share warn/fail severity.
  */
-
-// ── Result badge ──────────────────────────────────────────────────────────────
 
 type ResultVariant =
   | 'tier-signed'
   | 'tier-tofu'
   | 'health-blocked'
-  | 'default';
+  | 'default'
+  | 'outline'
+  | 'accent';
 
 function resultVariant(result: string): ResultVariant {
   if (result === 'pass') return 'tier-signed';
@@ -51,7 +41,6 @@ function resultVariant(result: string): ResultVariant {
   return 'default';
 }
 
-/** The hint key for a result, falling back to `unknown` for anything unrecognised. */
 function resultHintKey(result: string): string {
   if (result === 'pass' || result === 'warn' || result === 'fail') {
     return `events.result.hint.${result}`;
@@ -59,11 +48,6 @@ function resultHintKey(result: string): string {
   return 'events.result.hint.unknown';
 }
 
-/**
- * The badge VALUE stays English: `result` is an API field literal that also
- * appears in logs and API responses, the same rule TierBadge/HealthBadge follow.
- * The tooltip is the legend, and it is translated.
- */
 function ResultBadge({ result }: { result: string }) {
   const { t } = useTranslation();
   return (
@@ -73,11 +57,39 @@ function ResultBadge({ result }: { result: string }) {
   );
 }
 
-// ── Digest display — truncated with full on hover ─────────────────────────────
+/** Normalize API kind; fall back to detail heuristics for older payloads. */
+export function eventKind(ev: Pick<VerificationEvent, 'kind' | 'detail'>): string {
+  if (ev.kind === 'maturity' || ev.kind === 'tofu' || ev.kind === 'verify') {
+    return ev.kind;
+  }
+  const d = ev.detail ?? '';
+  if (d.includes('DIGEST CHANGED')) return 'tofu';
+  if (d.includes('maturity: version too young')) return 'maturity';
+  if (d.includes('maturity:')) {
+    return d.includes('tofu:') ? 'tofu' : 'maturity';
+  }
+  if (d.includes('tofu:')) return 'tofu';
+  return 'verify';
+}
+
+function kindVariant(kind: string): ResultVariant {
+  if (kind === 'maturity') return 'accent';
+  if (kind === 'tofu') return 'tier-tofu';
+  return 'outline';
+}
+
+function KindBadge({ kind }: { kind: string }) {
+  const { t } = useTranslation();
+  const hintKey = `events.kind.hint.${kind}`;
+  return (
+    <Badge latin variant={kindVariant(kind)} title={t(hintKey)}>
+      {kind}
+    </Badge>
+  );
+}
 
 function Digest({ value }: { value: string }) {
   if (!value) return <span className="text-slate-600">—</span>;
-  // "sha256:abcdef…ef12" — show the algo prefix + first 8 + last 4 chars of hex.
   const m = value.match(/^([^:]+):(.{8}).*(.{4})$/);
   const display = m ? `${m[1]}:${m[2]}…${m[3]}` : value.slice(0, 16) + '…';
   return (
@@ -87,12 +99,9 @@ function Digest({ value }: { value: string }) {
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
-
 const LIMIT = 200;
 const REFRESH_MS = 30_000;
 
-/** See Upstreams.tsx — an ApiError's `detail` is the server's own words. */
 function errText(e: unknown): string {
   if (e instanceof ApiError) return translateServerError(e.detail);
   return e instanceof Error ? e.message : String(e);
@@ -119,7 +128,6 @@ export function Events() {
           const msg = errText(e);
           setErr(msg);
           if (silent) {
-            // Background refresh failure — toast instead of overwriting the list.
             toast({
               variant: 'destructive',
               title: t('events.refreshFailed'),
@@ -134,20 +142,19 @@ export function Events() {
     [t, toast]
   );
 
-  // Initial load.
   useEffect(() => {
     void load(false);
   }, [load]);
 
-  // Auto-refresh every 30 s (background, silent — keep the existing list visible).
   useEffect(() => {
     const id = setInterval(() => void load(true), REFRESH_MS);
     return () => clearInterval(id);
   }, [load]);
 
-  // ── count summary ───────────────────────────────────────────────────────────
   const failCount = events.filter((e) => e.result === 'fail').length;
   const warnCount = events.filter((e) => e.result === 'warn').length;
+  const maturityCount = events.filter((e) => eventKind(e) === 'maturity').length;
+  const tofuCount = events.filter((e) => eventKind(e) === 'tofu').length;
 
   return (
     <div className="space-y-3">
@@ -155,6 +162,8 @@ export function Events() {
         total={events.length}
         failCount={failCount}
         warnCount={warnCount}
+        maturityCount={maturityCount}
+        tofuCount={tofuCount}
         lastRefresh={lastRefresh}
       />
 
@@ -188,17 +197,16 @@ export function Events() {
                 <TableHead>{t('events.col.artifact')}</TableHead>
                 <TableHead className="w-36">{t('events.col.digest')}</TableHead>
                 <TableHead className="w-28">{t('events.col.tier')}</TableHead>
+                <TableHead className="w-24">{t('events.col.kind')}</TableHead>
                 <TableHead className="w-20">{t('events.col.result')}</TableHead>
                 <TableHead>{t('events.col.detail')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {events.length === 0 ? (
-                <EmptyRow colSpan={7}>{t('events.none')}</EmptyRow>
+                <EmptyRow colSpan={8}>{t('events.none')}</EmptyRow>
               ) : (
-                events.map((ev) => (
-                  <EventRow key={ev.id} ev={ev} />
-                ))
+                events.map((ev) => <EventRow key={ev.id} ev={ev} />)
               )}
             </TableBody>
           </Table>
@@ -208,17 +216,19 @@ export function Events() {
   );
 }
 
-// ── Page heading ──────────────────────────────────────────────────────────────
-
 function PageHeading({
   total,
   failCount,
   warnCount,
+  maturityCount,
+  tofuCount,
   lastRefresh,
 }: {
   total: number;
   failCount: number;
   warnCount: number;
+  maturityCount: number;
+  tofuCount: number;
   lastRefresh: number;
 }) {
   const { t } = useTranslation();
@@ -231,9 +241,8 @@ function PageHeading({
         <p className="mt-0.5 text-data text-slate-400">{t('events.subtitle')}</p>
       </div>
 
-      {/* Summary lamps: only surface fail/warn so a clean log stays quiet. */}
       {total > 0 && (
-        <div className="flex shrink-0 items-center gap-3 text-data">
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-3 text-data">
           {failCount > 0 && (
             <span
               className="tnum text-health-blocked"
@@ -250,6 +259,22 @@ function PageHeading({
               {t('events.summary.warn', { n: warnCount })}
             </span>
           )}
+          {maturityCount > 0 && (
+            <span
+              className="tnum text-brand"
+              title={t('events.summary.maturityTitle', { count: maturityCount })}
+            >
+              {t('events.summary.maturity', { n: maturityCount })}
+            </span>
+          )}
+          {tofuCount > 0 && (
+            <span
+              className="tnum text-slate-300"
+              title={t('events.summary.tofuTitle', { count: tofuCount })}
+            >
+              {t('events.summary.tofu', { n: tofuCount })}
+            </span>
+          )}
           {lastRefresh > 0 && (
             <span className="text-slate-600" title={new Date(lastRefresh).toLocaleString()}>
               {t('events.summary.refreshed', {
@@ -263,14 +288,12 @@ function PageHeading({
   );
 }
 
-// ── Event row ─────────────────────────────────────────────────────────────────
-
 function EventRow({ ev }: { ev: VerificationEvent }) {
   const { t } = useTranslation();
   const isFail = ev.result === 'fail';
+  const kind = eventKind(ev);
   return (
     <TableRow className={cn(isFail && 'bg-health-blocked/5')}>
-      {/* Time: absolute value + relative on hover */}
       <TableCell
         className="tnum text-slate-500 whitespace-nowrap"
         title={t('events.relativeTitle', { when: formatRelative(ev.unix) })}
@@ -278,39 +301,31 @@ function EventRow({ ev }: { ev: VerificationEvent }) {
         {formatUnix(ev.unix)}
       </TableCell>
 
-      {/* Protocol */}
       <TableCell className="font-medium text-brand whitespace-nowrap">
         {ev.protocol}
       </TableCell>
 
-      {/* Artifact name */}
-      <TableCell
-        className="max-w-[1px] truncate text-slate-200"
-        title={ev.artifact}
-      >
+      <TableCell className="max-w-[1px] truncate text-slate-200" title={ev.artifact}>
         {ev.artifact}
       </TableCell>
 
-      {/* Digest — truncated, full on hover */}
       <TableCell>
         <Digest value={ev.digest} />
       </TableCell>
 
-      {/* Trust tier */}
       <TableCell>
         <TierBadge tier={ev.tier} />
       </TableCell>
 
-      {/* Pass / warn / fail */}
+      <TableCell>
+        <KindBadge kind={kind} />
+      </TableCell>
+
       <TableCell>
         <ResultBadge result={ev.result} />
       </TableCell>
 
-      {/* Free-text detail */}
-      <TableCell
-        className="max-w-[1px] truncate text-slate-500"
-        title={ev.detail || undefined}
-      >
+      <TableCell className="max-w-[1px] truncate text-slate-500" title={ev.detail || undefined}>
         {ev.detail || '—'}
       </TableCell>
     </TableRow>

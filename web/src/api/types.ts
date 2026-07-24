@@ -175,6 +175,8 @@ export interface VerificationEvent {
   digest: string;
   tier: string;
   result: 'pass' | 'fail' | 'warn';
+  /** Policy/source class: maturity cool-down, TOFU drift, or other verify. */
+  kind?: 'maturity' | 'tofu' | 'verify' | string;
   detail: string;
 }
 

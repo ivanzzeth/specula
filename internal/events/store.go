@@ -9,6 +9,7 @@ package events
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,7 @@ type Event struct {
 	Digest   string `json:"digest"`
 	Tier     string `json:"tier"`
 	Result   string `json:"result"` // "pass" | "fail" | "warn"
+	Kind     string `json:"kind"`   // "maturity" | "tofu" | "verify"
 	Detail   string `json:"detail"`
 }
 
@@ -107,6 +109,31 @@ func FromVerify(ref artifact.ArtifactRef, digest string, res artifact.Result) Ev
 		Digest:   digest,
 		Tier:     res.Tier.String(),
 		Result:   result,
+		Kind:     KindOf(res.Message),
 		Detail:   res.Message,
+	}
+}
+
+// KindOf classifies a verify message for the Events UI so operators can
+// separate maturity cool-down policy hits from TOFU digest drift.
+//
+// Priority: TOFU digest-change > maturity too-young > any maturity > any tofu
+// > generic verify. Joined chain warn messages may contain both tofu and
+// maturity substrings; the priority keeps the actionable signal visible.
+func KindOf(detail string) string {
+	switch {
+	case strings.Contains(detail, "DIGEST CHANGED"):
+		return "tofu"
+	case strings.Contains(detail, "maturity: version too young"):
+		return "maturity"
+	case strings.Contains(detail, "maturity:"):
+		if strings.Contains(detail, "tofu:") {
+			return "tofu"
+		}
+		return "maturity"
+	case strings.Contains(detail, "tofu:"):
+		return "tofu"
+	default:
+		return "verify"
 	}
 }

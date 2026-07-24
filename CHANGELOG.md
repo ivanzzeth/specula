@@ -5,6 +5,8 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+## [0.10.0] — Supply-chain entry gates (maturity + sole-index + Events) — 2026-07-24
+
 ### Added
 
 - **Maturity / cool-down gate** (`verification.maturity`): block or warn on
@@ -16,19 +18,22 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
   `Last-Modified`.
 - **`upstream.WithAcceptHeader`**: PEP 691 JSON simple-index negotiation
   (closes the prior known limitation that only served cached JSON).
-- **CI**: `scripts/realclient-multisource.sh` (apt/helm/conda named-source
-  path-strip) runs in the CI workflow and `make test-realclient`.
+- **Events `kind`**: Admin Events API + WebUI distinguish `maturity` vs `tofu`
+  vs other verify outcomes (summary lamps + Kind column).
+- **CI / realclient**: `scripts/realclient-multisource.sh` (named-source
+  path-strip) and hermetic `scripts/realclient-maturity.sh` (enforce young
+  reject / old allow + Events kind check).
 - **Dep-confusion fail-safe UX**: `specula integrate` no longer promotes the
   previous pip index to `extra-index-url` (that pattern *enables* confusion);
   `integrate status` audits dangerous client dual-index configs.
 - **Verification Events persistence**: Admin Events survive process restart
-  (SQLite/Postgres); TOFU first-lock warns and digest-change fails remain the
-  primary actionable feed.
+  (SQLite/Postgres); TOFU first-lock warns and digest-change fails remain
+  actionable alongside maturity policy hits.
 
 ### Docs
 
-- PRD **v0.10** milestone; TRUST cookbook: maturity + sole-index anti-patterns;
-  competitive/attack-face rationale (not CVE scanning, not anti-XZ claims).
+- PRD **v0.10** marked done; TRUST cookbook: maturity + sole-index
+  anti-patterns; Events kind operator notes.
 
 ## [0.7.0] — Multi-registry OCI, offline mode, ops polish — 2026-07-24
 

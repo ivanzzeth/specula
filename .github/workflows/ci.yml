@@ -35,6 +35,18 @@ jobs:
       - name: realclient-multisource
         run: bash scripts/realclient-multisource.sh
 
+  maturity:
+    name: Maturity cool-down smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: realclient-maturity
+        run: bash scripts/realclient-maturity.sh
+
   trust-oracle:
     name: Trust oracle (CN mirrors)
     runs-on: ubuntu-latest

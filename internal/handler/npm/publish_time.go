@@ -37,11 +37,12 @@ func (h *Handler) packumentBody(ctx context.Context, pkg string) ([]byte, bool) 
 			return body, true
 		}
 	}
-	if h.upstreamClt == nil || len(h.upstreams) == 0 {
+	ups, err := h.selectUpstreams(pkg)
+	if err != nil || h.upstreamClt == nil || len(ups) == 0 {
 		return nil, false
 	}
-	rc, _, err := h.upstreamClt.Fetch(ctx, pref, h.upstreams)
-	if err != nil || rc == nil {
+	rc, _, fetchErr := h.upstreamClt.Fetch(ctx, pref, ups)
+	if fetchErr != nil || rc == nil {
 		return nil, false
 	}
 	defer rc.Close()

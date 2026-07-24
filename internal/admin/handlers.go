@@ -16,6 +16,7 @@ import (
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/auth"
 	"github.com/ivanzzeth/specula/internal/config"
+	"github.com/ivanzzeth/specula/internal/events"
 	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/org"
 )
@@ -655,8 +656,12 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 				Digest:   e.Digest,
 				Tier:     e.Tier,
 				Result:   e.Result,
+				Kind:     e.Kind,
 				Detail:   e.Detail,
 			})
+			if out[len(out)-1].Kind == "" {
+				out[len(out)-1].Kind = events.KindOf(e.Detail)
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, EventsResponse{Events: out})

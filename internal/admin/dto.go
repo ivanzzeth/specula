@@ -278,7 +278,7 @@ type MeResponse struct {
 // ---- verification events (GET /api/v1/admin/events) --------------------------
 
 // VerificationEvent is one audit record from the verify chain / alerting stream:
-// a checksum/TOFU/consensus/signature outcome for a fetched artifact.
+// a checksum/TOFU/consensus/signature/maturity outcome for a fetched artifact.
 type VerificationEvent struct {
 	ID       int64  `json:"id"`
 	Unix     int64  `json:"unix"`     // event time, Unix seconds
@@ -287,6 +287,7 @@ type VerificationEvent struct {
 	Digest   string `json:"digest"`   // sha256:...
 	Tier     string `json:"tier"`     // highest verification tier reached
 	Result   string `json:"result"`   // "pass" | "fail" | "warn"
+	Kind     string `json:"kind"`     // "maturity" | "tofu" | "verify"
 	Detail   string `json:"detail"`   // human-readable explanation (empty on pass)
 }
 

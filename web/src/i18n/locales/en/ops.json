@@ -42,7 +42,7 @@
 
   "events": {
     "title": "Events",
-    "subtitle": "Artifact verification results — tier failures, digest changes, and force-push alerts.",
+    "subtitle": "Artifact verification results — maturity cool-down, TOFU digest drift, tier failures.",
     "logTitle": "Verification log",
     "logSubtitle": "Last {{limit}} events · auto-refreshes every {{seconds}}s",
     "none": "No verification events yet.",
@@ -53,25 +53,39 @@
       "artifact": "Artifact",
       "digest": "Digest",
       "tier": "Tier",
+      "kind": "Kind",
       "result": "Result",
       "detail": "Detail"
     },
     "relativeTitle": "relative: {{when}}",
+    "kind": {
+      "hint": {
+        "maturity": "Cool-down / min_age policy gate (not cryptographic).",
+        "tofu": "TOFU first-lock or digest-change alert.",
+        "verify": "Other verification chain outcome."
+      }
+    },
     "result": {
       "hint": {
         "pass": "Verification passed.",
         "warn": "Verification passed with a warning — may warrant investigation.",
-        "fail": "Verification FAILED — this artifact may have been tampered with or the upstream metadata changed.",
+        "fail": "Verification FAILED — this artifact may have been tampered with, the upstream metadata changed, or a policy gate rejected it.",
         "unknown": "Unknown result."
       }
     },
     "summary": {
       "fail": "{{n}} fail",
       "warn": "{{n}} warn",
+      "maturity": "{{n}} maturity",
+      "tofu": "{{n}} tofu",
       "failTitle_one": "{{count}} failed verification event",
       "failTitle_other": "{{count}} failed verification events",
       "warnTitle_one": "{{count}} verification warning",
       "warnTitle_other": "{{count}} verification warnings",
+      "maturityTitle_one": "{{count}} maturity / cool-down event",
+      "maturityTitle_other": "{{count}} maturity / cool-down events",
+      "tofuTitle_one": "{{count}} TOFU event",
+      "tofuTitle_other": "{{count}} TOFU events",
       "refreshed": "refreshed {{when}}"
     }
   },

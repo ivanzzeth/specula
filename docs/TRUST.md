@@ -151,8 +151,11 @@ protocols:
   (npm `packument.time[version]`, PyPI PEP 691 `upload-time` / Warehouse
   `upload_time_iso_8601`, crates.io API `created_at`); else `Last-Modified`.
 - If neither is available → **skip** (honest: do not invent an age).
-- Does **not** raise the trust tier; Events/UI show it as a policy outcome.
+- Does **not** raise the trust tier; Events/UI show it as a policy outcome
+  (`kind=maturity`, distinct from `kind=tofu` digest drift).
 - Does **not** claim to stop XZ-style long-horizon signed poisoning.
+- Hermetic gate: `bash scripts/realclient-maturity.sh` (young reject / old
+  allow + Events `kind=maturity`).
 
 ---
 

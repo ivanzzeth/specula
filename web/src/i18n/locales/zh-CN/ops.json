@@ -41,9 +41,9 @@
   },
 
   "events": {
-    "_comment": "Result VALUES (pass/warn/fail/unknown) stay English: they are the API's `result` literals, same rule as tier.* and health.* in common.json. The hints below are fully translated.",
+    "_comment": "Result/kind VALUES (pass/warn/fail, maturity/tofu/verify) stay English: they are API literals. Hints below are translated.",
     "title": "事件",
-    "subtitle": "制品校验结果 — 等级失败、digest 变更与 force-push 告警。",
+    "subtitle": "制品校验结果 — 冷静期（maturity）、TOFU digest 漂移、等级失败。",
     "logTitle": "校验日志",
     "logSubtitle": "最近 {{limit}} 条事件 · 每 {{seconds}} 秒自动刷新",
     "none": "暂无校验事件。",
@@ -54,23 +54,35 @@
       "artifact": "制品",
       "digest": "Digest",
       "tier": "等级",
+      "kind": "类型",
       "result": "结果",
       "detail": "详情"
     },
     "relativeTitle": "相对时间：{{when}}",
+    "kind": {
+      "hint": {
+        "maturity": "冷静期 / min_age 策略闸（非密码学）。",
+        "tofu": "TOFU 首次锁定警告或 digest 变更告警。",
+        "verify": "其它校验链结果。"
+      }
+    },
     "result": {
       "hint": {
         "pass": "校验通过。",
         "warn": "校验通过但有警告 — 可能需要排查。",
-        "fail": "校验失败 — 该制品可能已被篡改，或上游元数据发生变更。",
+        "fail": "校验失败 — 可能被篡改、上游元数据变更，或策略闸拒绝。",
         "unknown": "未知结果。"
       }
     },
     "summary": {
       "fail": "{{n}} 失败",
       "warn": "{{n}} 警告",
+      "maturity": "{{n}} maturity",
+      "tofu": "{{n}} tofu",
       "failTitle_other": "{{count}} 条校验失败事件",
       "warnTitle_other": "{{count}} 条校验警告",
+      "maturityTitle_other": "{{count}} 条冷静期（maturity）事件",
+      "tofuTitle_other": "{{count}} 条 TOFU 事件",
       "refreshed": "刷新于 {{when}}"
     }
   },

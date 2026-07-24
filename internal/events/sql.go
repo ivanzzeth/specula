@@ -86,6 +86,7 @@ func (s *SQLStore) List(ctx context.Context, limit int) []Event {
 		if err := rows.Scan(&e.ID, &e.Unix, &e.Protocol, &e.Artifact, &e.Digest, &e.Tier, &e.Result, &e.Detail); err != nil {
 			continue
 		}
+		e.Kind = KindOf(e.Detail)
 		out = append(out, e)
 	}
 	return out

@@ -535,7 +535,7 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 | **v0.7** | PostgreSQL HA + 分布式 stampede 锁 + 跨节点统计聚合 | ✅ done（PG + redis coalesce + `scripts/ha-minikube.sh`：暖缓存 / 杀副本 / 再拉命中）|
 | **v0.8** | tarball + consensus 档（多镜像 quorum + origin-check）+ CN mirror profile | ◐ partial（tarball + consensus 引擎已落地；tarball metadata-only 共识不可用停在 tofu）|
 | **v0.9** | Cargo sparse + conda channel + Hugging Face Hub（`HF_ENDPOINT`）| ✅ done |
-| **v0.10** | 供应链入口治理：新版本冷静期（maturity）+ 依赖混淆防呆 + Events 可行动化 | ☐ in progress |
+| **v0.10** | 供应链入口治理：新版本冷静期（maturity）+ 依赖混淆防呆 + Events 可行动化 | ✅ done |
 | **v1.0** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）| ☐ planned |
 
 > **v0.10 动机（相对竞品 / 攻击面）**：Harbor/Spegel 主打缓存与扫描；JFrog Curation / Socket

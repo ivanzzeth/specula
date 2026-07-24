@@ -35,4 +35,13 @@ func TestFromVerify(t *testing.T) {
 	assert.Equal(t, "apt", e.Protocol)
 	assert.Equal(t, "ubuntu:jammy/InRelease", e.Artifact)
 	assert.Equal(t, "bad sig", e.Detail)
+	assert.Equal(t, "verify", e.Kind)
+}
+
+func TestKindOf(t *testing.T) {
+	assert.Equal(t, "maturity", events.KindOf("maturity: version too young — age 1h < min_age 72h"))
+	assert.Equal(t, "tofu", events.KindOf("tofu: DIGEST CHANGED for x — was a, now b"))
+	assert.Equal(t, "tofu", events.KindOf("[tofu] tofu: first-lock pinned x; [maturity] maturity: age 10h >= min_age 1h"))
+	assert.Equal(t, "maturity", events.KindOf("maturity: age 10h >= min_age 1h (PublishedAt)"))
+	assert.Equal(t, "verify", events.KindOf("checksum: digest matched"))
 }
