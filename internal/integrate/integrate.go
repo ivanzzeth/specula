@@ -126,10 +126,12 @@ func Run(opts Options) (Report, error) {
 		_ = writeState(home, rep)
 		_ = writeEnvFile(home, addr, rep)
 	}
+	rep = AppendRiskAudit(home, rep)
 	return rep, nil
 }
 
-// Status reads the last integrate state file, if any.
+// Status reads the last integrate state file, if any, and appends a live
+// client-config risk audit (dep-confusion anti-patterns).
 func Status(home string) (Report, error) {
 	if home == "" {
 		var err error
@@ -141,7 +143,12 @@ func Status(home string) (Report, error) {
 	b, err := os.ReadFile(statePath(home))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return Report{}, fmt.Errorf("no integrate state yet — run: specula integrate")
+			// Still audit local client configs even without prior integrate.
+			rep := Report{Results: AuditClientRisks(home)}
+			if len(rep.Results) == 0 {
+				return Report{}, fmt.Errorf("no integrate state yet — run: specula integrate")
+			}
+			return rep, nil
 		}
 		return Report{}, err
 	}
@@ -149,7 +156,7 @@ func Status(home string) (Report, error) {
 	if err := json.Unmarshal(b, &rep); err != nil {
 		return Report{}, err
 	}
-	return rep, nil
+	return AppendRiskAudit(home, rep), nil
 }
 
 func normalizeAddr(addr string) (string, error) {
@@ -258,6 +265,12 @@ func PrintReport(rep Report) string {
 		switch r.Action {
 		case "error":
 			fmt.Fprintf(&b, "  ✗ %-6s  %s\n", r.Protocol, r.Err)
+		case "risk":
+			fmt.Fprintf(&b, "  ! %-6s  RISK — %s", r.Protocol, r.Detail)
+			if r.Path != "" {
+				fmt.Fprintf(&b, " (%s)", r.Path)
+			}
+			b.WriteByte('\n')
 		case "skipped":
 			fmt.Fprintf(&b, "  · %-6s  %s\n", r.Protocol, r.Detail)
 		case "already":

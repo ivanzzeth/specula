@@ -39,7 +39,7 @@ func runIntegrate(args []string) error {
 Add Specula as a client-side mirror without destroying existing config:
   go     prepend Specula to GOPROXY (keep proxy.golang.org,direct, …)
   npm    set registry=…/npm/ (preserve other ~/.npmrc keys; backup old registry)
-  pypi   set index-url; move previous index to extra-index-url
+  pypi   set sole index-url (never promote old index to extra-index-url)
   oci    Docker/containerd: registry-mirrors + insecure-registries (http)
          (writes /etc/docker/daemon.json when root — sudo for live dockerd)
   helm   helm repo add specula … (owned name only)

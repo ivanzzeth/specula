@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+const pipBackupKey = "# specula-integrate-previous-index-url="
+
 func integratePip(home, addr string, dryRun bool) Result {
 	index := strings.TrimRight(addr, "/") + "/pypi/simple"
 	path := pipConfPath(home)
@@ -24,28 +26,23 @@ func integratePip(home, addr string, dryRun bool) Result {
 	}
 	cur := global["index-url"]
 	if sameProxyURL(cur, index) {
-		return Result{Action: "already", Detail: "index-url already Specula", Path: path}
+		// Still scrub dangerous extras even when already pointing at Specula.
+		if cleaned := scrubPublicExtraIndexes(global); cleaned && !dryRun {
+			if err := writePipConf(path, cfg); err != nil {
+				return Result{Action: "error", Err: err.Error(), Path: path}
+			}
+			return Result{Action: "added", Detail: "index-url already Specula; removed public extra-index-url (dep-confusion)", Path: path}
+		}
+		return Result{Action: "already", Detail: "index-url already Specula (sole index)", Path: path}
 	}
 	if dryRun {
-		return Result{Action: "added", Detail: "would set index-url=" + index + " (old → extra-index-url)", Path: path}
+		return Result{Action: "added", Detail: "would set sole index-url=" + index + " (NOT extra-index-url — dep-confusion safe)", Path: path}
 	}
-	// Move previous primary index to extra-index-url (additive) if present and distinct.
-	if cur != "" && !sameProxyURL(cur, index) {
-		extras := splitCSV(global["extra-index-url"])
-		if !containsURL(extras, cur) {
-			extras = append(extras, cur)
-		}
-		// Drop Specula from extras if somehow present.
-		filtered := extras[:0]
-		for _, e := range extras {
-			if !sameProxyURL(e, index) {
-				filtered = append(filtered, e)
-			}
-		}
-		if len(filtered) > 0 {
-			global["extra-index-url"] = strings.Join(filtered, " ")
-		}
-	}
+
+	prev := cur
+	// Sole-index: Specula is the only index. Do NOT promote the previous
+	// primary into extra-index-url — that is the classic confusion pattern.
+	delete(global, "extra-index-url")
 	global["index-url"] = index
 	host := hostOf(addr)
 	if host != "" {
@@ -61,11 +58,63 @@ func integratePip(home, addr string, dryRun bool) Result {
 	if err := writePipConf(path, cfg); err != nil {
 		return Result{Action: "error", Err: err.Error(), Path: path}
 	}
-	detail := "index-url=" + index
-	if cur != "" {
-		detail += fmt.Sprintf("; previous %s kept as extra-index-url", cur)
+	// Persist previous index as a comment in a sidecar note file for recovery.
+	if prev != "" && !sameProxyURL(prev, index) {
+		_ = os.WriteFile(path+".specula-bak", []byte(pipBackupKey+prev+"\n"), 0o644)
+	}
+	detail := "sole index-url=" + index
+	if prev != "" {
+		detail += fmt.Sprintf("; previous %s NOT kept as extra-index-url (dep-confusion safe)", prev)
 	}
 	return Result{Action: "added", Detail: detail, Path: path}
+}
+
+// scrubPublicExtraIndexes removes extra-index-url entries that look like public
+// PyPI / common mirrors. Returns true when the config map was mutated.
+func scrubPublicExtraIndexes(global map[string]string) bool {
+	raw := strings.TrimSpace(global["extra-index-url"])
+	if raw == "" {
+		return false
+	}
+	extras := splitCSV(raw)
+	var kept []string
+	changed := false
+	for _, e := range extras {
+		if looksLikePublicPyPI(e) {
+			changed = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if !changed {
+		return false
+	}
+	if len(kept) == 0 {
+		delete(global, "extra-index-url")
+	} else {
+		global["extra-index-url"] = strings.Join(kept, " ")
+	}
+	return true
+}
+
+func looksLikePublicPyPI(u string) bool {
+	u = strings.ToLower(strings.TrimSpace(u))
+	needles := []string{
+		"pypi.org",
+		"pypi.python.org",
+		"pythonhosted.org",
+		"pypi.tuna.tsinghua.edu.cn",
+		"mirrors.aliyun.com/pypi",
+		"mirrors.cloud.tencent.com/pypi",
+		"doubanio.com/pypi",
+		"mirrors.ustc.edu.cn/pypi",
+	}
+	for _, n := range needles {
+		if strings.Contains(u, n) {
+			return true
+		}
+	}
+	return false
 }
 
 func pipConfPath(home string) string {
@@ -116,53 +165,46 @@ func readPipConf(path string) (map[string]map[string]string, error) {
 }
 
 func writePipConf(path string, cfg map[string]map[string]string) error {
-	order := []string{"global", "install", "download", "list"}
-	seen := map[string]bool{}
 	var b strings.Builder
-	b.WriteString("# Managed in part by `specula integrate` — other keys preserved.\n")
-	writeSec := func(name string, kv map[string]string) {
-		if len(kv) == 0 {
-			return
-		}
-		fmt.Fprintf(&b, "[%s]\n", name)
-		// Stable key order for diffs.
-		keys := make([]string, 0, len(kv))
-		for k := range kv {
-			keys = append(keys, k)
-		}
-		sortStrings(keys)
-		for _, k := range keys {
-			fmt.Fprintf(&b, "%s = %s\n", k, kv[k])
-		}
-		b.WriteByte('\n')
-		seen[name] = true
+	// Stable section order: global first, then alphabetical.
+	sections := make([]string, 0, len(cfg))
+	for s := range cfg {
+		sections = append(sections, s)
 	}
-	for _, name := range order {
-		if kv := cfg[name]; kv != nil {
-			writeSec(name, kv)
-		}
-	}
-	rest := make([]string, 0)
-	for name := range cfg {
-		if !seen[name] {
-			rest = append(rest, name)
-		}
-	}
-	sortStrings(rest)
-	for _, name := range rest {
-		writeSec(name, cfg[name])
-	}
-	return os.WriteFile(path, []byte(b.String()), 0o644)
-}
-
-func sortStrings(s []string) {
-	for i := 0; i < len(s); i++ {
-		for j := i + 1; j < len(s); j++ {
-			if s[j] < s[i] {
-				s[i], s[j] = s[j], s[i]
+	// simple sort without importing sort again if already used — use sort in this package
+	for i := 0; i < len(sections); i++ {
+		for j := i + 1; j < len(sections); j++ {
+			if sections[j] < sections[i] {
+				sections[i], sections[j] = sections[j], sections[i]
 			}
 		}
 	}
+	// Move global to front.
+	for i, s := range sections {
+		if s == "global" {
+			sections = append([]string{"global"}, append(sections[:i], sections[i+1:]...)...)
+			break
+		}
+	}
+	for _, s := range sections {
+		b.WriteString("[" + s + "]\n")
+		keys := make([]string, 0, len(cfg[s]))
+		for k := range cfg[s] {
+			keys = append(keys, k)
+		}
+		for i := 0; i < len(keys); i++ {
+			for j := i + 1; j < len(keys); j++ {
+				if keys[j] < keys[i] {
+					keys[i], keys[j] = keys[j], keys[i]
+				}
+			}
+		}
+		for _, k := range keys {
+			b.WriteString(k + " = " + cfg[s][k] + "\n")
+		}
+		b.WriteByte('\n')
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 func containsURL(list []string, want string) bool {

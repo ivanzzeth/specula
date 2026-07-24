@@ -73,7 +73,7 @@ func TestIntegrateNPMPreservesKeys(t *testing.T) {
 	}
 }
 
-func TestIntegratePipMovesExtra(t *testing.T) {
+func TestIntegratePipSoleIndex(t *testing.T) {
 	home := t.TempDir()
 	path := filepath.Join(home, ".config", "pip", "pip.conf")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -93,11 +93,33 @@ func TestIntegratePipMovesExtra(t *testing.T) {
 	if cfg["global"]["index-url"] != "http://127.0.0.1:7732/pypi/simple" {
 		t.Fatalf("index-url: %v", cfg["global"])
 	}
-	if cfg["global"]["extra-index-url"] != "https://pypi.org/simple" {
-		t.Fatalf("extra-index-url: %v", cfg["global"])
+	if _, ok := cfg["global"]["extra-index-url"]; ok {
+		t.Fatalf("extra-index-url must not be set (dep-confusion): %v", cfg["global"])
 	}
 	if cfg["global"]["timeout"] != "30" {
 		t.Fatalf("timeout lost: %v", cfg["global"])
+	}
+}
+
+func TestAuditPipExtraIndexRisk(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".config", "pip", "pip.conf")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "[global]\nindex-url = http://127.0.0.1:7732/pypi/simple\nextra-index-url = https://pypi.org/simple\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	risks := AuditClientRisks(home)
+	found := false
+	for _, r := range risks {
+		if r.Protocol == "pypi" && r.Action == "risk" && strings.Contains(r.Detail, "extra-index-url") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected extra-index-url risk, got %+v", risks)
 	}
 }
 
