@@ -301,6 +301,12 @@ func run() error {
 		verifiers = append(verifiers, cosignV)
 	}
 
+	// Maturity / cool-down policy gate (PRD v0.10). Self-gates by protocol;
+	// not a cryptographic trust tier — see docs/TRUST.md §5.
+	if mv := buildMaturityVerifier(cfg, log); mv != nil {
+		verifiers = append(verifiers, mv)
+	}
+
 	chain := verify.NewChain(verifiers...)
 
 	// ── Stats collector (metadata-backed, powers /metrics + Admin API) ───────
@@ -319,7 +325,21 @@ func run() error {
 	}
 
 	// ── Cache manager: two-tier CAS + verify-on-write quarantine ─────────────
-	eventStore := events.NewMemory(events.DefaultCapacity)
+	memEvents := events.NewMemory(events.DefaultCapacity)
+	var eventStore events.Store = memEvents
+	if mtDB != nil {
+		var durable *events.SQLStore
+		switch cfg.Storage.Meta.Driver {
+		case "sqlite":
+			durable = events.NewSQLStore(mtDB, events.DefaultCapacity)
+		case "postgres":
+			durable = events.NewSQLStorePostgres(mtDB, events.DefaultCapacity)
+		}
+		if durable != nil {
+			eventStore = &events.Fanout{Primary: durable, Memory: memEvents}
+			log.Info("specula: verification events persistence enabled", "driver", cfg.Storage.Meta.Driver)
+		}
+	}
 	cmOpts := []cache.Option{
 		cache.WithLogger(log),
 		cache.WithVerifyHook(func(ctx context.Context, ref artifact.ArtifactRef, digest string, res artifact.Result) {

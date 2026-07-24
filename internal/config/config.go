@@ -505,6 +505,23 @@ type VerificationConfig struct {
 	// for flat-or-scoped ecosystems (pypi, npm). nil disables it. (PRD §6
 	// pypi/npm blocks; DESIGN-REVIEW §4.)
 	DependencyConfusion *DependencyConfusionConfig `koanf:"dependency_confusion"`
+
+	// Maturity configures the cool-down / min-age policy gate for package
+	// ecosystems that advertise a publish time (npm, pypi, cargo). nil disables
+	// it. This is NOT a trust tier — it is a structural hold on young versions
+	// (PRD v0.10; docs/TRUST.md §5).
+	Maturity *MaturityConfig `koanf:"maturity"`
+}
+
+// MaturityConfig holds the cool-down policy for one protocol.
+type MaturityConfig struct {
+	// MinAge is how old a version must be before it may pass the gate
+	// (Go duration string, e.g. "72h", "168h"). Empty / zero disables the gate.
+	MinAge string `koanf:"min_age"`
+
+	// Policy is "warn" (StatusWarn, still cached) or "enforce" (StatusFail,
+	// quarantine discarded). Empty defaults to "warn".
+	Policy string `koanf:"policy"`
 }
 
 // ConsensusConfig is the cross-source consensus block (DESIGN-REVIEW §1.2). It

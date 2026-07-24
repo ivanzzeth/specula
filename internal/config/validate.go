@@ -298,6 +298,19 @@ func Validate(cfg *Config) error {
 			add("protocols.%s.verification.dependency_confusion.on_private_down: "+
 				"must be \"fail_closed\" or \"serve_stale\", got %q", name, dc.OnPrivateDown)
 		}
+		if m := vc.Maturity; m != nil {
+			if strings.TrimSpace(m.MinAge) != "" {
+				if _, err := time.ParseDuration(m.MinAge); err != nil {
+					add("protocols.%s.verification.maturity.min_age: invalid duration %q: %v",
+						name, m.MinAge, err)
+				}
+			}
+			pol := strings.ToLower(strings.TrimSpace(m.Policy))
+			if pol != "" && pol != "warn" && pol != "enforce" {
+				add("protocols.%s.verification.maturity.policy: must be \"warn\" or \"enforce\", got %q",
+					name, m.Policy)
+			}
+		}
 
 		// git block: validate the sync_stale_after duration string when set.
 		if proto.Git != nil && strings.TrimSpace(proto.Git.SyncStaleAfter) != "" {

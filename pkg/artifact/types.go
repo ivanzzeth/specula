@@ -111,12 +111,13 @@ type ArtifactRef struct {
 // upstream fetch. Signature/provenance attachments are referenced by the
 // streaming verifiers (never fully buffered for large blobs).
 type UpstreamMeta struct {
-	ETag         string   // entity tag for conditional GET (If-None-Match)
-	LastModified string   // Last-Modified for If-Modified-Since
-	Upstream     string   // which upstream actually served the bytes
-	ContentType  string   // reported content type
-	StatusCode   int      // upstream HTTP status (e.g. 200, 304)
-	Attachments  [][]byte // optional signature / provenance / .prov blobs
+	ETag         string    // entity tag for conditional GET (If-None-Match)
+	LastModified string    // Last-Modified for If-Modified-Since
+	Upstream     string    // which upstream actually served the bytes
+	ContentType  string    // reported content type
+	StatusCode   int       // upstream HTTP status (e.g. 200, 304)
+	Attachments  [][]byte  // optional signature / provenance / .prov blobs
+	PublishedAt  time.Time // registry-advertised publish/upload time (zero = unknown)
 }
 
 // Artifact is a quarantined, on-disk artifact handed to the verification chain.

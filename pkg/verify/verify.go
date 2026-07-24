@@ -104,6 +104,22 @@ func NewHTTPMirrorDigestFetcher(timeout time.Duration) MirrorDigestFetcher {
 	return intverify.NewHTTPMirrorDigestFetcher(timeout)
 }
 
+// MaturitySpec is the per-protocol cool-down configuration.
+type MaturitySpec = intverify.MaturitySpec
+
+// MaturityVerifier is the cool-down / min-age policy gate.
+type MaturityVerifier = intverify.MaturityVerifier
+
+const (
+	MaturityWarn    = intverify.MaturityWarn
+	MaturityEnforce = intverify.MaturityEnforce
+)
+
+// NewMaturityVerifier builds the cool-down / min-age policy gate.
+func NewMaturityVerifier(specs map[string]MaturitySpec) *MaturityVerifier {
+	return intverify.NewMaturityVerifier(specs)
+}
+
 // NewMemAptPinStore returns an in-memory apt pin store (tests / demos).
 func NewMemAptPinStore() AptPinStore {
 	return intverify.NewMemAptPinStore()
