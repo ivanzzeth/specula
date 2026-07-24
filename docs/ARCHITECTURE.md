@@ -264,9 +264,11 @@ flowchart LR
 - `consensus`：从 N 个独立镜像**并行取 digest/manifest**（HEAD/metadata 阶段，不下载全 blob），
   ≥quorum 一致才 PASS；可选 origin-check 经出口代理直连官方源比对。
 - `tofu`：首次锁定 digest 入库，后续同一不可变版本变更即告警/fail。git 额外检测非快进 ref 更新（force-push/改史）。
-- **maturity / cool-down**（v0.10，**策略闸而非信任档**）：对 npm/PyPI/Cargo，若 registry
-  公布的发布时间（或 `Last-Modified`）距今 `< min_age`，按 `warn|enforce` 告警或拒绝入缓存。
-  用于压缩维护者劫持后毒版首发窗口；无发布时间则 Skip（不伪造年龄）。**不**等同 anti-rollback。
+- **maturity / cool-down**（v0.10，**策略闸而非信任档**）：对 npm/PyPI/Cargo，优先用
+  registry 公布的发布时间（npm `packument.time`、PyPI PEP 691 / Warehouse、
+  crates.io `created_at`），否则回退 `Last-Modified`；距今 `< min_age` 时按
+  `warn|enforce` 告警或拒绝入缓存。用于压缩维护者劫持后毒版首发窗口；无发布时间则
+  Skip（不伪造年龄）。**不**等同 anti-rollback。
 - **anti-rollback**（v1.0 规划，修 H2）：per-channel 单调版本状态——拒绝比已见更低版本的**已签名索引**。
 
 **dependency confusion guard**（修 H3/H4）：见 DESIGN-REVIEW §4 + [TRUST.md](./TRUST.md)。

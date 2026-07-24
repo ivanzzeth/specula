@@ -23,6 +23,18 @@ jobs:
       - name: go test
         run: go test ./...
 
+  multisource:
+    name: Multisource path-strip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: realclient-multisource
+        run: bash scripts/realclient-multisource.sh
+
   trust-oracle:
     name: Trust oracle (CN mirrors)
     runs-on: ubuntu-latest

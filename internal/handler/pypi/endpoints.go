@@ -151,19 +151,10 @@ func (h *Handler) selectUpstreams(project string) ([]upstream.Upstream, error) {
 // # PEP 691 content negotiation
 //
 // When the client sends Accept: application/vnd.pypi.simple.v1+json (PEP 691)
-// we first probe the "simple-json" cache slot: if a JSON response was
-// previously cached (e.g. from a JSON-capable upstream), we serve it directly
-// with the JSON Content-Type.
-//
-// If the JSON slot is empty we fall back to the HTML path.  This is valid
-// per PEP 691 §4.1 ("A server MAY respond with any version they support")
-// — pip ≥21 always includes "text/html" in its Accept fallback and will
-// re-parse the response as HTML when the server returns text/html.
-//
-// Full JSON negotiation (forwarding the Accept header to the upstream so that
-// mirrors which support PEP 691 return JSON) requires a new
-// upstream.WithAcceptHeader(string) RequestOption that the upstream package
-// currently does not expose.  See KNOWN-LIMITATIONS below.
+// we first probe the "simple-json" cache slot. On miss we fetch from upstream
+// with WithAcceptHeader so mirrors that support PEP 691 return JSON (and
+// upload-time for the maturity gate). If the upstream ignores Accept and
+// returns HTML, we fall back to the HTML path (valid per PEP 691 §4.1).
 func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, project string) {
 	ups, err := h.selectUpstreams(project)
 	if err != nil {
@@ -178,9 +169,6 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, project str
 		return
 	}
 
-	// PEP 691: if the client prefers JSON and a JSON copy is already cached,
-	// serve it.  Otherwise fall through to the HTML path (valid graceful
-	// degradation per PEP 691 §4.1).
 	if wantsJSON(r) {
 		jsonRef := artifact.ArtifactRef{
 			Protocol: Protocol,
@@ -191,22 +179,48 @@ func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, project str
 		jsonEntry, lookErr := h.cache.Lookup(r.Context(), jsonRef)
 		if lookErr != nil {
 			h.log.Error("pypi: json cache lookup", "ref", jsonRef, "err", lookErr)
-			// fall through to HTML
 		} else if jsonEntry != nil {
-			// PEP 691 JSON slot hit: body comes from cache.
 			metrics.MarkHit(r.Context())
 			h.serveFromCache(w, r, jsonRef, jsonEntry, ctSimpleJSON)
 			return
 		}
-		// JSON slot is empty — fall through to HTML with HTML Content-Type.
-		// pip accepts this per PEP 691 (servers may respond with any supported
-		// format; pip's Accept list always includes text/html as a fallback).
-		h.log.Debug("pypi: JSON not cached; falling back to HTML for JSON client",
+		// Cold JSON: negotiate with upstream; fall back to HTML if rejected.
+		if h.tryServeJSONIndex(w, r, jsonRef, ups) {
+			return
+		}
+		h.log.Debug("pypi: JSON negotiation failed; falling back to HTML",
 			"project", project)
 	}
 
 	ref := indexRef(project)
 	h.serveMutable(w, r, ref, ctSimpleHTML, ups)
+}
+
+// tryServeJSONIndex cold-fetches a PEP 691 JSON simple index with Accept
+// negotiation. Returns true when the response was served (cache hit path is
+// handled by the caller). Returns false so the caller can fall back to HTML
+// when the upstream ignores Accept or fetch fails.
+func (h *Handler) tryServeJSONIndex(w http.ResponseWriter, r *http.Request, ref artifact.ArtifactRef, ups []upstream.Upstream) bool {
+	ctx := r.Context()
+	if h.upstreamClt == nil || len(ups) == 0 {
+		return false
+	}
+	body, umeta, fetchErr := h.upstreamClt.Fetch(ctx, ref, ups, upstream.WithAcceptHeader(ctSimpleJSON))
+	if fetchErr != nil || body == nil {
+		return false
+	}
+	defer body.Close()
+	if !strings.Contains(strings.ToLower(umeta.ContentType), "json") {
+		_, _ = io.Copy(io.Discard, io.LimitReader(body, maxMetaBody))
+		return false
+	}
+	newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta)
+	if storeErr != nil || newEntry == nil {
+		return false
+	}
+	metrics.MarkMiss(ctx)
+	h.serveFromCache(w, r, ref, newEntry, ctSimpleJSON)
+	return true
 }
 
 // serveMutable is the shared pipeline for the mutable /simple/ index endpoint:
@@ -481,6 +495,8 @@ func (h *Handler) fetchAndStoreFile(ctx context.Context, ref artifact.ArtifactRe
 		return nil, fmt.Errorf("upstream fetch: %w", err)
 	}
 	defer rc.Close()
+
+	h.enrichPublishTime(ctx, ref, &umeta)
 
 	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
 	if err != nil {

@@ -11,6 +11,13 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
   package versions younger than `min_age` (npm / PyPI / Cargo). Policy gate —
   not a cryptographic trust tier; closes the post-publish malware window that
   checksum/TOFU alone cannot (aligned with JFrog Curation / Socket cool-down).
+  Publish age prefers registry metadata (`packument.time`, PEP 691
+  `upload-time`, Warehouse JSON, crates.io `created_at`) over CDN
+  `Last-Modified`.
+- **`upstream.WithAcceptHeader`**: PEP 691 JSON simple-index negotiation
+  (closes the prior known limitation that only served cached JSON).
+- **CI**: `scripts/realclient-multisource.sh` (apt/helm/conda named-source
+  path-strip) runs in the CI workflow and `make test-realclient`.
 - **Dep-confusion fail-safe UX**: `specula integrate` no longer promotes the
   previous pip index to `extra-index-url` (that pattern *enables* confusion);
   `integrate status` audits dangerous client dual-index configs.

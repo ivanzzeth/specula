@@ -81,6 +81,12 @@ func WithOCIManifestAccept() RequestOption {
 	return func(o *requestOpts) { o.accept = ociManifestAccept }
 }
 
+// WithAcceptHeader sets an arbitrary Accept header on the upstream request
+// (e.g. PEP 691 application/vnd.pypi.simple.v1+json). Empty accept is a no-op.
+func WithAcceptHeader(accept string) RequestOption {
+	return func(o *requestOpts) { o.accept = accept }
+}
+
 // Client fetches artifacts from a fallback chain of upstreams.
 type Client interface {
 	// Fetch streams the artifact bytes from the first healthy upstream in

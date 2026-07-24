@@ -147,7 +147,9 @@ protocols:
         policy: warn          # warn | enforce (enforce → verify FAIL → not cached)
 ```
 
-- Uses registry-advertised publish/upload time when known; else `Last-Modified`.
+- Uses registry-advertised publish/upload time when known
+  (npm `packument.time[version]`, PyPI PEP 691 `upload-time` / Warehouse
+  `upload_time_iso_8601`, crates.io API `created_at`); else `Last-Modified`.
 - If neither is available → **skip** (honest: do not invent an age).
 - Does **not** raise the trust tier; Events/UI show it as a policy outcome.
 - Does **not** claim to stop XZ-style long-horizon signed poisoning.

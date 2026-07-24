@@ -231,9 +231,8 @@ pass "pip download exit 0; file on disk: $(basename "${WHL}")"
 
 # ── 8. PEP 691 JSON Accept header test ────────────────────────────────────────
 # PEP 691 §4.1: "A server MAY respond with any version they support."
-# tuna doesn't implement PEP 691 JSON, so Specula falls back to HTML with
-# text/html Content-Type — valid per the spec.  pip's Accept list always
-# includes text/html as a fallback; it will parse the response as HTML.
+# Specula forwards Accept via WithAcceptHeader; mirrors that support PEP 691
+# return JSON, others (e.g. tuna) return HTML — both are valid.
 step "Test 4: PEP 691 — Accept: application/vnd.pypi.simple.v1+json"
 JSON_RESPONSE=$(curl -fsS \
     -H "Accept: application/vnd.pypi.simple.v1+json" \
@@ -246,14 +245,16 @@ JSON_CT=$(curl -fsS \
 echo "  Content-Type: ${JSON_CT}"
 echo "  Body (first line): $(echo "${JSON_RESPONSE}" | head -1)"
 
-# Assert 200 (already enforced by curl -f) and body is non-empty.
 [ -n "${JSON_RESPONSE}" ] || fail "empty body for JSON Accept request"
-# Assert body is HTML (graceful degradation, valid per PEP 691 §4.1).
-echo "${JSON_RESPONSE}" | grep -qi "<!DOCTYPE html\|<html" \
-    || fail "expected HTML fallback body for JSON Accept (tuna doesn't support PEP 691 JSON)"
-pass "PEP 691 JSON Accept → 200 + valid HTML body (graceful degradation per PEP 691 §4.1)"
-echo "  Note: full JSON negotiation (forwarding Accept to upstream) requires"
-echo "  upstream.WithAcceptHeader — see KNOWN-LIMITATIONS in runner output."
+if echo "${JSON_CT}" | grep -qi 'json'; then
+	echo "${JSON_RESPONSE}" | grep -q '"files"\|"meta"' \
+		|| fail "JSON Content-Type but body missing PEP 691 fields"
+	pass "PEP 691 JSON Accept → upstream JSON (WithAcceptHeader)"
+elif echo "${JSON_RESPONSE}" | grep -qi "<!DOCTYPE html\|<html"; then
+	pass "PEP 691 JSON Accept → HTML fallback (mirror ignored Accept; §4.1 OK)"
+else
+	fail "unexpected PEP 691 response (neither JSON nor HTML)"
+fi
 
 # ── 9. #sha256= fragment preservation + --require-hashes ─────────────────────
 # PEP 503 §2: The URL for a package file MUST be the file URL with the
@@ -323,20 +324,15 @@ echo "  PEP 503 #sha256= fragment              PASS  — preserved through proxy
 echo "  PEP 503 relative download URLs         PASS  — ../../packages/... resolves"
 echo "                                                  correctly under /pypi/simple/<pkg>/"
 echo "  PEP 503 caching (two-tier CAS)         PASS  — second install is a cache hit"
-echo "  PEP 691 JSON Accept negotiation        PASS* — 200 + HTML fallback"
-echo "                                                  (* JSON from upstream not available:"
-echo "                                                     tuna doesn't support PEP 691;"
-echo "                                                     upstream.WithAcceptHeader needed)"
+echo "  PEP 691 JSON Accept negotiation        PASS  — WithAcceptHeader → upstream JSON"
+echo "                                                  when mirror supports PEP 691;"
+echo "                                                  HTML fallback if Accept ignored"
 echo "  pip --require-hashes                   PASS  — hash verified by pip"
 echo ""
 echo "KNOWN LIMITATIONS:"
-echo "  PEP 691 full JSON support (upstream JSON fetch):"
-echo "    The PyPI handler currently does not forward the client's Accept header"
-echo "    to the upstream (internal/upstream.Client.Fetch lacks a"
-echo "    WithAcceptHeader(string) RequestOption).  When a client requests JSON and"
-echo "    no JSON entry is cached, Specula falls back to HTML (PEP 691 §4.1 valid)."
-echo "    To enable true JSON negotiation, add upstream.WithAcceptHeader to"
-echo "    internal/upstream/upstream.go and thread it through serveIndex."
+echo "  Some CN mirrors (e.g. tuna) may ignore PEP 691 Accept and return HTML;"
+echo "  Specula then falls back to HTML (valid per PEP 691 §4.1) and maturity"
+echo "  publish-time uses Warehouse /pypi/<name>/json when available."
 echo ""
 echo "Daemon log: ${WORK}/daemon.log"
 echo "Run artifacts: ${WORK}/"

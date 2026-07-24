@@ -352,6 +352,8 @@ func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ref artifact.Artif
 	}
 	defer rc.Close()
 
+	h.enrichPublishTime(ctx, ref, &umeta)
+
 	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
 	if err != nil {
 		return nil, fmt.Errorf("quarantine: %w", err)

@@ -519,6 +519,12 @@ func TestBuildURL_Protocols(t *testing.T) {
 			wantPath: "/simple/requests/",
 		},
 		{
+			name:     "pypi warehouse json",
+			ref:      artifact.ArtifactRef{Protocol: "pypi", Name: "requests", Version: "json", Mutable: true},
+			base:     "https://pypi.org",
+			wantPath: "/pypi/requests/json",
+		},
+		{
 			name:     "npm packument",
 			ref:      artifact.ArtifactRef{Protocol: "npm", Name: "lodash", Mutable: true},
 			base:     "https://registry.npmjs.org",
@@ -798,6 +804,28 @@ func TestFetch_OCIManifestAcceptHeader(t *testing.T) {
 		"OCI image index media type should be in Accept")
 	assert.Contains(t, gotAccept, "application/vnd.docker.distribution.manifest.list.v2+json",
 		"Docker manifest list media type should be in Accept")
+}
+
+func TestFetch_WithAcceptHeader(t *testing.T) {
+	const want = "application/vnd.pypi.simple.v1+json"
+	var gotAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAccept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", want)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"files":[]}`)
+	}))
+	defer srv.Close()
+
+	c := testClient(1)
+	body, _, err := c.Fetch(context.Background(),
+		artifact.ArtifactRef{Protocol: "pypi", Name: "flask", Mutable: true},
+		[]Upstream{{Name: "up", BaseURL: srv.URL, Priority: 1}},
+		WithAcceptHeader(want),
+	)
+	require.NoError(t, err)
+	body.Close()
+	assert.Equal(t, want, gotAccept)
 }
 
 func TestFetch_NoAcceptHeader_WithoutOption(t *testing.T) {

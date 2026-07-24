@@ -243,6 +243,7 @@ test-realclient:
 	bash scripts/realclient-cargo.sh
 	bash scripts/realclient-conda.sh
 	bash scripts/realclient-hf.sh
+	bash scripts/realclient-multisource.sh
 
 ## test-e2e: the dimensions needing a real binary + real infra (needs: network + docker + clients)
 test-e2e: test-conformance test-realclient

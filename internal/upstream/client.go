@@ -693,6 +693,11 @@ func buildPath(ref artifact.ArtifactRef) string {
 		return ref.Name + "/@v/" + ref.Version
 
 	case "pypi":
+		// Warehouse JSON (/pypi/<project>/json) carries upload_time_iso_8601
+		// for the maturity cool-down gate. Version sentinel "json" selects it.
+		if ref.Mutable && ref.Version == "json" {
+			return "pypi/" + ref.Name + "/json"
+		}
 		if ref.Mutable || ref.Digest == "" {
 			return "simple/" + ref.Name + "/"
 		}
