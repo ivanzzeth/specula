@@ -508,6 +508,9 @@ Warm Specula while online, then restart with `mode: offline`. Cache hits keep
 working; misses return **404** and Specula makes **no outbound** fetches (git
 mirrors are served as-is — no clone/refresh).
 
+Full operator cookbook (prefetch, containerd `certs.d`, checklist):
+**[docs/OFFLINE.md](docs/OFFLINE.md)**.
+
 ```yaml
 server:
   mode: offline   # restart required to switch; empty/online = normal pull-through
@@ -539,6 +542,7 @@ NodePort, containerd `certs.d` DaemonSet — no busybox). Local smoke (container
 
 | Doc | Contents |
 |-----|----------|
+| [docs/OFFLINE.md](docs/OFFLINE.md) | Air-gap / offline mode cookbook (warm → offline → prefetch) |
 | [docs/LIBRARY.md](docs/LIBRARY.md) | Public `pkg/` API, stability, error contract |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Two-plane design, cache, verify, **HA matrix** |
 | [docs/TRUST.md](docs/TRUST.md) | Cosign / apt GPG / Helm `.prov` / dep-confusion cookbook + oracles |
