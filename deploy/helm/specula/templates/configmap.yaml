@@ -66,6 +66,21 @@ data:
         verification:
           tiers: [tofu, checksum]
           quorum: 2
+        oci:
+          remote_registries:
+            - host: quay.io
+              base_url: https://quay.m.daocloud.io
+            - host: ghcr.io
+              base_url: https://ghcr.m.daocloud.io
+            - host: registry.k8s.io
+              base_url: https://k8s.m.daocloud.io
+            - host: gcr.io
+              base_url: https://gcr.m.daocloud.io
+            - host: k8s.gcr.io
+              base_url: https://k8s-gcr.m.daocloud.io
+            - host: mcr.microsoft.com
+              base_url: https://mcr.m.daocloud.io
+            - host: codeberg.org
       go:
         mutable_ttl_seconds: 300
         upstreams:

@@ -193,10 +193,19 @@ protocols:
     # registry — only hosts listed here are allowed (SSRF allowlist).
     oci:
       remote_registries:
+        # CN-reachable mirrors (DaoCloud). Outside CN, omit base_url to use https://<host>.
         - host: ghcr.io
+          base_url: https://ghcr.m.daocloud.io
         - host: quay.io
+          base_url: https://quay.m.daocloud.io
         - host: registry.k8s.io
+          base_url: https://k8s.m.daocloud.io
         - host: gcr.io
+          base_url: https://gcr.m.daocloud.io
+        - host: k8s.gcr.io
+          base_url: https://k8s-gcr.m.daocloud.io
+        - host: mcr.microsoft.com
+          base_url: https://mcr.m.daocloud.io
         - host: codeberg.org
         # - host: mirror.example
         #   base_url: https://mirror.example

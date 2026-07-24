@@ -11,6 +11,43 @@ import (
 
 const systemContainerdCerts = "/etc/containerd/certs.d"
 
+// k3s ships its own containerd; the live certs.d root is under the agent tree
+// (server nodes use the same agent path). Writing only /etc/containerd/certs.d
+// is a no-op for k3s — live incident: integrate reported success while k3s
+// kept Hub-style hosts.toml generated from registries.yaml.
+const k3sAgentContainerdCerts = "/var/lib/rancher/k3s/agent/etc/containerd/certs.d"
+
+// resolveContainerdCertsDirs returns the certs.d roots Specula integrate must
+// write. When a k3s install is detected, ONLY the k3s agent path is used
+// (that is what containerd reads). Otherwise the stock /etc/containerd path.
+func resolveContainerdCertsDirs() []string {
+	if isK3sNode() {
+		return []string{k3sAgentContainerdCerts}
+	}
+	return []string{systemContainerdCerts}
+}
+
+func isK3sNode() bool {
+	if fileExists(k3sAgentContainerdCerts) || dirExists(k3sAgentContainerdCerts) {
+		return true
+	}
+	// Fresh node: certs.d may not exist yet, but the k3s tree does.
+	if dirExists("/var/lib/rancher/k3s") || fileExists("/usr/local/bin/k3s") || fileExists("/usr/bin/k3s") {
+		return true
+	}
+	return false
+}
+
+func dirExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+func fileExists(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && !st.IsDir()
+}
+
 // integrateContainerdCerts writes containerd hosts.toml drop-ins so non-Hub
 // registries (ghcr, quay, codeberg, …) reach Specula with override_path.
 // docker.io stays a plain mirror host (Hub-relative paths).
@@ -19,7 +56,8 @@ func integrateContainerdCerts(home, addr string, dryRun, skipRoot bool) Result {
 	skipVerify := strings.HasPrefix(strings.ToLower(endpoint), "http://")
 	regs := append([]string(nil), bootstrap.DefaultOCIRegistries...)
 
-	systemDir := systemContainerdCerts
+	systemDirs := resolveContainerdCertsDirs()
+	primaryDir := systemDirs[0]
 	userDir := filepath.Join(home, ".config", "specula", "certs.d")
 
 	alreadyOK := func(dir string) bool {
@@ -63,36 +101,41 @@ func integrateContainerdCerts(home, addr string, dryRun, skipRoot bool) Result {
 	if skipRoot {
 		r := writeTo(userDir)
 		if r.Action == "added" {
-			r.Detail += "; copy to " + systemDir + " or re-run: sudo specula integrate --protocols oci"
+			r.Detail += "; copy to " + primaryDir + " or re-run: sudo specula integrate --protocols oci"
 		}
 		return r
 	}
 
-	// Prefer system certs.d (what containerd reads).
-	if err := os.MkdirAll(systemDir, 0o755); err != nil {
-		if os.IsPermission(err) {
-			r := writeTo(userDir)
-			if r.Action == "added" || r.Action == "already" {
-				r.Detail += "; WARNING: live containerd uses " + systemDir + " — run: sudo specula integrate --protocols oci"
+	// Prefer the live containerd certs.d (k3s agent path or /etc/containerd).
+	var last Result
+	for _, systemDir := range systemDirs {
+		if err := os.MkdirAll(systemDir, 0o755); err != nil {
+			if os.IsPermission(err) {
+				r := writeTo(userDir)
+				if r.Action == "added" || r.Action == "already" {
+					r.Detail += "; WARNING: live containerd uses " + systemDir + " — run: sudo specula integrate --protocols oci"
+				}
+				return r
 			}
-			return r
+			return Result{Action: "error", Err: err.Error(), Path: systemDir}
 		}
-		return Result{Action: "error", Err: err.Error(), Path: systemDir}
+		last = writeTo(systemDir)
+		if last.Action == "error" {
+			if strings.Contains(last.Err, "permission") {
+				ur := writeTo(userDir)
+				if ur.Action == "added" || ur.Action == "already" {
+					ur.Detail += "; WARNING: live containerd uses " + systemDir + " — run: sudo specula integrate --protocols oci"
+					return ur
+				}
+			}
+			return last
+		}
 	}
-
-	r := writeTo(systemDir)
-	if !dryRun && (r.Action == "added" || r.Action == "already") {
+	if !dryRun && (last.Action == "added" || last.Action == "already") {
 		// Best-effort user copy for visibility.
 		_ = writeTo(userDir)
 	}
-	if r.Action == "error" && strings.Contains(r.Err, "permission") {
-		ur := writeTo(userDir)
-		if ur.Action == "added" || ur.Action == "already" {
-			ur.Detail += "; WARNING: live containerd uses " + systemDir + " — run: sudo specula integrate --protocols oci"
-			return ur
-		}
-	}
-	return r
+	return last
 }
 
 // mergeOCIResults combines dockerd daemon.json + containerd certs.d outcomes

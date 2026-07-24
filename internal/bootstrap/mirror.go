@@ -18,6 +18,8 @@ var DefaultOCIRegistries = []string{
 	"ghcr.io",
 	"quay.io",
 	"gcr.io",
+	"k8s.gcr.io",
+	"mcr.microsoft.com",
 	"codeberg.org",
 }
 
