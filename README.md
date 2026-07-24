@@ -10,6 +10,7 @@ Specula is a lightweight multi-protocol artifact proxy and Go library. It caches
 
 - **11 protocols in one binary** — OCI, Go modules (GOPROXY), PyPI, npm, apt, Helm, tarball, git, Cargo (sparse), conda, Hugging Face Hub
 - **Honest tiered trust** — `signed` → `consensus` → `tofu` → `checksum` (never claim more than you verified)
+- **Optional maturity cool-down** — warn/block package versions younger than `min_age` (npm/PyPI/Cargo policy gate)
 - **Verify-on-write** — only verified bytes are served; streaming quarantine, no multi-GB blobs in memory
 - **Two-tier cache** — immutable CAS (permanent) + mutable metadata (short TTL / revalidate); optional `cache.max_bytes` auto-evicts oldest unpinned entries
 - **CN-friendly upstreams** — fallback mirrors, auto-block/unblock, Go sumdb passthrough

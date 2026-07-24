@@ -535,6 +535,14 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 | **v0.7** | PostgreSQL HA + 分布式 stampede 锁 + 跨节点统计聚合 | ✅ done（PG + redis coalesce + `scripts/ha-minikube.sh`：暖缓存 / 杀副本 / 再拉命中）|
 | **v0.8** | tarball + consensus 档（多镜像 quorum + origin-check）+ CN mirror profile | ◐ partial（tarball + consensus 引擎已落地；tarball metadata-only 共识不可用停在 tofu）|
 | **v0.9** | Cargo sparse + conda channel + Hugging Face Hub（`HF_ENDPOINT`）| ✅ done |
+| **v0.10** | 供应链入口治理：新版本冷静期（maturity）+ 依赖混淆防呆 + Events 可行动化 | ☐ in progress |
 | **v1.0** | anti-rollback 单调版本状态 + SBOM 生成 + 自建 sigstore 栈（气隙 keyless 可选）| ☐ planned |
 
-> v0.2-hardening 分支说明：11 协议数据面 + 四档诚实信任模型（checksum/tofu/consensus/signed）已端到端接线。consensus 引擎（quorum + origin-check + 并行取 digest）与 cosign keyed 锚均已实现并从 config 自动装配、按协议自门控。metadata-only 的 sha256 跨源共识当前仅对 OCI（Docker-Content-Digest）与 PyPI（PEP 503 `#sha256=`）可用；npm/tarball/cargo 因 metadata 不暴露跨源 sha256 默认停在 tofu，绝不 fail-close 真实拉取。
+> **v0.10 动机（相对竞品 / 攻击面）**：Harbor/Spegel 主打缓存与扫描；JFrog Curation / Socket
+> 主打「新包冷静期」。Specula 已有诚实档（signed/consensus/tofu/checksum）与 dep-confusion
+> fail-closed，但挡不住「合法维护者账号被劫持后立刻发毒版」（Shai-Hulud / chalk 类窗口）。
+> v0.10 用 **maturity（min_age 策略闸，非密码学档）** 对齐该窗口；用 **sole-index 防呆**
+> 堵住客户端双源；用 **Events 持久化 + TOFU 漂移** 让告警可行动。明确不承诺防 XZ 类
+> 「仍带合法签名的长线投毒」。
+
+> v0.2-hardening / main 说明：11 协议数据面 + 四档诚实信任模型（checksum/tofu/consensus/signed）已端到端接线。consensus 引擎（quorum + origin-check + 并行取 digest）与 cosign keyed 锚均已实现并从 config 自动装配、按协议自门控。metadata-only 的 sha256 跨源共识当前仅对 OCI（Docker-Content-Digest）与 PyPI（PEP 503 `#sha256=`）可用；npm/tarball/cargo 因 metadata 不暴露跨源 sha256 默认停在 tofu，绝不 fail-close 真实拉取。

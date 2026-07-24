@@ -5,6 +5,24 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Maturity / cool-down gate** (`verification.maturity`): block or warn on
+  package versions younger than `min_age` (npm / PyPI / Cargo). Policy gate —
+  not a cryptographic trust tier; closes the post-publish malware window that
+  checksum/TOFU alone cannot (aligned with JFrog Curation / Socket cool-down).
+- **Dep-confusion fail-safe UX**: `specula integrate` no longer promotes the
+  previous pip index to `extra-index-url` (that pattern *enables* confusion);
+  `integrate status` audits dangerous client dual-index configs.
+- **Verification Events persistence**: Admin Events survive process restart
+  (SQLite/Postgres); TOFU first-lock warns and digest-change fails remain the
+  primary actionable feed.
+
+### Docs
+
+- PRD **v0.10** milestone; TRUST cookbook: maturity + sole-index anti-patterns;
+  competitive/attack-face rationale (not CVE scanning, not anti-XZ claims).
+
 ## [0.7.0] — Multi-registry OCI, offline mode, ops polish — 2026-07-24
 
 ### Added

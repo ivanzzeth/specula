@@ -115,15 +115,53 @@ protocols:
 When the private upstream is down: **5xx / refuse**, never a public hit for a
 private name. That is the whole point.
 
+### Client anti-patterns (must fix)
+
+| Bad | Why | Specula help |
+|-----|-----|--------------|
+| `pip` `--extra-index-url` + public PyPI | Highest version wins across indexes → classic confusion | `integrate` sets **sole** `index-url`; strips public extras; `integrate status` audits leftovers |
+| Dual npm registries without scope mapping | Unscoped private names resolve publicly | `integrate` sets sole `registry=`; status warns on leftover dual config |
+| Artifactory/Nexus “virtual” merge of private+public | Same highest-version algorithm | Keep Specula as the only client-facing index; put private upstream behind Specula’s `dependency_confusion` |
+
+```bash
+specula integrate --protocols pypi,npm   # sole-index wiring
+specula integrate status                 # includes risk audit rows
+```
+
 ---
 
-## 5. What “PASS” does and does not mean
+## 5. Maturity / cool-down (policy gate, not a trust tier)
+
+Checksum and TOFU do **not** stop a compromised maintainer who publishes a new
+malicious version of a real package (npm worm / hijack window). Industry answer
+(JFrog Curation, Socket cool-down): hold versions younger than N until the
+community has had time to yank them.
+
+```yaml
+protocols:
+  npm:   # same shape for pypi / cargo
+    verification:
+      tiers: [consensus, tofu, checksum]
+      maturity:
+        min_age: 72h          # Go duration (e.g. 24h, 168h)
+        policy: warn          # warn | enforce (enforce → verify FAIL → not cached)
+```
+
+- Uses registry-advertised publish/upload time when known; else `Last-Modified`.
+- If neither is available → **skip** (honest: do not invent an age).
+- Does **not** raise the trust tier; Events/UI show it as a policy outcome.
+- Does **not** claim to stop XZ-style long-horizon signed poisoning.
+
+---
+
+## 6. What “PASS” does and does not mean
 
 - `test-trust-oracle` PASS ≠ cosign or helm `.prov` on public CN mirrors.
 - `test-trust-oracle-signed` PASS ≠ any public mirror serves signatures; it proves
   Specula’s verifier + pull-through reach `signed` against real cosign/helm output.
 - WebUI / Prometheus tiers are **self-reported**; the oracles are the external check.
+- Maturity `PASS` ≠ malware-free — only “older than min_age”.
 
 Authoritative schema: [`specula.example.yaml`](../specula.example.yaml) and
 [`internal/config/config.go`](../internal/config/config.go). Product claims:
-[`docs/PRD.md`](PRD.md) §G2 / §6.
+[`docs/PRD.md`](PRD.md) §G2 / §6 / milestone v0.10.

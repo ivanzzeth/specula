@@ -223,6 +223,11 @@ protocols:
       tiers: [consensus, tofu, checksum]
       quorum: 2
       tofu: enforce   # pin digest on first fetch; alert on later change
+      # Cool-down / maturity (PRD v0.10; docs/TRUST.md §5) — policy gate, not a trust tier.
+      # Hold versions younger than min_age to shrink maintainer-hijack publish windows.
+      # maturity:
+      #   min_age: 72h
+      #   policy: warn          # warn | enforce
       # Dependency-confusion guard (DESIGN-REVIEW §4 / docs/TRUST.md):
       # PyPI is a FLAT namespace — list exact private names you own.
       # dependency_confusion:
@@ -252,6 +257,9 @@ protocols:
       tiers: [consensus, tofu, checksum]
       quorum: 2
       tofu: enforce
+      # maturity:
+      #   min_age: 72h
+      #   policy: warn
       # Dependency-confusion guard (docs/TRUST.md): scopes are resistant by
       # design; unscoped private names need an explicit denylist.
       # dependency_confusion:
