@@ -34,8 +34,8 @@ server:
   # Control plane: embedded WebUI + Admin API (email auth, first user = admin).
   control_plane_addr: "0.0.0.0:7733"
 
-  # Multi-replica HA mode: requires postgres meta, redis stampede lock
-  # (coalesce.lock_driver=redis), and shared CAS (blob.driver=s3 OR
+  # Multi-replica HA mode: requires postgres meta, a stampede lock
+  # (coalesce.lock_driver=redis OR postgres), and shared CAS (blob.driver=s3 OR
   # blob.driver=local with local.shared=true on a PVC/NFS). Git stays
   # single-node (node-local mirrors) — disable git in HA Deployment values.
   # ha: false
@@ -47,7 +47,9 @@ server:
 
 # ── Coalesce (cross-replica cold-fetch stampede lock) ─────────────────────────
 # Empty / omitted = in-process singleflight only (fine for DaemonSet / single node).
-# HA deployments must set lock_driver: redis (go-redsync/redsync over go-redis).
+# HA deployments: lock_driver redis (default when empty under ha) or postgres.
+# Prefer redis when available; postgres uses session advisory locks on the meta
+# pool (no Redis) but holds one pool connection per held lock.
 # coalesce:
 #   lock_driver: redis
 #   redis:
@@ -55,6 +57,8 @@ server:
 #     password: ""
 #     db: 0
 #     key_prefix: "specula:lock:"
+#   # Redis-free HA alternative (requires storage.meta.driver=postgres):
+#   # lock_driver: postgres
 
 # ── Storage ───────────────────────────────────────────────────────────────────
 storage:

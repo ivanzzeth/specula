@@ -5,6 +5,23 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+## [0.11.0] — HA coalesce: PG advisory lock + tarball stampede — (tag pending)
+
+### Added
+
+- **`coalesce.lock_driver=postgres`**: wires `PGAdvisoryLocker` on the shared meta
+  pool for Redis-free HA stampede protection. HA accepts **redis** (default when
+  `lock_driver` empty) **or** **postgres**; postgres lock requires
+  `storage.meta.driver=postgres`. Advisory locks hold a pool connection for the
+  lock duration — size the pool for concurrent cold misses.
+- **Tarball `WithLocker` / `FetchLocked`**: cold path matches npm/pypi (Acquire →
+  cache recheck → fetch), and `mountTarball` receives the stampede locker.
+
+### Docs
+
+- ARCHITECTURE §7: tier-2 marked wired (redis primary; postgres advisory optional).
+- PRD milestone **v0.11** done; example YAML documents both lock drivers.
+
 ## [0.10.0] — Supply-chain entry gates (maturity + sole-index + Events) — 2026-07-24
 
 ### Added

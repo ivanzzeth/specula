@@ -65,10 +65,10 @@ type ServerConfig struct {
 	RegistryPublicHost string `koanf:"registry_public_host"`
 
 	// HA enables multi-replica mode checks: meta must be postgres, coalesce
-	// lock_driver must be redis (cross-replica stampede lock via redsync), and
+	// lock_driver must be redis (redsync) or postgres (advisory locks), and
 	// CAS must be shared — blob.driver=s3 (any S3-compatible endpoint) OR
 	// blob.driver=local with local.shared=true (PVC/NFS). Production does not
-	// require MinIO/AWS specifically.
+	// require MinIO/AWS specifically. Empty lock_driver under HA defaults to redis.
 	HA bool `koanf:"ha"`
 
 	// Mode is "online" (default) or "offline". Offline serves only already-cached
@@ -87,9 +87,12 @@ func (c *Config) Offline() bool {
 
 // CoalesceConfig selects the cross-instance stampede lock backend
 // (ARCHITECTURE §7 tier 2). Empty lock_driver means in-process only (nil
-// Locker): same-replica singleflight still applies. HA requires "redis".
+// Locker): same-replica singleflight still applies. HA requires "redis"
+// (default) or "postgres".
 type CoalesceConfig struct {
-	// LockDriver is "local" (nil / in-process only), "redis" (redsync), or "" (same as local).
+	// LockDriver is "local" (nil / in-process only), "redis" (redsync),
+	// "postgres" (session advisory locks on the meta pool), or "" (same as local;
+	// under server.ha empty defaults to redis).
 	LockDriver string      `koanf:"lock_driver"`
 	Redis      RedisConfig `koanf:"redis"`
 }

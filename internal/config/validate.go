@@ -131,17 +131,22 @@ func Validate(cfg *Config) error {
 	}
 
 	// ── Coalesce lock ─────────────────────────────────────────────────────
-	switch strings.ToLower(strings.TrimSpace(cfg.Coalesce.LockDriver)) {
-	case "", "local", "redis":
+	ld := strings.ToLower(strings.TrimSpace(cfg.Coalesce.LockDriver))
+	switch ld {
+	case "", "local", "redis", "postgres":
 		// ok
-	case "postgres":
-		add("coalesce.lock_driver: \"postgres\" is not supported; use \"redis\" (redsync) for HA")
 	default:
-		add("coalesce.lock_driver: must be \"local\", \"redis\", or empty, got %q", cfg.Coalesce.LockDriver)
+		add("coalesce.lock_driver: must be \"local\", \"redis\", \"postgres\", or empty, got %q", cfg.Coalesce.LockDriver)
 	}
-	if strings.EqualFold(strings.TrimSpace(cfg.Coalesce.LockDriver), "redis") {
+	if ld == "redis" {
 		if strings.TrimSpace(cfg.Coalesce.Redis.Addr) == "" {
 			add("coalesce.redis.addr: must not be empty when lock_driver is \"redis\"")
+		}
+	}
+	if ld == "postgres" {
+		if !strings.EqualFold(strings.TrimSpace(cfg.Storage.Meta.Driver), "postgres") {
+			add("coalesce.lock_driver: \"postgres\" requires storage.meta.driver \"postgres\" (got %q)",
+				cfg.Storage.Meta.Driver)
 		}
 	}
 
@@ -150,15 +155,19 @@ func Validate(cfg *Config) error {
 		if !strings.EqualFold(strings.TrimSpace(cfg.Storage.Meta.Driver), "postgres") {
 			add("server.ha: storage.meta.driver must be \"postgres\" (got %q)", cfg.Storage.Meta.Driver)
 		}
-		ld := strings.ToLower(strings.TrimSpace(cfg.Coalesce.LockDriver))
-		if ld == "" {
-			ld = "redis" // HA implies redis; empty is treated as requiring redis addr below
+		haLD := ld
+		if haLD == "" {
+			haLD = "redis" // HA empty lock_driver defaults to redis
 		}
-		if ld != "redis" {
-			add("server.ha: coalesce.lock_driver must be \"redis\" (got %q)", cfg.Coalesce.LockDriver)
-		}
-		if strings.TrimSpace(cfg.Coalesce.Redis.Addr) == "" {
-			add("server.ha: coalesce.redis.addr must not be empty")
+		switch haLD {
+		case "redis":
+			if strings.TrimSpace(cfg.Coalesce.Redis.Addr) == "" {
+				add("server.ha: coalesce.redis.addr must not be empty when lock_driver is redis (or empty)")
+			}
+		case "postgres":
+			// Redis-free HA: advisory locks on the shared meta Postgres.
+		default:
+			add("server.ha: coalesce.lock_driver must be \"redis\" or \"postgres\" (got %q)", cfg.Coalesce.LockDriver)
 		}
 		switch cfg.Storage.Blob.Driver {
 		case "s3":

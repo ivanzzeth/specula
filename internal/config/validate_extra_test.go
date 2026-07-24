@@ -323,11 +323,34 @@ func TestValidate_HA_RequiresPostgresRedisSharedCAS(t *testing.T) {
 		err := config.Validate(cfg)
 		assertValidationErr(t, err, "storage.blob.local.shared must be true")
 	})
-	t.Run("rejects postgres lock_driver", func(t *testing.T) {
+	t.Run("rejects postgres lock without postgres meta", func(t *testing.T) {
 		cfg := validCfg()
 		cfg.Coalesce.LockDriver = "postgres"
+		// validCfg uses sqlite meta by default
 		err := config.Validate(cfg)
-		assertValidationErr(t, err, `coalesce.lock_driver: "postgres" is not supported`)
+		assertValidationErr(t, err, `coalesce.lock_driver: "postgres" requires storage.meta.driver "postgres"`)
+	})
+	t.Run("accepts postgres lock with postgres meta (non-HA)", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Storage.Meta.Driver = "postgres"
+		cfg.Storage.Meta.DSN = "postgres://x"
+		cfg.Coalesce.LockDriver = "postgres"
+		if err := config.Validate(cfg); err != nil {
+			t.Fatalf("valid postgres lock config: %v", err)
+		}
+	})
+	t.Run("accepts HA with postgres lock without redis", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Server.HA = true
+		cfg.Storage.Meta.Driver = "postgres"
+		cfg.Storage.Meta.DSN = "postgres://x"
+		cfg.Storage.Blob.Driver = "s3"
+		cfg.Storage.Blob.S3.Bucket = "specula"
+		cfg.Coalesce.LockDriver = "postgres"
+		cfg.Coalesce.Redis.Addr = ""
+		if err := config.Validate(cfg); err != nil {
+			t.Fatalf("valid HA postgres-lock config: %v", err)
+		}
 	})
 	t.Run("accepts s3 + postgres + redis", func(t *testing.T) {
 		cfg := validCfg()

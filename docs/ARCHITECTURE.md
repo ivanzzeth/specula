@@ -313,30 +313,33 @@ copy/move/delete = 引用操作，末次引用才物理删。
 
 ---
 
-## 7. Stampede 保护 — 两层设计（第 1 层已实现；第 2 层未接线）(修 M3)
+## 7. Stampede 保护 — 两层设计（均已接线）(修 M3)
 
-> **实现状态（务必先读）**：第 1 层（进程内）**已实现并有 ground-truth 测试守护**；
-> 第 2 层（跨实例）**尚未接线** —— 接口与 `PGAdvisoryLocker` 实现均存在，但 `cmd/specula`
-> 从不构造它们。本节曾把整个两层设计写成既成事实，而当时**连第 1 层都没有生效**：
-> coalescer 只在 `cache.Store` 里按 **digest** 合并，而 digest 要等下载**完成**才知道 —— 
-> 也就是说，唯一昂贵的东西（回源往返）从来没有被合并过。10 个并发冷请求 → 10 次真实回源，
-> 而计数器自洽地显示 10，任何读自家计数器的测试都看不见（见 `results/groundtruth/agreement.json`
-> 的 `single_flight_collapses_stampede`）。下面区分「已实现」与「未接线」，不再混为一谈。
+> **实现状态**：第 1 层（进程内 singleflight）与第 2 层（跨副本 `coalesce.Locker`）**均已接线**。
+> 冷取路径走 `coalesce.FetchLocked`：同副本合并后，可选分布式锁；**Acquire 之后必须 Lookup 再回源**
+> （否则第二个副本在第一个释放后仍会回源，等于白锁）。`lock_driver=redis`（默认 HA）用
+> redsync；`lock_driver=postgres` 用 meta 池上的 session advisory lock（无 Redis 的 HA）。
+> 历史上 coalescer 曾只在 `cache.Store` 按 digest 合并（digest 要等下载完成才知道），挡不住回源；
+> 现已改为按**请求身份**（`FetchKey`）在 handler 冷取路径合并。
 
 ```mermaid
 graph TB
     r1[请求1 miss] & r2[请求2 同name@ver] & r3[请求3 同name@ver] --> sf["✅ 进程内 singleflight<br/>key=protocol|name|version|digest-pin<br/>（请求身份，下载前即可知）"]
-    sf -->|leader| fetch[回源 + verify-on-write]
-    sf -.->|follower 等待| fetch
+    sf -->|leader| lock{"lock_driver"}
+    lock -->|redis| rs[RedsyncLocker]
+    lock -->|postgres| pg[PGAdvisoryLocker]
+    lock -->|local / 空| none[无分布式锁]
+    rs & pg --> recheck[Lookup 共享缓存]
+    none --> fetch
+    recheck -->|hit| serve[Serve]
+    recheck -->|miss| fetch[回源 + verify-on-write]
     fetch -->|leader 的结果广播给所有 follower| r1 & r2 & r3
     fetch --> store["cache.Store<br/>key=digest（仅合并 verify+promote 尾部）"]
-    sf -.->|"❌ 未接线：跨实例分布式锁<br/>coalesce.Locker / PGAdvisoryLocker 已存在但无人构造"| dl[跨实例锁]
-    style dl stroke-dasharray: 5 5
 ```
 
 - **进程内（已实现）**：`golang.org/x/sync/singleflight`，按 key 分片（16 个 Group）降低锁竞争。
-  合并发生在 **handler 的冷取路径**（gomod / apt / npm / pypi / helm / oci 的 blob 与 manifest），
-  由 `coalesce.Fetch` + `coalesce.FetchKey` 统一。
+  合并发生在 **handler 的冷取路径**（gomod / apt / npm / pypi / helm / oci / tarball / cargo / conda / hf 等），
+  由 `coalesce.Fetch` / `FetchLocked` + `coalesce.FetchKey` 统一。
   - **key 必须是「请求身份」而非内容 digest**：digest 只有在下载完成后才知道，用它做 key
     只能合并「verify+promote」这个便宜的尾巴，永远挡不住它本该阻止的那次下载。
     `cache.Store` 的 digest 合并**保留**（对同内容的并发 promote 仍然有意义），但它**不是**
@@ -356,13 +359,15 @@ graph TB
     并 `Forget` 该 key，下一个调用者重新开始。
   - **刻意未实现**：本节旧图里的「waiter 等待超时后自行回源」。waiter 超时后各自回源，就是这里
     要消除的 stampede 本身，只是延迟了一个超时而已。follower 自己的 ctx 才是诚实的边界。
-- **跨实例（❌ 未接线，非本次改动）**：`coalesce.Locker` 接口与 `internal/store/postgres`
-  的 `PGAdvisoryLocker`（owner-checked / fenced 释放）**代码都在**，但 `cmd/specula` 从未构造
-  过任何 `Locker`。因此当前 **N 个副本 = 最多 N 次回源**（每副本 1 次），而非全局 1 次。
-  PRD §G3 规定实例无状态、仅共享 blob store + DB，且 `bcc92b4` 已让 apt 信任链真正跨副本，
-  多副本是真实拓扑而非假设 —— 所以这是一个**真实缺口**，只是范围大于本次修复：
-  正确的跨实例合并需要「拿到锁后**重新查缓存**」（否则第二个副本在第一个释放后照样回源，
-  等于白锁），这会改动每个 handler 的冷取路径签名。**在它被接线之前，本节不应再声称它存在。**
+- **跨实例（已接线）**：`cmd/specula` 的 `buildStampedeLocker` 按 `coalesce.lock_driver` 构造
+  `Locker`，并经 `WithLocker` 注入各协议 handler；冷取走 `FetchLocked`（Acquire → Lookup → miss 才 `fn`）。
+  - **`redis`（HA 默认）**：`coalesce.NewRedsyncLocker`（go-redsync + go-redis）。空 `lock_driver` 且
+    `server.ha=true` 时仍默认 redis。
+  - **`postgres`（可选，无 Redis HA）**：`postgres.NewPGAdvisoryLocker(metaPool)`，要求
+    `storage.meta.driver=postgres`。Session-level advisory lock：**持锁期间占用池连接一条**，
+    高并发冷 miss 时需相应放大 `pgx` pool；进程崩溃则连接关闭、锁自动释放。
+  - **`local` / 空（非 HA）**：nil Locker，仅进程内 singleflight。
+  - **git**：路径级 mutex 合并 clone/fetch，不走本 Locker（节点本地 bare mirror）。
 - **已实现**：可变元数据用 XFetch 概率提前刷新（避免同步过期悬崖）+ stale-while-revalidate（RFC 5861）：
   soft-expiry 时 `Lookup` 仍返回条目并设 `SoftExpired`，handler 立即响应并后台 coalesced 重验；
   hard-TTL 过期仍走既有同步 revalidate / serve-stale-on-failure。
@@ -488,14 +493,14 @@ graph TB
     lb[L4 LB] --> s1[Specula] & s2[Specula] & s3[Specula]
     s1 & s2 & s3 -->|CAS shared| cas[(S3-compatible OR shared PVC)]
     s1 & s2 & s3 -->|meta+series+blocks| pg[(PostgreSQL)]
-    s1 & s2 & s3 -->|stampede lock| redis[(Redis / redsync)]
+    s1 & s2 & s3 -->|stampede lock| lock[(Redis/redsync OR PG advisory)]
 ```
 
 ### 成熟库矩阵
 
 | 关注点 | 选型 | 本仓动作 |
 |---|---|---|
-| 跨副本 stampede 锁 | **go-redsync/redsync/v4** + **go-redis/v9** | `coalesce.NewRedsyncLocker` → `FetchLocked` |
+| 跨副本 stampede 锁 | **go-redsync/redsync/v4** + **go-redis/v9**（推荐）或 **pgx advisory lock** | `NewRedsyncLocker` / `NewPGAdvisoryLocker` → `FetchLocked` |
 | 元数据 / 多租户 / series / blocks | **jackc/pgx/v5** + **pressly/goose/v3** | HA 强制 `meta.driver=postgres`；迁移 `009_runtime_state` |
 | 共享 CAS | **aws-sdk-go-v2**（任意 S3 兼容）**或** `blob.driver=local` + `local.shared=true`（PVC/NFS） | **不**强制 AWS/MinIO |
 | 同副本合并 | **x/sync/singleflight** | 不改 |
@@ -504,14 +509,14 @@ graph TB
 ### 配置开关（`server.ha=true`）
 
 - `storage.meta.driver=postgres`
-- `coalesce.lock_driver=redis` + `coalesce.redis.addr`
+- `coalesce.lock_driver=redis` + `coalesce.redis.addr` **或** `coalesce.lock_driver=postgres`（共用 meta 池；持锁占连接）
 - CAS：`blob.driver=s3` **或** `blob.driver=local` 且 `local.shared=true`
 - **git**：HA Deployment **关闭**（节点本地 bare mirror，非共享 CAS）
 
 单节点 / DaemonSet：SQLite + 本地盘 + 进程内 singleflight（`lock_driver` 空/`local`）。
 
 - **无 leader election**：实例同质；写同 blob 幂等；MetadataStore upsert。
-- **stampede**：同副本 singleflight；跨副本 redsync；`FetchLocked` 在 Acquire 后 Lookup 再回源。
+- **stampede**：同副本 singleflight；跨副本 redis 或 PG advisory；`FetchLocked` 在 Acquire 后 Lookup 再回源。
 - **Helm 安装**：见 [`deploy/helm/specula/README.md`](../deploy/helm/specula/README.md)；本地验收 `./scripts/ha-minikube.sh`（暖 manifest → 杀副本 → 再拉仍 200）。
 
 ### Bootstrap / 中国自举
@@ -586,7 +591,7 @@ specula/
 | PostgreSQL | `jackc/pgx` | 最佳 PG driver |
 | SQLite | `modernc.org/sqlite` | 纯 Go, CGO-free |
 | 迁移 | `pressly/goose` | 内嵌 SQL 迁移 |
-| stampede | `singleflight` + **redsync** | 同副本 + 跨副本 |
+| stampede | `singleflight` + **redsync** / **PG advisory** | 同副本 + 跨副本（HA） |
 | 系统统计 | `shirou/gopsutil` | statfs 容量 |
 | 认证 | bcrypt + JWT | 无重依赖 |
 | 前端 | React18 + Vite + Tailwind | 工程控制台 |

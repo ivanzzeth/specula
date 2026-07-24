@@ -65,6 +65,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/cache"
+	"github.com/ivanzzeth/specula/internal/coalesce"
 	"github.com/ivanzzeth/specula/internal/metrics"
 	"github.com/ivanzzeth/specula/internal/store/meta"
 	"github.com/ivanzzeth/specula/internal/upstream"
@@ -117,6 +118,12 @@ type Handler struct {
 	// allowedHosts gates which upstream hosts may be proxied (SSRF guard).
 	// Empty = allow none (fail closed).
 	allowedHosts []string
+
+	// fetchSF collapses concurrent COLD fetches for the same request identity
+	// within one process; locker (optional) extends that across replicas
+	// (ARCHITECTURE §7). See coalesce.FetchLocked for cross-replica semantics.
+	fetchSF coalesce.Coalescer
+	locker  coalesce.Locker
 
 	log *slog.Logger
 }
@@ -206,10 +213,16 @@ func WithScheme(scheme string) Option {
 	return func(h *Handler) { h.scheme = scheme }
 }
 
+// WithLocker injects a cross-replica Locker for cold-fetch stampede protection.
+func WithLocker(l coalesce.Locker) Option {
+	return func(h *Handler) { h.locker = l }
+}
+
 // NewHandler constructs a tarball Handler backed by the given CacheManager.
 func NewHandler(cm cache.CacheManager, opts ...Option) *Handler {
 	h := &Handler{
 		cache:         cm,
+		fetchSF:       coalesce.NewLocalCoalescer(),
 		mutableTTLSec: ttlNeverRevalidate, // immutable once cached
 		scheme:        defaultScheme,
 		log:           slog.Default(),
@@ -343,37 +356,85 @@ func (h *Handler) serveTarball(w http.ResponseWriter, r *http.Request, host, key
 		return
 	}
 
-	// 4. Cache miss — fetch → quarantine → verify-on-write → promote → serve.
-	rc, umeta, fetchErr := h.fetchFromURL(ctx, key, file)
-	if fetchErr != nil {
-		h.log.Error("tarball: upstream fetch", "key", key, "file", file, "err", fetchErr)
-		if upstream.IsNotFound(fetchErr) {
+	// 4. Cache miss — coalesced fetch → quarantine → verify-on-write → promote → serve.
+	entry, err = h.coalescedFetch(ctx, ref, func() (*artifact.CacheEntry, error) {
+		return h.fetchAndStore(ctx, ref, key, file)
+	})
+	if err != nil {
+		h.log.Error("tarball: upstream fetch", "key", key, "file", file, "err", err)
+		if upstream.IsNotFound(err) {
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
-		writeError(w, http.StatusBadGateway, "upstream fetch failed: "+fetchErr.Error())
+		var qe *quarantineError
+		if errors.As(err, &qe) {
+			writeError(w, http.StatusInternalServerError, "quarantine failed")
+			return
+		}
+		writeError(w, http.StatusBadGateway, "upstream fetch failed: "+err.Error())
 		return
 	}
-	defer rc.Close()
-
-	art, cleanup, qErr := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
-	if qErr != nil {
-		h.log.Error("tarball: quarantine", "key", key, "file", file, "err", qErr)
-		writeError(w, http.StatusInternalServerError, "quarantine failed")
-		return
-	}
-
-	entry, storeErr := h.cache.Store(ctx, ref, art)
-	if storeErr != nil {
-		cleanup()
-		h.log.Error("tarball: verify-on-write", "key", key, "file", file, "err", storeErr)
-		writeError(w, http.StatusBadGateway, "verify-on-write failed: "+storeErr.Error())
+	if entry == nil {
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	// Cache miss: the body was fetched from the upstream URL and promoted to CAS.
 	metrics.MarkMiss(ctx)
 	h.serveFromCache(w, r, ref, entry)
+}
+
+// quarantineError marks local quarantine I/O failures (mapped to 500, not 502).
+type quarantineError struct{ err error }
+
+func (e *quarantineError) Error() string { return e.err.Error() }
+func (e *quarantineError) Unwrap() error { return e.err }
+
+// fetchAndStore performs a single upstream GET, quarantines the body, and
+// promotes it through verify-on-write. Used as the cold-fetch fn under
+// coalescedFetch so concurrent waiters share one round trip.
+func (h *Handler) fetchAndStore(ctx context.Context, ref artifact.ArtifactRef, key, file string) (*artifact.CacheEntry, error) {
+	rc, umeta, fetchErr := h.fetchFromURL(ctx, key, file)
+	if fetchErr != nil {
+		return nil, fetchErr
+	}
+	defer rc.Close()
+
+	art, cleanup, qErr := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
+	if qErr != nil {
+		return nil, &quarantineError{err: fmt.Errorf("quarantine: %w", qErr)}
+	}
+
+	entry, storeErr := h.cache.Store(ctx, ref, art)
+	if storeErr != nil {
+		cleanup()
+		return nil, storeErr
+	}
+	return entry, nil
+}
+
+// coalescedFetch runs fn under the cold-fetch single-flight so concurrent
+// callers for the SAME request identity share one upstream round trip
+// (ARCHITECTURE §7). See coalesce.FetchLocked for cross-replica semantics.
+func (h *Handler) coalescedFetch(
+	ctx context.Context,
+	ref artifact.ArtifactRef,
+	fn func() (*artifact.CacheEntry, error),
+) (*artifact.CacheEntry, error) {
+	key := coalesce.FetchKey(ref.Protocol, ref.Name, ref.Version, ref.Digest)
+	return coalesce.FetchLocked(ctx, h.fetchSF, h.locker, key, 0,
+		func(ctx context.Context) (*artifact.CacheEntry, bool, error) {
+			e, err := h.cache.Lookup(ctx, ref)
+			if err != nil {
+				return nil, false, err
+			}
+			if e != nil {
+				return e, true, nil
+			}
+			return nil, false, nil
+		},
+		fn,
+	)
 }
 
 // --------------------------------------------------------------------------

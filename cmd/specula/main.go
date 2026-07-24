@@ -388,14 +388,20 @@ func run() error {
 		upstreams = upstream.NewRegistry()
 	}
 
-	stampedeLocker, closeLocker, err := buildStampedeLocker(cfg)
+	stampedeLocker, closeLocker, err := buildStampedeLocker(cfg, metaStore)
 	if err != nil {
 		return fmt.Errorf("build stampede locker: %w", err)
 	}
 	defer func() { _ = closeLocker() }()
 	if stampedeLocker != nil {
-		log.Info("specula: cross-replica stampede lock ready",
-			"lock_driver", effectiveLockDriver(cfg), "redis", cfg.Coalesce.Redis.Addr)
+		ld := effectiveLockDriver(cfg)
+		if ld == "postgres" {
+			log.Info("specula: cross-replica stampede lock ready",
+				"lock_driver", ld, "backend", "pg_advisory_lock")
+		} else {
+			log.Info("specula: cross-replica stampede lock ready",
+				"lock_driver", ld, "redis", cfg.Coalesce.Redis.Addr)
+		}
 	}
 	if cfg.Offline() {
 		log.Info("specula: offline mode — cache hits only; misses return 404; no outbound fetch")
@@ -408,7 +414,7 @@ func run() error {
 	mountNPM(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
 	mountAPT(dataMux, cfg, cm, metaStore, log, upstreams, gpgV, stampedeLocker)
 	mountHelm(dataMux, cfg, cm, metaStore, log, upstreams, helmProvV, stampedeLocker)
-	mountTarball(dataMux, cfg, cm, metaStore, log, upstreams)
+	mountTarball(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
 	mountGit(dataMux, cfg, metaStore, log, gitSignedV)
 	mountCargo(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
 	mountConda(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
@@ -560,7 +566,8 @@ func effectiveLockDriver(cfg *config.Config) string {
 
 // buildStampedeLocker constructs the cross-replica coalesce.Locker from config.
 // Empty / "local" returns a nil locker (in-process singleflight only).
-func buildStampedeLocker(cfg *config.Config) (coalesce.Locker, func() error, error) {
+// "postgres" requires metaStore to be *postgres.PostgresStore (shared meta pool).
+func buildStampedeLocker(cfg *config.Config, metaStore metastore.MetadataStore) (coalesce.Locker, func() error, error) {
 	nop := func() error { return nil }
 	switch effectiveLockDriver(cfg) {
 	case "local":
@@ -576,6 +583,12 @@ func buildStampedeLocker(cfg *config.Config) (coalesce.Locker, func() error, err
 			return nil, nil, err
 		}
 		return locker, closer, nil
+	case "postgres":
+		pg, ok := metaStore.(*postgres.PostgresStore)
+		if !ok {
+			return nil, nil, fmt.Errorf("coalesce.lock_driver=postgres requires postgres meta store (got %T)", metaStore)
+		}
+		return postgres.NewPGAdvisoryLocker(pg.Pool()), nop, nil
 	default:
 		return nil, nil, fmt.Errorf("unknown coalesce.lock_driver %q", cfg.Coalesce.LockDriver)
 	}
@@ -1030,12 +1043,15 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 // "tarball" protocol config. The allowed-host allowlist is derived from the
 // configured upstream base URLs (a request host outside the list is rejected).
 // tarball tops out at TOFU (immutable digest pin) in this batch.
-func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry) {
+func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["tarball"]
 	opts := []tarballhandler.Option{
 		tarballhandler.WithMeta(metaStore),
 		tarballhandler.WithPathPrefix(tarballPrefix),
 		tarballhandler.WithLogger(log.With("protocol", tarballhandler.Protocol)),
+	}
+	if locker != nil {
+		opts = append(opts, tarballhandler.WithLocker(locker))
 	}
 	hosts := []string{}
 	if ok {

@@ -7,6 +7,7 @@ import (
 	inttarball "github.com/ivanzzeth/specula/internal/handler/tarball"
 
 	"github.com/ivanzzeth/specula/pkg/cache"
+	"github.com/ivanzzeth/specula/pkg/coalesce"
 	"github.com/ivanzzeth/specula/pkg/store/meta"
 	"github.com/ivanzzeth/specula/pkg/upstream"
 )
@@ -31,3 +32,4 @@ func WithQuarantineDir(dir string) Option    { return inttarball.WithQuarantineD
 func WithLogger(l *slog.Logger) Option       { return inttarball.WithLogger(l) }
 func WithAllowedHosts(hosts []string) Option { return inttarball.WithAllowedHosts(hosts) }
 func WithScheme(scheme string) Option        { return inttarball.WithScheme(scheme) }
+func WithLocker(l coalesce.Locker) Option    { return inttarball.WithLocker(l) }
