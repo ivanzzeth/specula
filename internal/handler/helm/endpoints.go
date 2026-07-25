@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -498,19 +499,31 @@ func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef
 // --------------------------------------------------------------------------
 
 // rewriteIndexURLs rewrites absolute http/https chart download URLs in a Helm
-// index.yaml to relative filenames (the last URL path segment). This ensures
-// that when helm resolves a chart URL it uses the Specula proxy URL as the
-// base, so all chart downloads flow through the proxy's cache.
+// index.yaml so helm clients keep fetching THROUGH Specula (never bypass to
+// the upstream host).
+//
+// Two cases (LIVE regression, longhorn 1.9.1):
+//
+//  1. Absolute URL whose file does NOT live under the repo base_url host
+//     (e.g. charts.longhorn.io index → github.com/.../longhorn-1.9.1.tgz).
+//     Rewriting to a bare filename made Specula fetch
+//     {base_url}/{filename} → 404. Fix: rewrite to a Specula tarball-relative
+//     path so helm resolves against the Specula helm repo URL up into
+//     /tarball/<host>/<path>, which already knows how to pull github.com.
+//
+//  2. Absolute URL that IS under the chart repo host — also routed via
+//     tarball (same encoding). Relative urls (cert-manager's
+//     charts/cert-manager-….tgz) are left unchanged; Specula fetches them
+//     as {base_url}/{relative}.
+//
+// From repo URL https://specula:7732/helm/<repo>, the relative
+// ../../tarball/github.com/…/file.tgz resolves to
+// https://specula:7732/tarball/github.com/…/file.tgz.
 //
 // Helm Chart Repository Spec (https://helm.sh/docs/topics/chart_repository/):
 //
 //	"urls: A list of URLs for each version of the chart. Relative URLs are
 //	 resolved against the repository URL."
-//
-// An absolute URL like https://upstream/charts/mysql-1.6.9.tgz becomes the
-// relative filename mysql-1.6.9.tgz. helm then resolves that against the repo
-// URL (e.g. http://specula:5104/helm/charts) to get the final download URL
-// http://specula:5104/helm/charts/mysql-1.6.9.tgz.
 //
 // If the YAML cannot be parsed the original bytes are returned unchanged so
 // Specula degrades gracefully rather than blocking chart discovery.
@@ -527,10 +540,24 @@ func rewriteIndexURLs(data []byte) ([]byte, error) {
 	return out, nil
 }
 
+// absoluteURLToTarballRel rewrites https://host/path/file.tgz to a path that
+// helm resolves from /helm/<repo> up into Specula's /tarball/ handler.
+func absoluteURLToTarballRel(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Path == "" {
+		return raw
+	}
+	path := u.Path
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return "../../tarball/" + u.Host + path
+}
+
 // rewriteYAMLURLs recursively walks a parsed yaml.Node tree and replaces
-// every absolute http/https URL found inside "urls" sequence nodes with just
-// the filename (the last slash-delimited segment of the URL path). Non-http/s
-// values and relative URLs are left unchanged.
+// every absolute http/https URL found inside "urls" sequence nodes with a
+// Specula tarball-relative path. Non-http/s values and relative URLs are
+// left unchanged.
 func rewriteYAMLURLs(n *yaml.Node) {
 	if n == nil {
 		return
@@ -541,7 +568,6 @@ func rewriteYAMLURLs(n *yaml.Node) {
 			keyNode := n.Content[i]
 			valNode := n.Content[i+1]
 			if keyNode.Value == "urls" && valNode.Kind == yaml.SequenceNode {
-				// Rewrite each URL entry in this sequence.
 				for _, item := range valNode.Content {
 					if item.Kind != yaml.ScalarNode {
 						continue
@@ -550,12 +576,9 @@ func rewriteYAMLURLs(n *yaml.Node) {
 					if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 						continue // already relative or non-http — leave as-is
 					}
-					if idx := strings.LastIndexByte(u, '/'); idx >= 0 && idx < len(u)-1 {
-						item.Value = u[idx+1:]
-					}
+					item.Value = absoluteURLToTarballRel(u)
 				}
 			} else {
-				// Recurse into mapping values (not into "urls" key nodes).
 				rewriteYAMLURLs(valNode)
 			}
 		}

@@ -11,8 +11,24 @@ import (
 
 func TestHelmReposFromConfig_Defaults(t *testing.T) {
 	repos := helmReposFromConfig(nil)
-	if len(repos) != 2 || repos[0].name != "specula-bitnami" {
+	if len(repos) < 2 || repos[0].name != "specula-bitnami" {
 		t.Fatalf("%+v", repos)
+	}
+	want := map[string]string{
+		"specula-bitnami":               "/helm/bitnami",
+		"specula-prometheus-community":  "/helm/prometheus-community",
+		"specula-longhorn":              "/helm/longhorn",
+		"specula-jetstack":              "/helm/jetstack",
+		"specula-argo":                  "/helm/argo",
+	}
+	got := map[string]string{}
+	for _, r := range repos {
+		got[r.name] = r.path
+	}
+	for name, path := range want {
+		if got[name] != path {
+			t.Fatalf("missing/wrong %s: got=%+v", name, repos)
+		}
 	}
 }
 

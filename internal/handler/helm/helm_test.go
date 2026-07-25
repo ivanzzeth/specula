@@ -17,9 +17,9 @@
 //   - ARCHITECTURE.md §3 serve-stale-on-upstream-failure: stale index.yaml is
 //     served when the upstream is unreachable.
 //   - Real-client regression: helm's index.yaml urls are upstream ABSOLUTE and
-//     MUST be rewritten to relative filenames so that helm pull routes through
-//     the Specula proxy. Without rewriting, helm bypasses Specula entirely and
-//     the cache never warms. This is the most critical test in this file.
+//     MUST be rewritten to Specula tarball-relative paths so that helm pull
+//     routes through Specula (including cross-host github releases .tgz).
+//     Bare-filename rewrite 404s when the .tgz is not under the repo base_url.
 package helm
 
 import (
@@ -648,17 +648,15 @@ generated: "2024-01-01T00:00:00.000000000Z"
 	body, _ := io.ReadAll(resp.Body)
 	bodyStr := string(body)
 
-	// CRITICAL: absolute upstream URLs MUST NOT appear in the served index.
+	// CRITICAL: absolute upstream URLs MUST NOT appear as-is in the served index.
 	assert.NotContains(t, bodyStr, "https://upstream.charts.example.com",
 		"absolute upstream URL must be rewritten — helm pull bypasses cache if present")
 	assert.NotContains(t, bodyStr, "http://other.charts.example.com",
 		"absolute upstream URL must be rewritten — helm pull bypasses cache if present")
 
-	// The chart filenames MUST still be present so helm can discover them.
-	assert.Contains(t, bodyStr, "nginx-1.2.3.tgz",
-		"chart filename must be preserved after URL rewriting")
-	assert.Contains(t, bodyStr, "mysql-8.0.1.tgz",
-		"chart filename must be preserved after URL rewriting")
+	// Charts must route through Specula tarball (cross-host .tgz safe).
+	assert.Contains(t, bodyStr, "../../tarball/upstream.charts.example.com/charts/nginx-1.2.3.tgz")
+	assert.Contains(t, bodyStr, "../../tarball/other.charts.example.com/releases/mysql-8.0.1.tgz")
 }
 
 // TestServeHTTP_Index_UpstreamError_Returns502 asserts 502 when the upstream
@@ -1029,16 +1027,19 @@ func TestServeHTTP_PathPrefix_Stripped(t *testing.T) {
 
 // ── URL rewriting unit tests (critical regression) ────────────────────────────
 
-// TestRewriteIndexURLs_AbsoluteHTTPS_RewrittenToFilename is the primary
+// TestRewriteIndexURLs_AbsoluteHTTPS_RewrittenToTarballRel is the primary
 // regression test for the real-client finding:
 //
 //   - helm's index.yaml contains ABSOLUTE upstream chart download URLs
-//   - These MUST be rewritten to the bare filename (last URL path segment)
-//   - Without rewriting, `helm pull` follows the absolute URL, bypasses Specula
-//     entirely, and the chart cache never warms
+//   - These MUST be rewritten to Specula tarball-relative paths
+//     (`../../tarball/<host>/<path>`) so helm resolves against Specula and
+//     never bypasses to github.com / the upstream host
+//   - Bare-filename rewrite is WRONG when the .tgz does not live under the
+//     helm repo base_url (LIVE: charts.longhorn.io index → github releases
+//     .tgz; Specula then 404'd charts.longhorn.io/longhorn-1.9.1.tgz)
 //
 // Requirement: helm handler package doc / task description.
-func TestRewriteIndexURLs_AbsoluteHTTPS_RewrittenToFilename(t *testing.T) {
+func TestRewriteIndexURLs_AbsoluteHTTPS_RewrittenToTarballRel(t *testing.T) {
 	input := []byte(`apiVersion: v1
 entries:
   mysql:
@@ -1055,6 +1056,11 @@ entries:
       version: 2.0.0
       urls:
         - http://other.example.com/nginx-2.0.0.tgz
+  longhorn:
+    - name: longhorn
+      version: 1.9.1
+      urls:
+        - https://github.com/longhorn/charts/releases/download/longhorn-1.9.1/longhorn-1.9.1.tgz
 generated: "2024-01-01T00:00:00.000000000Z"
 `)
 
@@ -1062,16 +1068,20 @@ generated: "2024-01-01T00:00:00.000000000Z"
 	require.NoError(t, err)
 	outStr := string(out)
 
-	// Absolute upstream URLs MUST NOT appear in the rewritten index.
+	// Absolute upstream URLs MUST NOT appear as-is (helm would bypass Specula).
 	assert.NotContains(t, outStr, "https://charts.example.com",
 		"REGRESSION: absolute https URL must be rewritten — helm bypasses cache otherwise")
 	assert.NotContains(t, outStr, "http://other.example.com",
 		"REGRESSION: absolute http URL must be rewritten — helm bypasses cache otherwise")
+	assert.NotContains(t, outStr, "https://github.com/longhorn",
+		"REGRESSION: github releases URL must be rewritten via tarball")
 
-	// Chart filenames MUST be preserved.
-	assert.Contains(t, outStr, "mysql-1.6.9.tgz", "filename must be preserved after rewrite")
-	assert.Contains(t, outStr, "mysql-1.5.0.tgz", "filename must be preserved after rewrite")
-	assert.Contains(t, outStr, "nginx-2.0.0.tgz", "filename must be preserved after rewrite")
+	// Must route through Specula tarball (not bare filename under helm repo).
+	assert.Contains(t, outStr, "../../tarball/charts.example.com/stable/mysql-1.6.9.tgz")
+	assert.Contains(t, outStr, "../../tarball/charts.example.com/stable/mysql-1.5.0.tgz")
+	assert.Contains(t, outStr, "../../tarball/other.example.com/nginx-2.0.0.tgz")
+	assert.Contains(t, outStr,
+		"../../tarball/github.com/longhorn/charts/releases/download/longhorn-1.9.1/longhorn-1.9.1.tgz")
 }
 
 // TestRewriteIndexURLs_RelativeURLs_LeftUnchanged verifies that relative
@@ -1107,10 +1117,10 @@ entries:
 	out, err := rewriteIndexURLs(input)
 	require.NoError(t, err)
 	outStr := string(out)
-	assert.NotContains(t, outStr, "mirror1.example.com", "all URLs must be rewritten")
-	assert.NotContains(t, outStr, "mirror2.example.com", "all URLs must be rewritten")
-	// Both rewrites yield the same filename; it appears at least once.
-	assert.Contains(t, outStr, "chart-1.0.0.tgz")
+	assert.NotContains(t, outStr, "https://mirror1.example.com", "all URLs must be rewritten")
+	assert.NotContains(t, outStr, "https://mirror2.example.com", "all URLs must be rewritten")
+	assert.Contains(t, outStr, "../../tarball/mirror1.example.com/charts/chart-1.0.0.tgz")
+	assert.Contains(t, outStr, "../../tarball/mirror2.example.com/charts/chart-1.0.0.tgz")
 }
 
 // TestRewriteIndexURLs_InvalidYAML_DegradeGracefully verifies that when the
@@ -1157,11 +1167,11 @@ entries:
 	assert.Contains(t, outStr, "https://github.com/example/chart",
 		"non-urls keys must not be rewritten")
 
-	// The chart download URL must be rewritten.
+	// The chart download URL must be rewritten via Specula tarball.
 	assert.NotContains(t, outStr, "https://charts.example.com",
 		"chart download URL in urls key must be rewritten")
-	assert.Contains(t, outStr, "chart-1.0.0.tgz",
-		"chart filename must be preserved after rewrite")
+	assert.Contains(t, outStr, "../../tarball/charts.example.com/chart-1.0.0.tgz",
+		"chart URL must route via Specula tarball")
 }
 
 // TestRewriteYAMLURLs_URLWithNoSlash_LeftUnchanged verifies that a URL whose
@@ -1371,10 +1381,10 @@ entries:
 
 	require.NotNil(t, storedBytes, "stored bytes must be findable by digest")
 	storedStr := string(storedBytes)
-	assert.NotContains(t, storedStr, "upstream.example.com",
+	assert.NotContains(t, storedStr, "https://upstream.example.com",
 		"stored index must have rewritten URLs — not upstream absolute URLs")
-	assert.Contains(t, storedStr, "nginx-1.0.0.tgz",
-		"chart filename must be in stored (rewritten) index")
+	assert.Contains(t, storedStr, "../../tarball/upstream.example.com/nginx-1.0.0.tgz",
+		"chart URL must route via Specula tarball")
 }
 
 // TestFetchBodyAndStore_TransformError_FallsBackToOriginal verifies that when

@@ -40,6 +40,9 @@ func defaultHelmRepos() []helmRepoSpec {
 	return []helmRepoSpec{
 		{name: "specula-bitnami", path: "/helm/bitnami"},
 		{name: "specula-prometheus-community", path: "/helm/prometheus-community"},
+		{name: "specula-longhorn", path: "/helm/longhorn"},
+		{name: "specula-jetstack", path: "/helm/jetstack"},
+		{name: "specula-argo", path: "/helm/argo"},
 	}
 }
 

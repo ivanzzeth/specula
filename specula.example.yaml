@@ -405,6 +405,23 @@ protocols:
           base_url: https://charts.bitnami.com/bitnami
         - name: prometheus-community
           base_url: https://prometheus-community.github.io/helm-charts
+        # chorei cluster add-ons (names MUST match AddonSpec.helm_repo_name)
+        - name: longhorn
+          base_url: https://charts.longhorn.io
+        - name: jetstack
+          base_url: https://charts.jetstack.io
+        - name: argo
+          base_url: https://argoproj.github.io/argo-helm
+        - name: kyverno
+          base_url: https://kyverno.github.io/kyverno/
+        - name: headlamp
+          base_url: https://kubernetes-sigs.github.io/headlamp/
+        - name: grafana
+          base_url: https://grafana.github.io/helm-charts
+        - name: ingress-nginx
+          base_url: https://kubernetes.github.io/ingress-nginx
+        - name: metallb
+          base_url: https://metallb.github.io/metallb
 
     verification:
       # .prov GPG signature provides "signed" tier when keyring is configured.
