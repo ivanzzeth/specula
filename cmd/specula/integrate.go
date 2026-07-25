@@ -31,6 +31,8 @@ func runIntegrate(args []string) error {
 	dryRun := fs.Bool("dry-run", false, "print planned changes without writing")
 	skipRoot := fs.Bool("skip-root", false, "skip apt /etc/docker actions that need root")
 	configPath := fs.String("config", "", "path to specula.yaml (optional; enables multi-source helm/apt/conda wiring)")
+	registryHost := fs.String("registry-host", "",
+		"OCI hostname to wire to --addr (k3s: registries.yaml + certs.d; vanilla: certs.d)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage:
   specula integrate [flags]
@@ -41,7 +43,7 @@ Add Specula as a client-side mirror without destroying existing config:
   npm    set registry=…/npm/ (preserve other ~/.npmrc keys; backup old registry)
   pypi   set sole index-url (never promote old index to extra-index-url)
   oci    Docker/containerd: registry-mirrors + insecure-registries (http)
-         (writes /etc/docker/daemon.json when root — sudo for live dockerd)
+         (+ --registry-host wires that hostname → --addr on k3s/vanilla)
   helm   helm repo add specula … (owned name only)
   git    add url.<specula>/git/github.com/.insteadOf (keep other insteadOf)
   apt    write /etc/apt/sources.list.d/specula.list (never edit sources.list)
@@ -68,11 +70,12 @@ Flags:
 	}
 
 	rep, err := integrate.Run(integrate.Options{
-		Addr:       *addr,
-		Protocols:  protos,
-		DryRun:     *dryRun,
-		SkipRoot:   *skipRoot,
-		ConfigPath: *configPath,
+		Addr:         *addr,
+		Protocols:    protos,
+		DryRun:       *dryRun,
+		SkipRoot:     *skipRoot,
+		ConfigPath:   *configPath,
+		RegistryHost: *registryHost,
 	})
 	if err != nil {
 		return err

@@ -34,6 +34,9 @@ type Options struct {
 	// ConfigPath is an optional path to specula.yaml. When non-empty, helm/apt/conda
 	// integrate steps read multi-source allowlists from the loaded config.
 	ConfigPath string
+	// RegistryHost is an optional OCI hostname (cluster Specula pointer DNS) to
+	// wire so pulls of that host dial Addr. On k3s this also merges registries.yaml.
+	RegistryHost string
 }
 
 // Result is one protocol's integrate outcome.
@@ -96,6 +99,10 @@ func Run(opts Options) (Report, error) {
 			dr := integrateDocker(home, addr, opts.DryRun, opts.SkipRoot)
 			cr := integrateContainerdCerts(home, addr, opts.DryRun, opts.SkipRoot)
 			r = mergeOCIResults(dr, cr)
+			if rh := strings.TrimSpace(opts.RegistryHost); rh != "" {
+				hr := integrateRegistryHost(rh, addr, opts.DryRun, opts.SkipRoot)
+				r = mergeOCIResults(r, hr)
+			}
 			r.Protocol = "oci"
 		case "helm":
 			r = integrateHelm(addr, opts.DryRun, cfg)
