@@ -27,11 +27,6 @@ const (
 	// backoffs double: 100 ms → 200 ms → 400 ms (capped at 2 s).
 	defaultBackoffBase = 100 * time.Millisecond
 
-	// defaultHTTPTimeout is the per-request deadline for the underlying
-	// http.Client. Individual requests should be bound by the caller's context,
-	// but this acts as an outer safety net.
-	defaultHTTPTimeout = 30 * time.Second
-
 	// tokenExpiryBuffer is subtracted from the server-reported token TTL so
 	// we refresh slightly before expiry rather than exactly at it.
 	tokenExpiryBuffer = 30 * time.Second
@@ -60,6 +55,11 @@ type fallbackClient struct {
 	maxAttempts int
 	backoffBase time.Duration
 
+	// idleBodyTimeout / maxResumeAttempts configure transparent Range resume
+	// on the body returned by Fetch. Zero means package defaults.
+	idleBodyTimeout   time.Duration
+	maxResumeAttempts int
+
 	// tokenMu guards the token cache for concurrent access.
 	tokenMu sync.RWMutex
 	// tokens caches bearer tokens keyed by "upstreamName:scope".
@@ -69,11 +69,13 @@ type fallbackClient struct {
 // newFallbackClient returns a Client with production-ready defaults.
 func newFallbackClient() *fallbackClient {
 	return &fallbackClient{
-		http:        &http.Client{Timeout: defaultHTTPTimeout},
-		blocker:     newBlockTracker(),
-		maxAttempts: defaultMaxAttempts,
-		backoffBase: defaultBackoffBase,
-		tokens:      make(map[string]tokenEntry),
+		http:              newUpstreamHTTPClient(),
+		blocker:           newBlockTracker(),
+		maxAttempts:       defaultMaxAttempts,
+		backoffBase:       defaultBackoffBase,
+		idleBodyTimeout:   defaultIdleBodyTimeout,
+		maxResumeAttempts: defaultMaxResumeAttempts,
+		tokens:            make(map[string]tokenEntry),
 	}
 }
 
@@ -169,6 +171,10 @@ func (c *fallbackClient) Fetch(
 			c.noteSuccess(up.Name, latency)
 			metrics.RecordUpstreamLatency(ref.Protocol, up.Name, latency.Seconds())
 			c.syncBlocked(ref.Protocol, up.Name)
+			// Pin this upstream and wrap for Range resume on mid-stream failure.
+			if body != nil {
+				body = c.wrapResuming(ctx, ref, up, ropts, body)
+			}
 			return body, meta, nil
 		}
 		if isContextError(err) {
@@ -282,6 +288,9 @@ func (c *fallbackClient) Revalidate(
 			if meta.StatusCode == http.StatusNotModified {
 				return nil, meta, true, nil
 			}
+			if body != nil {
+				body = c.wrapResuming(ctx, ref, up, ropts, body)
+			}
 			return body, meta, false, nil
 		}
 		if isContextError(err) {
@@ -379,6 +388,11 @@ func (c *fallbackClient) tryFetch(
 		// Accept header (e.g. OCI manifest content negotiation).
 		if opts.accept != "" {
 			req.Header.Set("Accept", opts.accept)
+		}
+
+		// Range resume (transparent mid-stream recovery on the Fetch body).
+		if opts.hasRange {
+			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", opts.rangeStart))
 		}
 
 		// Bearer auth token (present after first 401 dance, or from cache).

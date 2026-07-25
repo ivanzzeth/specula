@@ -21,11 +21,13 @@ import (
 //   - configurable blockTracker parameters
 func testClient(maxAttempts int) *fallbackClient {
 	return &fallbackClient{
-		http:        &http.Client{Timeout: 5 * time.Second},
-		blocker:     newBlockTrackerWith(defaultMaxFailures, defaultBlockDuration),
-		maxAttempts: maxAttempts,
-		backoffBase: time.Millisecond, // fast backoff for tests
-		tokens:      make(map[string]tokenEntry),
+		http:              newUpstreamHTTPClient(),
+		blocker:           newBlockTrackerWith(defaultMaxFailures, defaultBlockDuration),
+		maxAttempts:       maxAttempts,
+		backoffBase:       time.Millisecond, // fast backoff for tests
+		tokens:            make(map[string]tokenEntry),
+		idleBodyTimeout:   5 * time.Second,
+		maxResumeAttempts: 4,
 	}
 }
 

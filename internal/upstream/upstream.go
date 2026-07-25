@@ -15,6 +15,10 @@
 //     WWW-Authenticate challenge, fetches a token from the realm endpoint,
 //     and retries with Authorization: Bearer. Tokens are cached per
 //     upstream+scope to avoid a round-trip per blob request.
+//   - Transparent Range resume on the Fetch body: dial / TLS / response-header
+//     timeouts stay on the Transport; there is no Client.Timeout covering the
+//     body. Mid-stream idle/reset failures Range-resume against the pinned
+//     upstream (or full-retry at offset 0); 401 on resume re-fetches the token.
 //
 // The body returned by Fetch / Revalidate is a streaming io.ReadCloser; the
 // implementation never buffers blob bytes in memory.
@@ -64,7 +68,9 @@ type RequestOption func(*requestOpts)
 
 // requestOpts holds per-request configuration assembled from RequestOption values.
 type requestOpts struct {
-	accept string // value for the Accept request header; empty = no header sent
+	accept     string // value for the Accept request header; empty = no header sent
+	hasRange   bool   // when true, send Range: bytes={rangeStart}-
+	rangeStart int64  // byte offset for Range resume (only if hasRange)
 }
 
 // ociManifestAccept is the full Accept header for OCI manifest content negotiation.

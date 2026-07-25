@@ -67,13 +67,13 @@ const CheckChain = "chain"
 // DefBuckets would be actively misleading here: it spends five buckets below
 // 100ms — no cross-border round trip is ever that fast, so they are dead weight —
 // it has no boundary at all between 1s and 2.5s, and it ends at 10s while
-// upstream's own http.Client timeout is 30s, so every request between 10s and
+// upstream ResponseHeaderTimeout is 30s, so every request between 10s and
 // the timeout would vanish into +Inf and be indistinguishable from a hang.
 //
 // So: start at 0.05 (a same-region/LAN mirror, the only realistic sub-100ms
 // case), resolve the warm cluster with 0.25/0.5/0.75/1, bracket the stall
-// cluster with 5/7.5, and terminate at 30 = defaultHTTPTimeout so a timeout
-// lands in a real bucket instead of +Inf.
+// cluster with 5/7.5, and terminate at 30 = ResponseHeaderTimeout so a header
+// timeout lands in a real bucket instead of +Inf.
 var cnLatencyBuckets = []float64{0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.5, 2.5, 5, 7.5, 10, 20, 30}
 
 // requestDurationBuckets cover LAN cache hits (sub-ms–ms) through multi-minute
