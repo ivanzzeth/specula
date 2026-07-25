@@ -551,7 +551,13 @@ func run() error {
 	// included in this first pass too. The 30s ticker (below) keeps it fresh after.
 	collector.Refresh(ctx)
 
-	return serve(ctx, log, dataSrv, ctrlSrv)
+	var tls *planeTLS
+	if cfg.Server.TLS.Enabled() {
+		tls = &planeTLS{certFile: cfg.Server.TLS.CertFile, keyFile: cfg.Server.TLS.KeyFile}
+		log.Info("specula: TLS enabled on both planes",
+			"cert_file", cfg.Server.TLS.CertFile, "key_file", cfg.Server.TLS.KeyFile)
+	}
+	return serve(ctx, log, tls, dataSrv, ctrlSrv)
 }
 
 // parseAndLoad parses the --config flag and loads+validates the config.
@@ -1633,14 +1639,27 @@ func readyz(_ context.Context, blobs blobstore.BlobStore, metaStore metastore.Me
 	}
 }
 
-// serve runs both HTTP servers and shuts them down gracefully on ctx cancel.
-func serve(ctx context.Context, log *slog.Logger, servers ...*http.Server) error {
+// planeTLS holds PEM paths for ListenAndServeTLS; nil means plain HTTP.
+type planeTLS struct {
+	certFile string
+	keyFile  string
+}
+
+// serve runs both HTTP(S) servers and shuts them down gracefully on ctx cancel.
+func serve(ctx context.Context, log *slog.Logger, tls *planeTLS, servers ...*http.Server) error {
 	errCh := make(chan error, len(servers))
 	for _, srv := range servers {
 		s := srv
 		go func() {
-			log.Info("specula: listening", "addr", s.Addr)
-			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			var err error
+			if tls != nil {
+				log.Info("specula: listening (tls)", "addr", s.Addr)
+				err = s.ListenAndServeTLS(tls.certFile, tls.keyFile)
+			} else {
+				log.Info("specula: listening", "addr", s.Addr)
+				err = s.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- fmt.Errorf("server %s: %w", s.Addr, err)
 			}
 		}()

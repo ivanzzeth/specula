@@ -31,7 +31,9 @@ type MirrorOptions struct {
 	Endpoint string
 	// Registries are registry hostnames to redirect (docker.io, registry.k8s.io, …).
 	Registries []string
-	// SkipVerify sets skip_verify = true on the mirror host entry (plain HTTP mirrors).
+	// SkipVerify sets skip_verify = true on the mirror host entry.
+	// Use ONLY for HTTPS mirrors with a non-public CA (self-signed Specula).
+	// Never for plain http:// — containerd then dials TLS against an HTTP port.
 	SkipVerify bool
 }
 

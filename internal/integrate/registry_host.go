@@ -27,14 +27,16 @@ func integrateRegistryHost(host, addr string, dryRun, skipRoot bool) Result {
 	if endpoint == "" {
 		return Result{Action: "error", Err: "empty Specula addr"}
 	}
-	insecure := strings.HasPrefix(strings.ToLower(endpoint), "http://")
+	// tls insecure_skip_verify / hosts.toml skip_verify: HTTPS self-signed only.
+	// Never for plain http:// (that footgun made containerd speak TLS to HTTP).
+	skipVerify := strings.HasPrefix(strings.ToLower(endpoint), "https://")
 
 	var parts []string
 	var path string
 	action := "already"
 
 	if isK3sNode() {
-		yr := mergeK3sRegistriesYAML(k3sRegistriesYAML, host, endpoint, insecure, dryRun, skipRoot)
+		yr := mergeK3sRegistriesYAML(k3sRegistriesYAML, host, endpoint, skipVerify, dryRun, skipRoot)
 		if yr.Action == "error" {
 			return yr
 		}
@@ -49,7 +51,7 @@ func integrateRegistryHost(host, addr string, dryRun, skipRoot bool) Result {
 
 	certsDirs := resolveContainerdCertsDirs()
 	for _, dir := range certsDirs {
-		cr := writeRegistryHostCerts(dir, host, endpoint, insecure, dryRun, skipRoot)
+		cr := writeRegistryHostCerts(dir, host, endpoint, skipVerify, dryRun, skipRoot)
 		if cr.Action == "error" {
 			return cr
 		}
@@ -142,12 +144,22 @@ func mergeRegistriesYAMLBytes(existing []byte, host, endpoint string, insecure b
 
 	eh := endpointDialHost(endpoint)
 	if eh != "" {
-		if insecure {
+		isHTTPS := strings.HasPrefix(strings.ToLower(endpoint), "https://")
+		if isHTTPS && insecure {
 			configs[eh] = map[string]any{
 				"tls": map[string]any{"insecure_skip_verify": true},
 			}
-		} else if _, ok := configs[eh]; !ok {
-			// leave other configs; no tls block required for https
+		} else if !isHTTPS {
+			// Plain HTTP: never attach a tls block on the dial host (k3s would
+			// emit server=https://… and break blob pulls).
+			if prev, ok := configs[eh].(map[string]any); ok {
+				delete(prev, "tls")
+				if len(prev) == 0 {
+					delete(configs, eh)
+				} else {
+					configs[eh] = prev
+				}
+			}
 		}
 	}
 

@@ -53,7 +53,10 @@ func fileExists(path string) bool {
 // docker.io stays a plain mirror host (Hub-relative paths).
 func integrateContainerdCerts(home, addr string, dryRun, skipRoot bool) Result {
 	endpoint := strings.TrimRight(addr, "/")
-	skipVerify := strings.HasPrefix(strings.ToLower(endpoint), "http://")
+	// skip_verify is ONLY valid for HTTPS with a non-public CA (self-signed
+	// Specula). Setting it on http:// makes containerd dial TLS and fail with
+	// "tls: first record does not look like a TLS handshake" / wrong version.
+	skipVerify := strings.HasPrefix(strings.ToLower(endpoint), "https://")
 	regs := append([]string(nil), bootstrap.DefaultOCIRegistries...)
 
 	systemDirs := resolveContainerdCertsDirs()

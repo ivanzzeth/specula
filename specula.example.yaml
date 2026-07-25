@@ -34,6 +34,12 @@ server:
   # Control plane: embedded WebUI + Admin API (email auth, first user = admin).
   control_plane_addr: "0.0.0.0:7733"
 
+  # Optional HTTPS for BOTH planes (ListenAndServeTLS). Cluster installs MUST set
+  # this — nodes dial https://…; plain http:// + skip_verify is a known footgun.
+  # tls:
+  #   cert_file: /etc/specula/tls/server.crt
+  #   key_file: /etc/specula/tls/server.key
+
   # Multi-replica HA mode: requires postgres meta, a stampede lock
   # (coalesce.lock_driver=redis OR postgres), and shared CAS (blob.driver=s3 OR
   # blob.driver=local with local.shared=true on a PVC/NFS). Git stays

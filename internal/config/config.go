@@ -64,6 +64,11 @@ type ServerConfig struct {
 	// Set it explicitly for any real deployment. Example: "registry.example.com"
 	RegistryPublicHost string `koanf:"registry_public_host"`
 
+	// TLS, when CertFile+KeyFile are set, serves BOTH planes with
+	// ListenAndServeTLS. Empty = plain HTTP (dev only). Cluster installs must
+	// set this so nodes dial https://… without the http+skip_verify footgun.
+	TLS ServerTLSConfig `koanf:"tls"`
+
 	// HA enables multi-replica mode checks: meta must be postgres, coalesce
 	// lock_driver must be redis (redsync) or postgres (advisory locks), and
 	// CAS must be shared — blob.driver=s3 (any S3-compatible endpoint) OR
@@ -75,6 +80,17 @@ type ServerConfig struct {
 	// content: upstream Fetch/Revalidate and git mirror clone/refresh are blocked
 	// and cache misses return 404 (PRD US-5). Restart required to switch.
 	Mode string `koanf:"mode"`
+}
+
+// ServerTLSConfig is optional PEM cert+key for HTTPS on both listen planes.
+type ServerTLSConfig struct {
+	CertFile string `koanf:"cert_file"`
+	KeyFile  string `koanf:"key_file"`
+}
+
+// TLSEnabled reports whether both cert and key paths are configured.
+func (t ServerTLSConfig) Enabled() bool {
+	return strings.TrimSpace(t.CertFile) != "" && strings.TrimSpace(t.KeyFile) != ""
 }
 
 // Offline reports whether the server is in air-gap mode (no outbound fetches).
