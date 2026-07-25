@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"bytes"
 	"testing"
 	"time"
 
@@ -99,4 +100,52 @@ func TestQuarantine_RespectsContextCancel(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Quarantine did not return after ctx cancel")
 	}
+}
+
+// TestQuarantineAt_PreservesPartialOnCancel is the durable-resume contract:
+// aborting a cold fill must leave bytes on disk (unlike Quarantine which deletes).
+func TestQuarantineAt_PreservesPartialOnCancel(t *testing.T) {
+	dir := t.TempDir()
+	path := DurablePartialPath(dir, "sha256:deadbeef")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := QuarantineAt(ctx, path, blockingReader{ctx: ctx}, artifact.UpstreamMeta{})
+		done <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, context.Canceled), "got %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("QuarantineAt did not return after ctx cancel")
+	}
+	// File may be empty (blocked before any byte) but must still exist OR
+	// path may not exist if OpenFile raced — with blocking reader we opened it.
+	_, err := os.Stat(path)
+	require.NoError(t, err, "durable partial must survive cancel so the next fill can resume")
+}
+
+// TestQuarantineAt_ResumesFromExistingBytes hashes prefix already on disk then
+// appends the remainder — the verify digest must match the full object.
+func TestQuarantineAt_ResumesFromExistingBytes(t *testing.T) {
+	dir := t.TempDir()
+	full := []byte("prefix-then-suffix-for-durable-resume")
+	wantSum := sha256.Sum256(full)
+	wantDigest := "sha256:" + hex.EncodeToString(wantSum[:])
+
+	path := DurablePartialPath(dir, wantDigest)
+	require.NoError(t, os.WriteFile(path, full[:10], 0o600))
+
+	art, cleanup, err := QuarantineAt(context.Background(), path, bytes.NewReader(full[10:]), artifact.UpstreamMeta{})
+	require.NoError(t, err)
+	defer cleanup()
+
+	assert.Equal(t, wantDigest, art.Digest)
+	assert.Equal(t, int64(len(full)), art.Size)
+	got, err := os.ReadFile(art.Path)
+	require.NoError(t, err)
+	assert.Equal(t, full, got)
 }

@@ -394,6 +394,9 @@ func (e *quarantineError) Unwrap() error { return e.err }
 // promotes it through verify-on-write. Used as the cold-fetch fn under
 // coalescedFetch so concurrent waiters share one round trip.
 func (h *Handler) fetchAndStore(ctx context.Context, ref artifact.ArtifactRef, key, file string) (*artifact.CacheEntry, error) {
+	ctx, cancel := coalesce.FillContext(ctx, 0)
+	defer cancel()
+
 	rc, umeta, fetchErr := h.fetchFromURL(ctx, key, file)
 	if fetchErr != nil {
 		return nil, fetchErr

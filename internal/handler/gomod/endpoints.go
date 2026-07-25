@@ -362,6 +362,8 @@ func (h *Handler) coalescedFetch(
 // from the first healthy upstream, streams it through the quarantine /
 // verify-on-write pipeline, and promotes it to the permanent CAS tier.
 func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	ctx, cancel := coalesce.FillContext(ctx, 0)
+	defer cancel()
 	rc, umeta, err := h.upstreamClt.Fetch(ctx, ref, h.upstreams)
 	if err != nil {
 		return nil, fmt.Errorf("upstream fetch: %w", err)

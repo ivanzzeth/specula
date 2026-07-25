@@ -341,6 +341,8 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 // only fails when both Digest!="" and digest_mismatch) stays in pass-through
 // mode, and TofuVerifier pins on first contact as intended.
 func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ref artifact.ArtifactRef, ups []upstream.Upstream) (*artifact.CacheEntry, error) {
+	ctx, cancel := coalesce.FillContext(ctx, 0)
+	defer cancel()
 	// fetchRef: identical to ref except Digest is non-empty to force the
 	// tarball URL path in upstream.buildPath (see doc comment above).
 	fetchRef := ref

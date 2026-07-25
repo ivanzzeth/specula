@@ -241,6 +241,9 @@ func (h *Handler) resolveManifestDigest(ctx context.Context, imageName, referenc
 // The OCI manifest Accept header is always sent so registries return the
 // correct content type for multi-arch image indexes.
 func (h *Handler) fetchAndStoreManifest(ctx context.Context, imageName, reference string) (string, error) {
+	ctx, cancel := coalesce.FillContext(ctx, 0)
+	defer cancel()
+
 	ups, fetchName, ok := h.upstreamForName(imageName)
 	if !ok || len(ups) == 0 {
 		return "", fmt.Errorf("no upstream for %q", imageName)

@@ -159,6 +159,8 @@ func (h *Handler) coalescedFetch(ctx context.Context, ref artifact.ArtifactRef, 
 }
 
 func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ups []upstream.Upstream, fetchName string, storeRef artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	ctx, cancel := coalesce.FillContext(ctx, 0)
+	defer cancel()
 	fetchRef := storeRef
 	fetchRef.Name = fetchName
 	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)

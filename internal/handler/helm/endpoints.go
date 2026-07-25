@@ -260,6 +260,9 @@ func (h *Handler) serveChart(w http.ResponseWriter, r *http.Request, repo, file 
 // fetchName is the stripped repository path used for upstream URLs; storeRef
 // keeps the full cache key.
 func (h *Handler) fetchAndStoreChart(ctx context.Context, ups []upstream.Upstream, fetchName string, storeRef artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	ctx, cancel := coalesce.FillContext(ctx, 0)
+	defer cancel()
+
 	fetchRef := storeRef
 	fetchRef.Name = fetchName
 	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)

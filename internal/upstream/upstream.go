@@ -93,6 +93,20 @@ func WithAcceptHeader(accept string) RequestOption {
 	return func(o *requestOpts) { o.accept = accept }
 }
 
+// WithByteRange asks the upstream for bytes starting at start (Range:
+// bytes={start}-). Used for durable quarantine resume across aborted cold
+// fills. start <= 0 is a no-op (full GET). Mid-stream resume on a live body
+// still goes through the Fetch wrapper; this option is for a fresh Fetch that
+// already has partial bytes on disk.
+func WithByteRange(start int64) RequestOption {
+	return func(o *requestOpts) {
+		if start > 0 {
+			o.hasRange = true
+			o.rangeStart = start
+		}
+	}
+}
+
 // Client fetches artifacts from a fallback chain of upstreams.
 type Client interface {
 	// Fetch streams the artifact bytes from the first healthy upstream in

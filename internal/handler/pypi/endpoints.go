@@ -486,6 +486,8 @@ func (h *Handler) fetchBodyAndStore(ctx context.Context, ref artifact.ArtifactRe
 //   - ChecksumVerifier: ref.Digest=="" → no reference check → StatusPass.
 //   - TofuVerifier: pins art.Digest on first sight; detects tampering on re-fetch.
 func (h *Handler) fetchAndStoreFile(ctx context.Context, ref artifact.ArtifactRef, ups []upstream.Upstream) (*artifact.CacheEntry, error) {
+	ctx, cancel := coalesce.FillContext(ctx, 0)
+	defer cancel()
 	// Build a fetch ref: Digest != "" so buildPath uses "packages/<name>/<version>".
 	fetchRef := ref
 	fetchRef.Digest = "pending" // sentinel; never stored or validated

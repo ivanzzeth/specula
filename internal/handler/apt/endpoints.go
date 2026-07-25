@@ -291,6 +291,8 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, repo, p
 // and promotes it to the permanent CAS tier. fetchRef drives the upstream path;
 // storeRef is the cache key (may be archive-scoped).
 func (h *Handler) fetchAndStoreImmutable(ctx context.Context, ups []upstream.Upstream, fetchRef, storeRef artifact.ArtifactRef) (*artifact.CacheEntry, error) {
+	ctx, cancel := coalesce.FillContext(ctx, 0)
+	defer cancel()
 	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)
 	if err != nil {
 		return nil, fmt.Errorf("upstream fetch: %w", err)

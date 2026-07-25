@@ -110,9 +110,11 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 		// Collapsed on request identity (ARCHITECTURE §7): concurrent pulls of the
 		// same cold blob — the common case when N nodes schedule one image at
 		// once — cost ONE upstream round trip. Cross-replica: FetchLocked + locker.
+		// Lock TTL matches fill budget: a 30s lock on a multi-minute layer pull
+		// lets another replica double-fetch and race the durable partial.
 		entry, err = coalesce.FetchLocked(ctx, h.fetchSF, h.locker,
 			coalesce.FetchKey("oci", "blob:"+imageName, digest, ""),
-			0,
+			coalesce.DefaultFillTimeout,
 			func(ctx context.Context) (*artifact.CacheEntry, bool, error) {
 				e, lerr := h.cache.Lookup(ctx, ref)
 				if lerr != nil {
@@ -192,7 +194,15 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 //
 // The fetched bytes are verified against the requested digest before Store
 // is called. A mismatch returns an error with DIGEST_INVALID semantics.
+//
+// Cold-fill context is detached from the HTTP request (coalesce.FillContext):
+// containerd timing out on response headers must not cancel quarantine mid-
+// write (that deleted partials and made every retry restart from zero).
+// Durable partial + upstream Range resume across aborted fills.
 func (h *Handler) fetchAndStoreBlob(ctx context.Context, imageName, digest string) (*artifact.CacheEntry, error) {
+	ctx, cancel := coalesce.FillContext(ctx, 0)
+	defer cancel()
+
 	ups, fetchName, ok := h.upstreamForName(imageName)
 	if !ok || len(ups) == 0 {
 		return nil, fmt.Errorf("no upstream for %q", imageName)
@@ -204,14 +214,22 @@ func (h *Handler) fetchAndStoreBlob(ctx context.Context, imageName, digest strin
 		Mutable:  false,
 	}
 
-	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups)
+	partialPath := cache.DurablePartialPath(h.quarantineDir, digest)
+	offset := cache.PartialSize(partialPath)
+	var fetchOpts []upstream.RequestOption
+	if offset > 0 {
+		fetchOpts = append(fetchOpts, upstream.WithByteRange(offset))
+		h.log.Info("oci: resuming blob fill", "digest", digest, "offset", offset)
+	}
+
+	rc, umeta, err := h.upstreamClt.Fetch(ctx, fetchRef, ups, fetchOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("upstream fetch blob: %w", err)
 	}
 	defer rc.Close()
 
-	// Stream to quarantine file; compute real sha256 digest.
-	art, cleanup, err := cache.Quarantine(ctx, h.quarantineDir, rc, umeta)
+	// Stream into durable partial; keep bytes on failure for the next resume.
+	art, cleanup, err := cache.QuarantineAt(ctx, partialPath, rc, umeta)
 	if err != nil {
 		return nil, fmt.Errorf("quarantine blob: %w", err)
 	}
