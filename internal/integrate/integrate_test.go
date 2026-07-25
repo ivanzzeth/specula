@@ -137,7 +137,7 @@ func TestIntegrateDockerPrependsMirrors(t *testing.T) {
 	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := integrateDocker(home, "http://127.0.0.1:7732", false, true) // skipRoot → user path
+	r := integrateDocker(home, "http://127.0.0.1:7732", "", false, true) // skipRoot → user path
 	if r.Action != "added" {
 		t.Fatalf("%+v", r)
 	}
@@ -160,7 +160,7 @@ func TestIntegrateDockerPrependsMirrors(t *testing.T) {
 		t.Fatalf("other keys lost: %v", cfg)
 	}
 	// Idempotent.
-	r2 := integrateDocker(home, "http://127.0.0.1:7732", false, true)
+	r2 := integrateDocker(home, "http://127.0.0.1:7732", "", false, true)
 	if r2.Action != "already" {
 		t.Fatalf("want already, got %+v", r2)
 	}
@@ -172,6 +172,69 @@ func TestDockerInsecureHost(t *testing.T) {
 	}
 	if got := dockerInsecureHost("https://reg.example.com"); got != "" {
 		t.Fatalf("https should skip insecure, got %q", got)
+	}
+}
+
+func TestIntegrateDockerHTTPSPrunesStaleSpecula(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".config", "docker", "daemon.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	current := "https://10.0.0.2:7732"
+	orig := map[string]any{
+		"registry-mirrors": []any{
+			"http://10.43.1.10:7732",
+			"https://docker.m.daocloud.io",
+			current,
+		},
+		"insecure-registries": []any{"10.43.1.10:7732", "127.0.0.1:7732"},
+	}
+	b, _ := json.MarshalIndent(orig, "", "  ")
+	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := integrateDocker(home, current, "", false, true)
+	if r.Action != "added" {
+		t.Fatalf("%+v", r)
+	}
+	cfg, err := readDockerDaemon(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirrors := dockerMirrors(cfg)
+	if len(mirrors) != 2 || mirrors[0] != current {
+		t.Fatalf("mirrors=%v want [%s, daocloud]", mirrors, current)
+	}
+	if mirrors[1] != "https://docker.m.daocloud.io" {
+		t.Fatalf("unrelated mirror lost: %v", mirrors)
+	}
+	if insecs := dockerInsecures(cfg); len(insecs) != 0 {
+		t.Fatalf("insecure-registries should be empty for https, got %v", insecs)
+	}
+	if got := dockerInsecureHost(current); got != "" {
+		t.Fatalf("dockerInsecureHost(https) = %q, want empty", got)
+	}
+}
+
+func TestIntegrateDockerHTTPSInstallsCA(t *testing.T) {
+	home := t.TempDir()
+	caPath := filepath.Join(home, "ca.pem")
+	if err := os.WriteFile(caPath, []byte("-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	addr := "https://10.0.0.2:7732"
+	r := integrateDocker(home, addr, caPath, false, true)
+	if r.Action != "added" {
+		t.Fatalf("%+v", r)
+	}
+	certPath := filepath.Join(home, ".docker", "certs.d", "10.0.0.2:7732", "ca.crt")
+	b, err := os.ReadFile(certPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "BEGIN CERTIFICATE") {
+		t.Fatalf("ca.crt body: %s", b)
 	}
 }
 

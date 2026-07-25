@@ -66,9 +66,10 @@ configs:
 }
 
 func TestMergeRegistriesYAMLBytes_HTTPSGetsInsecureSkipVerify(t *testing.T) {
+	const host = "specula.abcd1234.chorei.internal"
 	out, _, err := mergeRegistriesYAMLBytes(
 		nil,
-		"specula.abcd1234.chorei.internal",
+		host,
 		"https://10.0.0.1:7732",
 		"",
 	)
@@ -80,21 +81,26 @@ func TestMergeRegistriesYAMLBytes_HTTPSGetsInsecureSkipVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	configs := data["configs"].(map[string]any)
-	cfg := configs["10.0.0.1:7732"].(map[string]any)
-	tls := cfg["tls"].(map[string]any)
-	if tls["insecure_skip_verify"] != true {
-		t.Fatalf("want insecure_skip_verify for https self-signed, got %#v", cfg)
-	}
-	if _, ok := tls["ca_file"]; ok {
-		t.Fatalf("must not set ca_file without --ca-file, got %#v", cfg)
+	for _, key := range []string{host, "10.0.0.1:7732"} {
+		cfg := configs[key].(map[string]any)
+		tls := cfg["tls"].(map[string]any)
+		if tls["insecure_skip_verify"] != true {
+			t.Fatalf("%s: want insecure_skip_verify, got %#v", key, cfg)
+		}
+		if _, ok := tls["ca_file"]; ok {
+			t.Fatalf("%s: must not set ca_file without --ca-file, got %#v", key, cfg)
+		}
 	}
 }
 
 func TestMergeRegistriesYAMLBytes_HTTPSWithCAFile(t *testing.T) {
-	const caPath = "/etc/specula/ca.crt"
+	const (
+		host   = "specula.abcd1234.chorei.internal"
+		caPath = "/etc/specula/ca.crt"
+	)
 	out, _, err := mergeRegistriesYAMLBytes(
 		nil,
-		"specula.abcd1234.chorei.internal",
+		host,
 		"https://10.0.0.1:7732",
 		caPath,
 	)
@@ -106,13 +112,48 @@ func TestMergeRegistriesYAMLBytes_HTTPSWithCAFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	configs := data["configs"].(map[string]any)
-	cfg := configs["10.0.0.1:7732"].(map[string]any)
-	tls := cfg["tls"].(map[string]any)
-	if tls["ca_file"] != caPath {
-		t.Fatalf("want ca_file=%q, got %#v", caPath, cfg)
+	for _, key := range []string{host, "10.0.0.1:7732"} {
+		cfg := configs[key].(map[string]any)
+		tls := cfg["tls"].(map[string]any)
+		if tls["ca_file"] != caPath {
+			t.Fatalf("%s: want ca_file=%q, got %#v", key, caPath, cfg)
+		}
+		if _, ok := tls["insecure_skip_verify"]; ok {
+			t.Fatalf("%s: must not set insecure_skip_verify when ca_file is set, got %#v", key, cfg)
+		}
 	}
-	if _, ok := tls["insecure_skip_verify"]; ok {
-		t.Fatalf("must not set insecure_skip_verify when ca_file is set, got %#v", cfg)
+}
+
+func TestMergeRegistriesYAMLBytes_HTTPSWithCAFilePreservesHostnameAuth(t *testing.T) {
+	const host = "specula.abcd1234.chorei.internal"
+	existing := []byte(`
+configs:
+  specula.abcd1234.chorei.internal:
+    auth:
+      username: specula
+      password: secret
+`)
+	out, _, err := mergeRegistriesYAMLBytes(
+		existing,
+		host,
+		"https://10.0.0.1:7732",
+		"/etc/specula/ca.crt",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]any
+	if err := yaml.Unmarshal(out, &data); err != nil {
+		t.Fatal(err)
+	}
+	cfg := data["configs"].(map[string]any)[host].(map[string]any)
+	auth := cfg["auth"].(map[string]any)
+	if auth["username"] != "specula" || auth["password"] != "secret" {
+		t.Fatalf("auth not preserved: %#v", cfg)
+	}
+	tls := cfg["tls"].(map[string]any)
+	if tls["ca_file"] != "/etc/specula/ca.crt" {
+		t.Fatalf("want ca_file on hostname config, got %#v", cfg)
 	}
 }
 

@@ -14,13 +14,16 @@ import (
 //   - registry-mirrors: Specula first, existing mirrors kept
 //   - insecure-registries: host:port when Specula is http:// (required for local
 //     plain-HTTP registries)
+//   - https:// with --ca-file: installs CA under docker certs.d/<dialHost>/ca.crt
 //
 // Prefer /etc/docker/daemon.json (what dockerd actually reads). Without root,
 // write a user-visible copy + a merge snippet under ~/.config/specula/ and tell
 // the operator to re-run with sudo.
-func integrateDocker(home, addr string, dryRun, skipRoot bool) Result {
+func integrateDocker(home, addr, caFile string, dryRun, skipRoot bool) Result {
 	mirror := strings.TrimRight(addr, "/")
 	insecureHost := dockerInsecureHost(addr) // empty when https
+	isHTTPS := strings.HasPrefix(strings.ToLower(mirror), "https://")
+	dialHost := endpointDialHost(mirror)
 
 	userPath := filepath.Join(home, ".config", "docker", "daemon.json")
 	systemPath := "/etc/docker/daemon.json"
@@ -41,9 +44,27 @@ func integrateDocker(home, addr string, dryRun, skipRoot bool) Result {
 		mirrors := dockerMirrors(cfg)
 		insecs := dockerInsecures(cfg)
 		changed := false
+		prunedInsec := false
+
+		if isHTTPS {
+			pruned, did := pruneStaleSpeculaMirrors(mirrors, mirror)
+			if did {
+				mirrors = pruned
+				changed = true
+			}
+			prunedInsecList, didInsec := pruneSpeculaInsecureRegistries(insecs)
+			if didInsec {
+				insecs = prunedInsecList
+				prunedInsec = true
+				changed = true
+			}
+		}
 
 		if !containsURL(mirrors, mirror) {
 			mirrors = append([]string{mirror}, mirrors...)
+			changed = true
+		} else if isHTTPS && (len(mirrors) == 0 || !sameProxyURL(mirrors[0], mirror)) {
+			mirrors = ensureMirrorFirst(mirrors, mirror)
 			changed = true
 		}
 		if insecureHost != "" && !containsFold(insecs, insecureHost) {
@@ -63,6 +84,9 @@ func integrateDocker(home, addr string, dryRun, skipRoot bool) Result {
 		if insecureHost != "" {
 			detailParts = append(detailParts, "insecure-registries ← "+insecureHost)
 		}
+		if prunedInsec {
+			detailParts = append(detailParts, "pruned stale :7732 insecure-registries")
+		}
 		detail := strings.Join(detailParts, "; ") + " (restart docker to apply)"
 
 		if dryRun {
@@ -72,6 +96,8 @@ func integrateDocker(home, addr string, dryRun, skipRoot bool) Result {
 		cfg["registry-mirrors"] = mirrors
 		if len(insecs) > 0 {
 			cfg["insecure-registries"] = insecs
+		} else if _, ok := cfg["insecure-registries"]; ok {
+			delete(cfg, "insecure-registries")
 		}
 		if err := writeDockerDaemon(p, cfg); err != nil {
 			if needRoot && os.IsPermission(err) {
@@ -97,7 +123,14 @@ func integrateDocker(home, addr string, dryRun, skipRoot bool) Result {
 		r := mergeOne(userPath, false)
 		if !dryRun && (r.Action == "added" || r.Action == "already") {
 			writeSnippet()
-			if r.Action == "added" {
+			if caDetail := installDockerCATrust(home, dialHost, caFile, dryRun, skipRoot); caDetail != "" {
+				if r.Action == "added" {
+					r.Detail += "; " + caDetail
+				} else {
+					r = Result{Action: "added", Detail: caDetail, Path: r.Path}
+				}
+			}
+			if r.Action == "added" && !strings.Contains(r.Detail, "re-run: sudo") {
 				r.Detail += "; note: dockerd reads /etc/docker/daemon.json — re-run: sudo specula integrate --protocols oci"
 			}
 		}
@@ -110,6 +143,13 @@ func integrateDocker(home, addr string, dryRun, skipRoot bool) Result {
 		writeSnippet()
 		_ = os.MkdirAll(filepath.Dir(userPath), 0o755)
 		_ = mergeOne(userPath, false) // best-effort mirror of settings
+		if caDetail := installDockerCATrust(home, dialHost, caFile, dryRun, skipRoot); caDetail != "" {
+			if sys.Action == "already" {
+				sys = Result{Action: "added", Detail: caDetail, Path: sys.Path}
+			} else if sys.Action == "added" {
+				sys.Detail += "; " + caDetail
+			}
+		}
 	}
 
 	if sys.Action == "skipped" {
@@ -136,6 +176,95 @@ func dockerInsecureHost(addr string) string {
 		return ""
 	}
 	return u.Host // already host:port when port present
+}
+
+const speculaDataPortSuffix = ":7732"
+
+// pruneStaleSpeculaMirrors drops registry-mirror URLs whose dial host ends with
+// :7732 except the current Specula https addr (stale HTTP cluster-IP leftovers).
+func pruneStaleSpeculaMirrors(mirrors []string, current string) ([]string, bool) {
+	var changed bool
+	out := make([]string, 0, len(mirrors))
+	for _, m := range mirrors {
+		if sameProxyURL(m, current) {
+			out = append(out, m)
+			continue
+		}
+		if strings.HasSuffix(endpointDialHost(m), speculaDataPortSuffix) {
+			changed = true
+			continue
+		}
+		out = append(out, m)
+	}
+	return out, changed
+}
+
+func pruneSpeculaInsecureRegistries(insecs []string) ([]string, bool) {
+	var changed bool
+	out := make([]string, 0, len(insecs))
+	for _, e := range insecs {
+		if strings.HasSuffix(e, speculaDataPortSuffix) {
+			changed = true
+			continue
+		}
+		out = append(out, e)
+	}
+	return out, changed
+}
+
+func ensureMirrorFirst(mirrors []string, mirror string) []string {
+	out := make([]string, 0, len(mirrors))
+	out = append(out, mirror)
+	for _, m := range mirrors {
+		if !sameProxyURL(m, mirror) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// installDockerCATrust copies caFile to docker certs.d for https Specula dial host.
+func installDockerCATrust(home, dialHost, caFile string, dryRun, skipRoot bool) string {
+	caFile = strings.TrimSpace(caFile)
+	if dialHost == "" || caFile == "" {
+		return ""
+	}
+	if dryRun {
+		if skipRoot {
+			return "would install docker CA → " + filepath.Join(home, ".docker", "certs.d", dialHost, "ca.crt")
+		}
+		return "would install docker CA → /etc/docker/certs.d/" + dialHost + "/ca.crt"
+	}
+	caBytes, err := os.ReadFile(caFile)
+	if err != nil {
+		return "docker CA install failed: " + err.Error()
+	}
+	var targets []string
+	if skipRoot {
+		targets = []string{filepath.Join(home, ".docker", "certs.d", dialHost, "ca.crt")}
+	} else {
+		targets = []string{
+			filepath.Join("/etc/docker/certs.d", dialHost, "ca.crt"),
+			filepath.Join(home, ".docker", "certs.d", dialHost, "ca.crt"),
+		}
+	}
+	var written []string
+	for _, p := range targets {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			continue
+		}
+		if err := os.WriteFile(p, caBytes, 0o644); err != nil {
+			continue
+		}
+		written = append(written, p)
+	}
+	if len(written) == 0 {
+		if skipRoot {
+			return "docker CA install failed (write " + targets[0] + ")"
+		}
+		return "docker CA install failed (need root for /etc/docker/certs.d)"
+	}
+	return "docker CA ← " + strings.Join(written, ", ")
 }
 
 func readDockerDaemon(path string) (map[string]any, error) {

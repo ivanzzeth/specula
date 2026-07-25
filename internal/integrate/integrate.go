@@ -100,7 +100,7 @@ func Run(opts Options) (Report, error) {
 			r = integratePip(home, addr, opts.DryRun)
 			r.Protocol = "pypi"
 		case "oci", "docker":
-			dr := integrateDocker(home, addr, opts.DryRun, opts.SkipRoot)
+			dr := integrateDocker(home, addr, opts.CAFile, opts.DryRun, opts.SkipRoot)
 			cr := integrateContainerdCerts(home, addr, opts.CAFile, opts.DryRun, opts.SkipRoot)
 			r = mergeOCIResults(dr, cr)
 			if rh := strings.TrimSpace(opts.RegistryHost); rh != "" {

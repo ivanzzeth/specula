@@ -153,29 +153,28 @@ func mergeRegistriesYAMLBytes(existing []byte, host, endpoint, caFile string) ([
 	}
 	mirrors[host] = wantMirror
 
+	isHTTPS := strings.HasPrefix(strings.ToLower(endpoint), "https://")
+	ca := strings.TrimSpace(caFile)
 	eh := endpointDialHost(endpoint)
-	if eh != "" {
-		isHTTPS := strings.HasPrefix(strings.ToLower(endpoint), "https://")
-		ca := strings.TrimSpace(caFile)
-		if isHTTPS && ca != "" {
-			configs[eh] = map[string]any{
-				"tls": map[string]any{"ca_file": ca},
+
+	if isHTTPS {
+		if ca != "" {
+			mergeRegistryConfigTLS(configs, host, false, ca)
+			if eh != "" {
+				mergeRegistryConfigTLS(configs, eh, false, ca)
 			}
-		} else if isHTTPS && ca == "" {
-			configs[eh] = map[string]any{
-				"tls": map[string]any{"insecure_skip_verify": true},
+		} else {
+			mergeRegistryConfigTLS(configs, host, true, "")
+			if eh != "" {
+				mergeRegistryConfigTLS(configs, eh, true, "")
 			}
-		} else if !isHTTPS {
-			// Plain HTTP: never attach a tls block on the dial host (k3s would
-			// emit server=https://… and break blob pulls).
-			if prev, ok := configs[eh].(map[string]any); ok {
-				delete(prev, "tls")
-				if len(prev) == 0 {
-					delete(configs, eh)
-				} else {
-					configs[eh] = prev
-				}
-			}
+		}
+	} else {
+		// Plain HTTP: never attach tls on registry hostname or dial host (k3s
+		// would emit server=https://… and break blob pulls).
+		clearRegistryConfigTLS(configs, host)
+		if eh != "" {
+			clearRegistryConfigTLS(configs, eh)
 		}
 	}
 
@@ -237,6 +236,38 @@ func renderRegistryHostTOML(endpoint string, skipVerify bool, caFile string) str
 		b.WriteString("  skip_verify = true\n")
 	}
 	return b.String()
+}
+
+// mergeRegistryConfigTLS upserts tls on configs[key], preserving other keys (e.g. auth).
+func mergeRegistryConfigTLS(configs map[string]any, key string, skipVerify bool, caFile string) {
+	var cfg map[string]any
+	if prev, ok := configs[key].(map[string]any); ok {
+		cfg = make(map[string]any, len(prev))
+		for k, v := range prev {
+			cfg[k] = v
+		}
+	} else {
+		cfg = map[string]any{}
+	}
+	if ca := strings.TrimSpace(caFile); ca != "" {
+		cfg["tls"] = map[string]any{"ca_file": ca}
+	} else if skipVerify {
+		cfg["tls"] = map[string]any{"insecure_skip_verify": true}
+	}
+	configs[key] = cfg
+}
+
+func clearRegistryConfigTLS(configs map[string]any, key string) {
+	prev, ok := configs[key].(map[string]any)
+	if !ok {
+		return
+	}
+	delete(prev, "tls")
+	if len(prev) == 0 {
+		delete(configs, key)
+	} else {
+		configs[key] = prev
+	}
 }
 
 func endpointDialHost(endpoint string) string {
