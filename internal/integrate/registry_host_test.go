@@ -29,7 +29,7 @@ configs:
 		existing,
 		"specula.abcd1234.chorei.internal",
 		"http://10.0.0.1:7732",
-		true, // legacy callers may pass true; http still must not get tls
+		"/etc/specula/ca.crt", // ignored for http://
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +55,7 @@ configs:
 		t.Fatalf("http dial host must NOT have a configs tls entry, got %#v", configs["10.0.0.1:7732"])
 	}
 
-	out2, already2, err := mergeRegistriesYAMLBytes(out, "specula.abcd1234.chorei.internal", "http://10.0.0.1:7732", true)
+	out2, already2, err := mergeRegistriesYAMLBytes(out, "specula.abcd1234.chorei.internal", "http://10.0.0.1:7732", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestMergeRegistriesYAMLBytes_HTTPSGetsInsecureSkipVerify(t *testing.T) {
 		nil,
 		"specula.abcd1234.chorei.internal",
 		"https://10.0.0.1:7732",
-		true,
+		"",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -85,13 +85,42 @@ func TestMergeRegistriesYAMLBytes_HTTPSGetsInsecureSkipVerify(t *testing.T) {
 	if tls["insecure_skip_verify"] != true {
 		t.Fatalf("want insecure_skip_verify for https self-signed, got %#v", cfg)
 	}
+	if _, ok := tls["ca_file"]; ok {
+		t.Fatalf("must not set ca_file without --ca-file, got %#v", cfg)
+	}
+}
+
+func TestMergeRegistriesYAMLBytes_HTTPSWithCAFile(t *testing.T) {
+	const caPath = "/etc/specula/ca.crt"
+	out, _, err := mergeRegistriesYAMLBytes(
+		nil,
+		"specula.abcd1234.chorei.internal",
+		"https://10.0.0.1:7732",
+		caPath,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var data map[string]any
+	if err := yaml.Unmarshal(out, &data); err != nil {
+		t.Fatal(err)
+	}
+	configs := data["configs"].(map[string]any)
+	cfg := configs["10.0.0.1:7732"].(map[string]any)
+	tls := cfg["tls"].(map[string]any)
+	if tls["ca_file"] != caPath {
+		t.Fatalf("want ca_file=%q, got %#v", caPath, cfg)
+	}
+	if _, ok := tls["insecure_skip_verify"]; ok {
+		t.Fatalf("must not set insecure_skip_verify when ca_file is set, got %#v", cfg)
+	}
 }
 
 func TestWriteRegistryHostCerts_HTTPSSkipVerify(t *testing.T) {
 	root := t.TempDir()
 	host := "specula.abcd1234.chorei.internal"
 	ep := "https://10.0.0.1:7732"
-	r := writeRegistryHostCerts(root, host, ep, true, false, false)
+	r := writeRegistryHostCerts(root, host, ep, true, "", false, false)
 	if r.Action != "added" {
 		t.Fatalf("action=%s err=%s detail=%s", r.Action, r.Err, r.Detail)
 	}
@@ -103,13 +132,38 @@ func TestWriteRegistryHostCerts_HTTPSSkipVerify(t *testing.T) {
 	if !strings.Contains(s, ep) || !strings.Contains(s, "skip_verify") {
 		t.Fatalf("hosts.toml body:\n%s", s)
 	}
+	if strings.Contains(s, "ca =") {
+		t.Fatalf("must not set ca without --ca-file:\n%s", s)
+	}
+}
+
+func TestWriteRegistryHostCerts_HTTPSWithCAFile(t *testing.T) {
+	root := t.TempDir()
+	host := "specula.abcd1234.chorei.internal"
+	ep := "https://10.0.0.1:7732"
+	const caPath = "/etc/specula/ca.crt"
+	r := writeRegistryHostCerts(root, host, ep, false, caPath, false, false)
+	if r.Action != "added" {
+		t.Fatalf("action=%s err=%s detail=%s", r.Action, r.Err, r.Detail)
+	}
+	body, err := os.ReadFile(filepath.Join(root, host, "hosts.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(body)
+	if !strings.Contains(s, `ca = ["/etc/specula/ca.crt"]`) {
+		t.Fatalf("want ca line, got:\n%s", s)
+	}
+	if strings.Contains(s, "skip_verify") {
+		t.Fatalf("must not set skip_verify when ca is set:\n%s", s)
+	}
 }
 
 func TestWriteRegistryHostCerts_HTTPNoSkipVerify(t *testing.T) {
 	root := t.TempDir()
 	host := "specula.abcd1234.chorei.internal"
 	ep := "http://10.0.0.1:7732"
-	r := writeRegistryHostCerts(root, host, ep, false, false, false)
+	r := writeRegistryHostCerts(root, host, ep, false, "", false, false)
 	if r.Action != "added" {
 		t.Fatalf("action=%s", r.Action)
 	}
@@ -119,6 +173,9 @@ func TestWriteRegistryHostCerts_HTTPNoSkipVerify(t *testing.T) {
 	}
 	if strings.Contains(string(body), "skip_verify") {
 		t.Fatalf("http hosts.toml must not set skip_verify:\n%s", body)
+	}
+	if strings.Contains(string(body), "ca =") {
+		t.Fatalf("http hosts.toml must not set ca:\n%s", body)
 	}
 }
 
@@ -132,8 +189,23 @@ func TestEndpointDialHost(t *testing.T) {
 }
 
 func TestIntegrateRegistryHost_EmptySkipped(t *testing.T) {
-	r := integrateRegistryHost("", "http://10.0.0.1:7732", true, true)
+	r := integrateRegistryHost("", "http://10.0.0.1:7732", "", true, true)
 	if r.Action != "skipped" {
 		t.Fatalf("want skipped, got %#v", r)
+	}
+}
+
+func TestTLSTrustForEndpoint(t *testing.T) {
+	skip, ca := tlsTrustForEndpoint("http://10.0.0.1:7732", "/etc/specula/ca.crt")
+	if skip || ca != "" {
+		t.Fatalf("http: skip=%v ca=%q", skip, ca)
+	}
+	skip, ca = tlsTrustForEndpoint("https://10.0.0.1:7732", "")
+	if !skip || ca != "" {
+		t.Fatalf("https no ca: skip=%v ca=%q", skip, ca)
+	}
+	skip, ca = tlsTrustForEndpoint("https://10.0.0.1:7732", "/etc/specula/ca.crt")
+	if skip || ca != "/etc/specula/ca.crt" {
+		t.Fatalf("https with ca: skip=%v ca=%q", skip, ca)
 	}
 }

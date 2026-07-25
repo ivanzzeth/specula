@@ -177,7 +177,7 @@ func TestDockerInsecureHost(t *testing.T) {
 
 func TestIntegrateContainerdCertsOverridePath(t *testing.T) {
 	home := t.TempDir()
-	r := integrateContainerdCerts(home, "http://127.0.0.1:7732", false, true)
+	r := integrateContainerdCerts(home, "http://127.0.0.1:7732", "", false, true)
 	if r.Action != "added" {
 		t.Fatalf("%+v", r)
 	}
@@ -201,7 +201,7 @@ func TestIntegrateContainerdCertsOverridePath(t *testing.T) {
 	if strings.Contains(string(db), "override_path") {
 		t.Fatalf("docker.io must not use override_path:\n%s", db)
 	}
-	r2 := integrateContainerdCerts(home, "http://127.0.0.1:7732", false, true)
+	r2 := integrateContainerdCerts(home, "http://127.0.0.1:7732", "", false, true)
 	if r2.Action != "already" {
 		t.Fatalf("want already, got %+v", r2)
 	}

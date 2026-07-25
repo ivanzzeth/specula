@@ -18,7 +18,7 @@ const k3sRegistriesYAML = "/etc/rancher/k3s/registries.yaml"
 //
 // k3s: merge mirrors+configs into registries.yaml (do NOT seed public upstreams).
 // All distros: write certs.d/<host>/hosts.toml under the live containerd root.
-func integrateRegistryHost(host, addr string, dryRun, skipRoot bool) Result {
+func integrateRegistryHost(host, addr, caFile string, dryRun, skipRoot bool) Result {
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return Result{Action: "skipped", Detail: "no --registry-host"}
@@ -27,16 +27,14 @@ func integrateRegistryHost(host, addr string, dryRun, skipRoot bool) Result {
 	if endpoint == "" {
 		return Result{Action: "error", Err: "empty Specula addr"}
 	}
-	// tls insecure_skip_verify / hosts.toml skip_verify: HTTPS self-signed only.
-	// Never for plain http:// (that footgun made containerd speak TLS to HTTP).
-	skipVerify := strings.HasPrefix(strings.ToLower(endpoint), "https://")
+	skipVerify, ca := tlsTrustForEndpoint(endpoint, caFile)
 
 	var parts []string
 	var path string
 	action := "already"
 
 	if isK3sNode() {
-		yr := mergeK3sRegistriesYAML(k3sRegistriesYAML, host, endpoint, skipVerify, dryRun, skipRoot)
+		yr := mergeK3sRegistriesYAML(k3sRegistriesYAML, host, endpoint, ca, dryRun, skipRoot)
 		if yr.Action == "error" {
 			return yr
 		}
@@ -51,7 +49,7 @@ func integrateRegistryHost(host, addr string, dryRun, skipRoot bool) Result {
 
 	certsDirs := resolveContainerdCertsDirs()
 	for _, dir := range certsDirs {
-		cr := writeRegistryHostCerts(dir, host, endpoint, skipVerify, dryRun, skipRoot)
+		cr := writeRegistryHostCerts(dir, host, endpoint, skipVerify, ca, dryRun, skipRoot)
 		if cr.Action == "error" {
 			return cr
 		}
@@ -76,7 +74,20 @@ func integrateRegistryHost(host, addr string, dryRun, skipRoot bool) Result {
 	}
 }
 
-func mergeK3sRegistriesYAML(path, host, endpoint string, insecure, dryRun, skipRoot bool) Result {
+// tlsTrustForEndpoint returns skipVerify and ca path for containerd/k3s TLS wiring.
+// http:// → never skip_verify, never ca. https:// + caFile → ca only. https:// without ca → skip_verify.
+func tlsTrustForEndpoint(endpoint, caFile string) (skipVerify bool, ca string) {
+	if !strings.HasPrefix(strings.ToLower(endpoint), "https://") {
+		return false, ""
+	}
+	ca = strings.TrimSpace(caFile)
+	if ca != "" {
+		return false, ca
+	}
+	return true, ""
+}
+
+func mergeK3sRegistriesYAML(path, host, endpoint, caFile string, dryRun, skipRoot bool) Result {
 	detail := fmt.Sprintf("k3s registries.yaml mirrors[%s] → %s", host, endpoint)
 	if dryRun {
 		return Result{Action: "added", Detail: "would write: " + detail, Path: path}
@@ -94,7 +105,7 @@ func mergeK3sRegistriesYAML(path, host, endpoint string, insecure, dryRun, skipR
 		return Result{Action: "error", Err: err.Error(), Path: path}
 	}
 
-	merged, already, err := mergeRegistriesYAMLBytes(existing, host, endpoint, insecure)
+	merged, already, err := mergeRegistriesYAMLBytes(existing, host, endpoint, caFile)
 	if err != nil {
 		return Result{Action: "error", Err: err.Error(), Path: path}
 	}
@@ -112,7 +123,7 @@ func mergeK3sRegistriesYAML(path, host, endpoint string, insecure, dryRun, skipR
 
 // mergeRegistriesYAMLBytes upserts one host→endpoint into k3s registries.yaml,
 // preserving every other host and top-level key.
-func mergeRegistriesYAMLBytes(existing []byte, host, endpoint string, insecure bool) ([]byte, bool, error) {
+func mergeRegistriesYAMLBytes(existing []byte, host, endpoint, caFile string) ([]byte, bool, error) {
 	var data map[string]any
 	text := strings.TrimSpace(string(existing))
 	if text != "" {
@@ -145,7 +156,12 @@ func mergeRegistriesYAMLBytes(existing []byte, host, endpoint string, insecure b
 	eh := endpointDialHost(endpoint)
 	if eh != "" {
 		isHTTPS := strings.HasPrefix(strings.ToLower(endpoint), "https://")
-		if isHTTPS && insecure {
+		ca := strings.TrimSpace(caFile)
+		if isHTTPS && ca != "" {
+			configs[eh] = map[string]any{
+				"tls": map[string]any{"ca_file": ca},
+			}
+		} else if isHTTPS && ca == "" {
 			configs[eh] = map[string]any{
 				"tls": map[string]any{"insecure_skip_verify": true},
 			}
@@ -175,10 +191,10 @@ func mergeRegistriesYAMLBytes(existing []byte, host, endpoint string, insecure b
 	return out, already, nil
 }
 
-func writeRegistryHostCerts(certsDir, host, endpoint string, insecure, dryRun, skipRoot bool) Result {
+func writeRegistryHostCerts(certsDir, host, endpoint string, skipVerify bool, caFile string, dryRun, skipRoot bool) Result {
 	dir := filepath.Join(certsDir, host)
 	path := filepath.Join(dir, "hosts.toml")
-	body := renderRegistryHostTOML(endpoint, insecure)
+	body := renderRegistryHostTOML(endpoint, skipVerify, caFile)
 	detail := fmt.Sprintf("certs.d/%s → %s", host, endpoint)
 
 	if dryRun {
@@ -209,13 +225,15 @@ func writeRegistryHostCerts(certsDir, host, endpoint string, insecure, dryRun, s
 	return Result{Action: "added", Detail: detail, Path: path}
 }
 
-func renderRegistryHostTOML(endpoint string, insecure bool) string {
+func renderRegistryHostTOML(endpoint string, skipVerify bool, caFile string) string {
 	ep := strings.TrimRight(endpoint, "/")
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("# managed by specula integrate --registry-host\n"))
 	b.WriteString(fmt.Sprintf("[host.%q]\n", ep))
 	b.WriteString("  capabilities = [\"pull\", \"resolve\", \"push\"]\n")
-	if insecure {
+	if ca := strings.TrimSpace(caFile); ca != "" {
+		b.WriteString(fmt.Sprintf("  ca = [%q]\n", ca))
+	} else if skipVerify {
 		b.WriteString("  skip_verify = true\n")
 	}
 	return b.String()

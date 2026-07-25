@@ -33,6 +33,8 @@ func runIntegrate(args []string) error {
 	configPath := fs.String("config", "", "path to specula.yaml (optional; enables multi-source helm/apt/conda wiring)")
 	registryHost := fs.String("registry-host", "",
 		"OCI hostname to wire to --addr (k3s: registries.yaml + certs.d; vanilla: certs.d)")
+	caFile := fs.String("ca-file", "",
+		"path to PEM CA cert on this node (e.g. /etc/specula/ca.crt); trust HTTPS Specula without skip_verify")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage:
   specula integrate [flags]
@@ -51,6 +53,7 @@ Add Specula as a client-side mirror without destroying existing config:
 Examples:
   specula integrate --addr http://127.0.0.1:7732
   sudo specula integrate --protocols oci --addr http://127.0.0.1:7732
+  sudo specula integrate --protocols oci --addr https://specula.example.test:7732 --ca-file /etc/specula/ca.crt
   specula integrate --protocols docker   # alias of oci
 
 Flags:
@@ -76,6 +79,7 @@ Flags:
 		SkipRoot:     *skipRoot,
 		ConfigPath:   *configPath,
 		RegistryHost: *registryHost,
+		CAFile:       *caFile,
 	})
 	if err != nil {
 		return err

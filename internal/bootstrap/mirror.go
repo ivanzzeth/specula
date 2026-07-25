@@ -35,6 +35,9 @@ type MirrorOptions struct {
 	// Use ONLY for HTTPS mirrors with a non-public CA (self-signed Specula).
 	// Never for plain http:// — containerd then dials TLS against an HTTP port.
 	SkipVerify bool
+	// CaFile is a PEM CA cert path on the node. When set for HTTPS endpoints,
+	// writes ca = ["path"] instead of skip_verify.
+	CaFile string
 }
 
 // WriteContainerdHosts writes certs.d/<registry>/hosts.toml for each registry.
@@ -65,7 +68,7 @@ func WriteContainerdHosts(opts MirrorOptions) error {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("bootstrap: mkdir %s: %w", dir, err)
 		}
-		body := renderHostsTOML(reg, server, endpoint, opts.SkipVerify)
+		body := renderHostsTOML(reg, server, endpoint, opts.SkipVerify, opts.CaFile)
 		path := filepath.Join(dir, "hosts.toml")
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			return fmt.Errorf("bootstrap: write %s: %w", path, err)
@@ -84,7 +87,7 @@ func registryServer(reg string) string {
 	return "https://" + reg
 }
 
-func renderHostsTOML(registry, server, endpoint string, skipVerify bool) string {
+func renderHostsTOML(registry, server, endpoint string, skipVerify bool, caFile string) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("server = %q\n\n", server))
 
@@ -100,7 +103,9 @@ func renderHostsTOML(registry, server, endpoint string, skipVerify bool) string 
 	if overridePath {
 		b.WriteString("  override_path = true\n")
 	}
-	if skipVerify {
+	if ca := strings.TrimSpace(caFile); ca != "" {
+		b.WriteString(fmt.Sprintf("  ca = [%q]\n", ca))
+	} else if skipVerify {
 		b.WriteString("  skip_verify = true\n")
 	}
 	return b.String()

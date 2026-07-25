@@ -37,6 +37,10 @@ type Options struct {
 	// RegistryHost is an optional OCI hostname (cluster Specula pointer DNS) to
 	// wire so pulls of that host dial Addr. On k3s this also merges registries.yaml.
 	RegistryHost string
+	// CAFile is an optional path to a PEM CA cert on the node (e.g. /etc/specula/ca.crt).
+	// When Addr is https:// and CAFile is set, TLS trust uses ca_file / ca= instead of
+	// skip_verify. Ignored for plain http:// endpoints.
+	CAFile string
 }
 
 // Result is one protocol's integrate outcome.
@@ -97,10 +101,10 @@ func Run(opts Options) (Report, error) {
 			r.Protocol = "pypi"
 		case "oci", "docker":
 			dr := integrateDocker(home, addr, opts.DryRun, opts.SkipRoot)
-			cr := integrateContainerdCerts(home, addr, opts.DryRun, opts.SkipRoot)
+			cr := integrateContainerdCerts(home, addr, opts.CAFile, opts.DryRun, opts.SkipRoot)
 			r = mergeOCIResults(dr, cr)
 			if rh := strings.TrimSpace(opts.RegistryHost); rh != "" {
-				hr := integrateRegistryHost(rh, addr, opts.DryRun, opts.SkipRoot)
+				hr := integrateRegistryHost(rh, addr, opts.CAFile, opts.DryRun, opts.SkipRoot)
 				r = mergeOCIResults(r, hr)
 			}
 			r.Protocol = "oci"

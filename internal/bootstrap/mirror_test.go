@@ -58,6 +58,23 @@ func TestWriteContainerdHosts_NoSkipVerify(t *testing.T) {
 	require.NoError(t, err)
 	s := string(got)
 	require.NotContains(t, s, "skip_verify")
+	require.NotContains(t, s, "ca =")
 	require.Contains(t, s, `override_path = true`)
 	require.Contains(t, s, `[host."https://mirror.example:443/v2/ghcr.io"]`)
+}
+
+func TestWriteContainerdHosts_CAFile(t *testing.T) {
+	dir := t.TempDir()
+	const caPath = "/etc/specula/ca.crt"
+	require.NoError(t, bootstrap.WriteContainerdHosts(bootstrap.MirrorOptions{
+		CertsDir:   dir,
+		Endpoint:   "https://mirror.example:443",
+		Registries: []string{"ghcr.io"},
+		CaFile:     caPath,
+	}))
+	got, err := os.ReadFile(filepath.Join(dir, "ghcr.io", "hosts.toml"))
+	require.NoError(t, err)
+	s := string(got)
+	require.Contains(t, s, `ca = ["/etc/specula/ca.crt"]`)
+	require.NotContains(t, s, "skip_verify")
 }

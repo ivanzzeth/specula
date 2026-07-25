@@ -51,12 +51,9 @@ func fileExists(path string) bool {
 // integrateContainerdCerts writes containerd hosts.toml drop-ins so non-Hub
 // registries (ghcr, quay, codeberg, …) reach Specula with override_path.
 // docker.io stays a plain mirror host (Hub-relative paths).
-func integrateContainerdCerts(home, addr string, dryRun, skipRoot bool) Result {
+func integrateContainerdCerts(home, addr, caFile string, dryRun, skipRoot bool) Result {
 	endpoint := strings.TrimRight(addr, "/")
-	// skip_verify is ONLY valid for HTTPS with a non-public CA (self-signed
-	// Specula). Setting it on http:// makes containerd dial TLS and fail with
-	// "tls: first record does not look like a TLS handshake" / wrong version.
-	skipVerify := strings.HasPrefix(strings.ToLower(endpoint), "https://")
+	skipVerify, ca := tlsTrustForEndpoint(endpoint, caFile)
 	regs := append([]string(nil), bootstrap.DefaultOCIRegistries...)
 
 	systemDirs := resolveContainerdCertsDirs()
@@ -95,6 +92,7 @@ func integrateContainerdCerts(home, addr string, dryRun, skipRoot bool) Result {
 			Endpoint:   endpoint,
 			Registries: regs,
 			SkipVerify: skipVerify,
+			CaFile:     ca,
 		}); err != nil {
 			return Result{Action: "error", Err: err.Error(), Path: dir}
 		}
