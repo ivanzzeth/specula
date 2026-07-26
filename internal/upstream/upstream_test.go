@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -117,6 +118,99 @@ func TestFetch_FallbackOnServerError(t *testing.T) {
 	assert.Equal(t, "real content", string(data))
 	assert.Equal(t, "good", meta.Upstream)
 }
+
+// TestFetch_NonFinalUpstreamGetsOneAttempt: with maxAttempts=3, a dead first
+// mirror must be probed ONCE then fall through — not 3× dial timeout (~90s)
+// before 1ms runs (CN DaoCloud→R2 per-blob hang).
+func TestFetch_NonFinalUpstreamGetsOneAttempt(t *testing.T) {
+	good := okServer(t, "from-1ms", nil)
+	defer good.Close()
+
+	var deadHits atomic.Int32
+	c := testClient(3)
+	c.http = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.Contains(req.URL.Host, "dead-cdn") {
+				deadHits.Add(1)
+				return nil, context.DeadlineExceeded
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
+	body, meta, err := c.Fetch(context.Background(), tarballRef("pkg", "v1.0.0"),
+		[]Upstream{
+			{Name: "daocloud-r2", BaseURL: "http://dead-cdn.test", Priority: 1},
+			{Name: "1ms", BaseURL: good.URL, Priority: 2},
+		})
+	require.NoError(t, err)
+	defer body.Close()
+	data, _ := io.ReadAll(body)
+	assert.Equal(t, "from-1ms", string(data))
+	assert.Equal(t, "1ms", meta.Upstream)
+	assert.Equal(t, int32(1), deadHits.Load(),
+		"non-final upstream must get 1 attempt, not maxAttempts=3")
+}
+
+// TestFetch_PerUpstreamDeadlineFallsThrough reproduces the CN DaoCloud→R2 hang:
+// dial / header deadlines surface as context.DeadlineExceeded on ONE mirror,
+// but the parent fill context is still live. The chain must try the next
+// upstream (1ms) instead of aborting the whole Fetch.
+func TestFetch_PerUpstreamDeadlineFallsThrough(t *testing.T) {
+	good := okServer(t, "from-1ms", nil)
+	defer good.Close()
+
+	c := testClient(1)
+	c.http = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if strings.Contains(req.URL.Host, "dead-cdn") {
+				return nil, context.DeadlineExceeded
+			}
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
+	body, meta, err := c.Fetch(context.Background(), tarballRef("pkg", "v1.0.0"),
+		[]Upstream{
+			{Name: "daocloud-r2", BaseURL: "http://dead-cdn.test", Priority: 1},
+			{Name: "1ms", BaseURL: good.URL, Priority: 2},
+		})
+	require.NoError(t, err, "per-upstream DeadlineExceeded must not abort the chain")
+	defer body.Close()
+	data, _ := io.ReadAll(body)
+	assert.Equal(t, "from-1ms", string(data))
+	assert.Equal(t, "1ms", meta.Upstream)
+}
+
+// TestFetch_ParentContextDeadlineStillAborts: when the fill / caller context
+// itself is done, do NOT keep hammering later mirrors.
+func TestFetch_ParentContextDeadlineStillAborts(t *testing.T) {
+	good := okServer(t, "should-not-reach", nil)
+	defer good.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done
+
+	c := testClient(1)
+	c.http = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, context.DeadlineExceeded
+		}),
+	}
+
+	_, _, err := c.Fetch(ctx, tarballRef("pkg", "v1.0.0"),
+		[]Upstream{
+			{Name: "dead", BaseURL: "http://dead-cdn.test", Priority: 1},
+			{Name: "1ms", BaseURL: good.URL, Priority: 2},
+		})
+	require.Error(t, err)
+	assert.True(t, isContextError(err))
+}
+
+// roundTripFunc lets tests inject dial/CDN failures without waiting on real TCP.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestFetch_FallbackOn4xx(t *testing.T) {
 	// 404 is non-retryable and non-transient; expect fallback to the next upstream.
@@ -269,14 +363,14 @@ func TestFetch_RetryTransientThenSuccess(t *testing.T) {
 }
 
 func TestFetch_RetryExhaustedFallsToNextUpstream(t *testing.T) {
-	// bad: always 500 → exhausts maxAttempts
+	// bad: always 500 — non-final upstream gets ONE attempt then fail-over
+	// (CN: don't burn maxAttempts × dial on DaoCloud before 1ms).
 	bad, badHits := countingServer(t, http.StatusInternalServerError, "")
 	defer bad.Close()
-	// good: succeeds
 	good := okServer(t, "ok", nil)
 	defer good.Close()
 
-	c := testClient(2) // 2 attempts per upstream
+	c := testClient(2)
 	body, meta, err := c.Fetch(context.Background(), tarballRef("pkg", "v1.0.0"),
 		[]Upstream{
 			{Name: "bad", BaseURL: bad.URL, Priority: 1},
@@ -287,8 +381,8 @@ func TestFetch_RetryExhaustedFallsToNextUpstream(t *testing.T) {
 	defer body.Close()
 
 	assert.Equal(t, "good", meta.Upstream)
-	assert.Equal(t, int64(2), badHits.Load(),
-		"should have tried bad upstream exactly maxAttempts times")
+	assert.Equal(t, int64(1), badHits.Load(),
+		"non-final upstream must be probed once then fall through")
 }
 
 // ── Auto-block tests ──────────────────────────────────────────────────────────

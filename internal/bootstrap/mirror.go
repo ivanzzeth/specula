@@ -46,6 +46,11 @@ type MirrorOptions struct {
 // docker.io keeps a plain mirror host (Hub-relative paths: library/nginx).
 // Other registries use override_path so Specula receives
 // /v2/<registry>/<repo>/… and can strip the host for upstream fetch.
+//
+// Intentionally omits containerd's top-level `server = "https://<registry>"`.
+// That field is a FALLBACK: when the Specula host entry fails or is slow,
+// containerd dials the public registry (e.g. registry.k8s.io → *.pkg.dev),
+// which is unreachable from many CN clouds and defeats Specula-only delivery.
 func WriteContainerdHosts(opts MirrorOptions) error {
 	certs := strings.TrimSpace(opts.CertsDir)
 	if certs == "" {
@@ -63,12 +68,11 @@ func WriteContainerdHosts(opts MirrorOptions) error {
 		if reg == "" {
 			continue
 		}
-		server := registryServer(reg)
 		dir := filepath.Join(certs, reg)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("bootstrap: mkdir %s: %w", dir, err)
 		}
-		body := renderHostsTOML(reg, server, endpoint, opts.SkipVerify, opts.CaFile)
+		body := renderHostsTOML(reg, endpoint, opts.SkipVerify, opts.CaFile)
 		path := filepath.Join(dir, "hosts.toml")
 		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 			return fmt.Errorf("bootstrap: write %s: %w", path, err)
@@ -77,19 +81,8 @@ func WriteContainerdHosts(opts MirrorOptions) error {
 	return nil
 }
 
-func registryServer(reg string) string {
-	if reg == "docker.io" {
-		return "https://registry-1.docker.io"
-	}
-	if strings.HasPrefix(reg, "http://") || strings.HasPrefix(reg, "https://") {
-		return reg
-	}
-	return "https://" + reg
-}
-
-func renderHostsTOML(registry, server, endpoint string, skipVerify bool, caFile string) string {
+func renderHostsTOML(registry, endpoint string, skipVerify bool, caFile string) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("server = %q\n\n", server))
 
 	hostKey := strings.TrimRight(endpoint, "/")
 	overridePath := !isDockerIO(registry)

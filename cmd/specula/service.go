@@ -126,6 +126,19 @@ func serviceInstall(args []string) error {
 		fmt.Fprintf(os.Stderr, "keeping existing config %s\n", *configPath)
 	}
 
+	// OCI remote_registries must be the CN multi-mirror chain (DaoCloud→1ms→
+	// origin). Soft merge leaves a stale single base_url forever and CN nodes
+	// hang on DaoCloud's Cloudflare R2 blob host. Always overwrite the oci
+	// section from the embedded example on install/reinstall.
+	if _, err := config.ApplyExample(*configPath, config.ApplyExampleOptions{
+		Overwrite: true,
+		Sections:  []string{"oci"},
+		Backup:    true,
+	}); err != nil {
+		return fmt.Errorf("apply-example --overwrite --section oci: %w", err)
+	}
+	fmt.Fprintln(os.Stderr, "applied embedded OCI remote_registries (CN multi-mirror)")
+
 	unitBody, err := renderUnit(*binaryPath, *configPath, *unitUser)
 	if err != nil {
 		return err
@@ -213,7 +226,18 @@ func chownPath(path, name string) error {
 	if err != nil {
 		return err
 	}
-	return os.Chown(path, uid, gid)
+	// Recursive: a root-owned blobs/ shard left after ops wipe must not leave
+	// the daemon (User=specula) stuck on "mkdir shard: permission denied".
+	// Top-level-only Chown was exactly that footgun.
+	return filepath.Walk(path, func(p string, _ os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := os.Chown(p, uid, gid); err != nil {
+			return fmt.Errorf("chown %s: %w", p, err)
+		}
+		return nil
+	})
 }
 
 func runSystemctl(args ...string) error {

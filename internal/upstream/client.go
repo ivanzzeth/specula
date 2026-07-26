@@ -160,13 +160,16 @@ func (c *fallbackClient) Fetch(
 		statusErr *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
 		tried     int
 	)
-	for _, up := range sorted {
+	for i, up := range sorted {
 		if c.blocker.isBlocked(up.Name) {
 			c.syncBlocked(ref.Protocol, up.Name)
 			continue
 		}
 		tried++
-		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, nil, ropts, c.attemptBudget(statusErr))
+		remainingAfter := len(sorted) - 1 - i
+		body, meta, latency, transient, err := c.tryFetch(
+			ctx, ref, up, nil, ropts, c.attemptBudget(statusErr, remainingAfter),
+		)
 		if err == nil {
 			c.noteSuccess(up.Name, latency)
 			metrics.RecordUpstreamLatency(ref.Protocol, up.Name, latency.Seconds())
@@ -177,7 +180,11 @@ func (c *fallbackClient) Fetch(
 			}
 			return body, meta, nil
 		}
-		if isContextError(err) {
+		// Only abort the whole chain when OUR parent context is done.
+		// Per-upstream dial / TLS / header deadlines also surface as
+		// context.DeadlineExceeded (DaoCloud→R2 CDN dial timeout) — those
+		// must fall through to the next mirror, not kill Fetch.
+		if isContextError(err) && ctx.Err() != nil {
 			return nil, artifact.UpstreamMeta{}, err
 		}
 		c.noteFailure(up.Name, err, transient)
@@ -194,20 +201,27 @@ func (c *fallbackClient) Fetch(
 // attemptBudget returns how many HTTP attempts a not-yet-tried upstream deserves.
 //
 // Normally that is c.maxAttempts (initial try + retries), because a transient
-// failure on the ONLY path to an artifact is worth recovering. But once an
-// EARLIER upstream has already given a definitive answer (statusErr != nil —
-// e.g. goproxy.cn said 404 "does not exist"), a later upstream is worth exactly
-// ONE attempt: enough to catch a clean 200 if it actually has the artifact, but
-// no retries. Retrying a later upstream's transient failure would only multiply
-// a dead origin's latency — the CN case where proxy.golang.org is unreachable
-// and hangs the whole chain ~30 s (3 × ~10 s GFW resets) — with no new
-// information, since we already hold an authoritative fallback. Auto-block still
-// learns the origin is dead from these single failures and then skips it.
+// failure on the ONLY path to an artifact is worth recovering. But:
+//
+//   - Once an EARLIER upstream has already given a definitive answer
+//     (statusErr != nil — e.g. goproxy.cn said 404), a later upstream is worth
+//     exactly ONE attempt: enough to catch a clean 200, no retries that would
+//     multiply a dead origin's latency (CN: proxy.golang.org × 3 × ~10 s).
+//   - When MORE mirrors remain after this one (remainingAfter > 0), also use
+//     ONE attempt — fail over to the next mirror instead of burning
+//     maxAttempts × dial/TLS timeouts on a dead CDN first. Live CN bug:
+//     DaoCloud→R2 dial timeout × 3 (~90 s) before 1ms ever ran, per OCI blob.
+//
+// The LAST upstream in the chain still gets the full budget (only path left).
+// Auto-block still learns dead mirrors from these single failures.
 //
 // This never suppresses a real 200: an upstream that HAS the artifact and
 // answers on its first attempt still wins outright (served > definitive-not-found).
-func (c *fallbackClient) attemptBudget(statusErr *StatusError) int {
+func (c *fallbackClient) attemptBudget(statusErr *StatusError, remainingAfter int) int {
 	if statusErr != nil {
+		return 1
+	}
+	if remainingAfter > 0 {
 		return 1
 	}
 	return c.maxAttempts
@@ -271,13 +285,16 @@ func (c *fallbackClient) Revalidate(
 		statusErr *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
 		tried     int
 	)
-	for _, up := range sorted {
+	for i, up := range sorted {
 		if c.blocker.isBlocked(up.Name) {
 			c.syncBlocked(ref.Protocol, up.Name)
 			continue
 		}
 		tried++
-		body, meta, latency, transient, err := c.tryFetch(ctx, ref, up, &prev, ropts, c.attemptBudget(statusErr))
+		remainingAfter := len(sorted) - 1 - i
+		body, meta, latency, transient, err := c.tryFetch(
+			ctx, ref, up, &prev, ropts, c.attemptBudget(statusErr, remainingAfter),
+		)
 		if err == nil {
 			c.noteSuccess(up.Name, latency)
 			// A 304 is observed here too: it is a real upstream round trip and
@@ -293,7 +310,7 @@ func (c *fallbackClient) Revalidate(
 			}
 			return body, meta, false, nil
 		}
-		if isContextError(err) {
+		if isContextError(err) && ctx.Err() != nil {
 			return nil, artifact.UpstreamMeta{}, false, err
 		}
 		c.noteFailure(up.Name, err, transient)
@@ -406,7 +423,11 @@ func (c *fallbackClient) tryFetch(
 		resp, doErr := c.http.Do(req)
 		latency := time.Since(started)
 		if doErr != nil {
-			if isContextError(doErr) {
+			// Parent fill/caller ctx done → stop. A per-upstream dial/TLS/
+			// ResponseHeaderTimeout also looks like DeadlineExceeded; keep
+			// retrying / falling through while parent ctx is still live
+			// (CN: DaoCloud blob CDN dial timeout must not abort the chain).
+			if isContextError(doErr) && ctx.Err() != nil {
 				return nil, artifact.UpstreamMeta{}, 0, false, doErr
 			}
 			lastErr = fmt.Errorf("upstream %s: %w", up.Name, doErr)
@@ -668,6 +689,12 @@ func extractMeta(resp *http.Response, upstreamName string) artifact.UpstreamMeta
 
 // isContextError returns true for errors that originate from context
 // cancellation or deadline expiry.
+//
+// Callers that walk a multi-mirror chain MUST also check ctx.Err(): a
+// per-upstream dial / TLS / header timeout is often wrapped as
+// context.DeadlineExceeded even when the parent fill context is still live.
+// Aborting the whole chain on that shape is what left CN nodes hung on
+// DaoCloud's R2 CDN with a working 1ms mirror never tried.
 func isContextError(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
