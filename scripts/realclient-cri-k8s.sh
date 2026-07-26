@@ -23,9 +23,9 @@ sudo -n true 2>/dev/null || { echo "SKIP: passwordless sudo unavailable"; exit 0
 
 step() { echo; echo "==> $*"; }
 
-step "unit: k3s/kubeadm wiring + colon config_path rewrite"
+step "unit: k3s/kubeadm wiring + colon config_path rewrite + doctor"
 go -C "${REPO}" test ./internal/integrate/ -count=1 \
-  -run 'K3sStyle|VanillaKubeadm|BrokenHostDir|Colon|RewriteCRI|FixOneContainerd|ConfigPath' 
+  -run 'K3sStyle|VanillaKubeadm|BrokenHostDir|Colon|RewriteCRI|FixOneContainerd|ConfigPath|Doctor|HostsHasPublic' 
 
 step "integration: hermetic CRI containerd (colon bypass + single-path Specula + ctr asymmetry)"
 export SPECULA_E2E_CRI=1

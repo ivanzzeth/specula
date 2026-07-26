@@ -20,7 +20,13 @@ func runIntegrate(args []string) error {
 			return err
 		}
 		fmt.Print(integrate.PrintReport(rep))
+		if integrate.ReportHasBlockingFindings(rep) {
+			return fmt.Errorf("status reports blocking risks — run: specula doctor")
+		}
 		return nil
+	}
+	if len(args) > 0 && args[0] == "doctor" {
+		return runDoctor(args[1:])
 	}
 
 	fs := flag.NewFlagSet("integrate", flag.ContinueOnError)
@@ -39,6 +45,7 @@ func runIntegrate(args []string) error {
 		fmt.Fprintf(os.Stderr, `Usage:
   specula integrate [flags]
   specula integrate status
+  specula integrate doctor   # alias of: specula doctor
 
 Add Specula as a client-side mirror without destroying existing config:
   go     prepend Specula to GOPROXY (keep proxy.golang.org,direct, …)
@@ -92,6 +99,7 @@ Flags:
 	}
 	if !*dryRun {
 		fmt.Fprintf(os.Stderr, "\nstate: ~/.config/specula/integrate-state.json\nenv:   ~/.config/specula/env.sh\n")
+		fmt.Fprintf(os.Stderr, "tip:   specula doctor   # catch CRI/k3s footguns before kubeadm hangs\n")
 	}
 	return nil
 }

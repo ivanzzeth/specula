@@ -156,6 +156,7 @@ func Status(home string) (Report, error) {
 		if os.IsNotExist(err) {
 			// Still audit local client configs even without prior integrate.
 			rep := Report{Results: AuditClientRisks(home)}
+			rep.Results = append(rep.Results, AuditOCIRisks()...)
 			if len(rep.Results) == 0 {
 				return Report{}, fmt.Errorf("no integrate state yet — run: specula integrate")
 			}
@@ -167,7 +168,12 @@ func Status(home string) (Report, error) {
 	if err := json.Unmarshal(b, &rep); err != nil {
 		return Report{}, err
 	}
-	return AppendRiskAudit(home, rep), nil
+	rep = AppendRiskAudit(home, rep)
+	oci := AuditOCIRisks()
+	if len(oci) > 0 {
+		rep.Results = append(rep.Results, oci...)
+	}
+	return rep, nil
 }
 
 func normalizeAddr(addr string) (string, error) {

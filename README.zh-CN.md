@@ -45,6 +45,7 @@ make build-go
 ./bin/specula integrate --addr http://127.0.0.1:7732
 # 仅预览：          ./bin/specula integrate --dry-run
 # 查看状态：        ./bin/specula integrate status
+# OCI/CRI 预检：    ./bin/specula doctor   # 冒号 config_path / server= / 不可达则 exit 1
 # 只接部分协议：    ./bin/specula integrate --protocols go,npm
 # Docker 需 sudo：  sudo ./bin/specula integrate --protocols oci   # 然后重启 dockerd
 ```
@@ -320,6 +321,7 @@ curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
 - `/etc/docker/daemon.json`：`registry-mirrors`（**仅 docker.io**）与 `insecure-registries`
 - `/etc/containerd/certs.d/<registry>/hosts.toml`：非 Hub 仓库带 `override_path`，透明重定向到 Specula 路径式回源
 - `/etc/containerd/config.toml`：把 CRI `config_path` 强制成**单一**目录（containerd 2.2 默认的 `certs.d:/etc/docker/certs.d` 会被 transfer 当成字面路径忽略 — 于是 `crictl`/`kubelet` 绕过 Specula 直连 `*.pkg.dev`，而 `ctr --hosts-dir` 仍正常）。integrate 后需 `systemctl restart containerd`。
+- 预检：`./bin/specula doctor`（或 `integrate doctor`）在 kubeadm 卡住前标出冒号 `config_path`、未重启的 effective dump、残留 `server=`、k3s 写错 certs.d、缺 `registry.k8s.io` hosts、Specula `/v2/` 不可达。
 
 无 sudo 时仍会写用户目录下的 daemon.json / `~/.config/specula/certs.d/`，但 **dockerd/containerd 默认不读用户路径** — 真正一键请加 sudo。
 

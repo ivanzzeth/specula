@@ -95,6 +95,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "doctor":
+			if err := runDoctor(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula doctor: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "bootstrap-mirror":
 			if err := runBootstrapMirror(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "specula bootstrap-mirror: %v\n", err)

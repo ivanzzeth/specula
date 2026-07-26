@@ -168,6 +168,8 @@ func serviceInstall(args []string) error {
 	} else {
 		fmt.Fprintln(os.Stderr, "specula.service enabled (not started; --no-start)")
 	}
+	fmt.Fprintln(os.Stderr, "next: sudo specula integrate --protocols oci && systemctl restart containerd")
+	fmt.Fprintln(os.Stderr, "then: specula doctor   # catch CRI/k3s footguns before kubeadm")
 	return nil
 }
 

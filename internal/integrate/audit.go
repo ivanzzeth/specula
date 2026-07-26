@@ -120,6 +120,7 @@ func auditEnvRisks() []Result {
 }
 
 // AppendRiskAudit appends AuditClientRisks rows onto a report (status / post-integrate).
+// OCI/CRI footguns are covered by Doctor / Status via AuditOCIRisks (live paths).
 func AppendRiskAudit(home string, rep Report) Report {
 	risks := AuditClientRisks(home)
 	if len(risks) == 0 {

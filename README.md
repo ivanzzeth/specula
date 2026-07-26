@@ -48,8 +48,9 @@ make build-go
 ./bin/specula integrate --addr http://127.0.0.1:7732
 # preview only:     ./bin/specula integrate --dry-run
 # check state:      ./bin/specula integrate status
+# OCI/CRI preflight: ./bin/specula doctor   # exit 1 on colon config_path / server= / unreachable
 # subset only:      ./bin/specula integrate --protocols go,npm
-# docker needs sudo: sudo ./bin/specula integrate --protocols oci   # then restart dockerd
+# docker needs sudo: sudo ./bin/specula integrate --protocols oci   # then restart dockerd/containerd
 ```
 
 That is the local/dev path. The per-protocol snippets further down are for CI images,
@@ -329,6 +330,7 @@ This updates:
 - `/etc/docker/daemon.json`: `registry-mirrors` (**docker.io only**) and `insecure-registries`
 - `/etc/containerd/certs.d/<registry>/hosts.toml`: non-Hub registries get `override_path` so pulls reach Specula with the host in the path
 - `/etc/containerd/config.toml`: forces CRI `config_path` to a **single** directory (containerd 2.2’s default `certs.d:/etc/docker/certs.d` is ignored by the transfer service — `crictl`/`kubelet` then bypass Specula and dial `*.pkg.dev`; `ctr --hosts-dir` still works). Restart containerd after integrate.
+- Preflight: `./bin/specula doctor` (alias `integrate doctor`) flags colon `config_path`, stale effective dump (forgot restart), residual `server=`, k3s wrong certs.d root, missing `registry.k8s.io` hosts, and Specula `/v2/` down — before kubeadm hangs.
 
 Without sudo, Specula still writes user-dir daemon.json / `~/.config/specula/certs.d/`, but
 **dockerd/containerd ignore those paths** — re-run with sudo for a real one-click.
