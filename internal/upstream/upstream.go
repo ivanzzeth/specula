@@ -3,22 +3,21 @@
 //
 //   - Ordered fallback: upstreams are sorted by Priority (ascending) and tried
 //     in that order. The first successful response wins.
-//   - Bounded retry with exponential back-off: transient errors (5xx, 429,
-//     network errors) are retried within the same upstream before falling back.
+//   - failsafe-go Retry + CircuitBreaker per upstream for transient errors
+//     (5xx, 429, network). Header waits use Transport.ResponseHeaderTimeout —
+//     failsafe Timeout is NOT wrapped around the HTTP request so streaming
+//     bodies are not cancelled when headers return.
 //   - Conditional GET (mutable tier revalidation): If-None-Match /
 //     If-Modified-Since are sent on Revalidate; a 304 is surfaced as
 //     notModified=true so the caller can extend the TTL without re-fetching.
-//   - Auto-block / auto-unblock (Nexus-style): after maxFailures consecutive
-//     transient errors the upstream is blocked for blockDuration, then
-//     automatically unblocked on the next isBlocked check.
+//   - Auto-block / auto-unblock via failsafe CircuitBreaker (threshold +
+//     delay), with optional BlockPersister for HA sync.
 //   - Registry bearer-token auth dance: on 401 the client parses the
 //     WWW-Authenticate challenge, fetches a token from the realm endpoint,
 //     and retries with Authorization: Bearer. Tokens are cached per
 //     upstream+scope to avoid a round-trip per blob request.
-//   - Transparent Range resume on the Fetch body: dial / TLS / response-header
-//     timeouts stay on the Transport; there is no Client.Timeout covering the
-//     body. Mid-stream idle/reset failures Range-resume against the pinned
-//     upstream (or full-retry at offset 0); 401 on resume re-fetches the token.
+//   - Transparent Range resume on the Fetch body, with cross-upstream
+//     fallthrough when the pinned mirror dies mid-stream.
 //
 // The body returned by Fetch / Revalidate is a streaming io.ReadCloser; the
 // implementation never buffers blob bytes in memory.

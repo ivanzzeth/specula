@@ -61,12 +61,15 @@ func newUpstreamHTTPClient() *http.Client {
 }
 
 // resumingReader wraps an upstream response body and transparently Range-resumes
-// on mid-stream transport / idle failures against the same pinned upstream.
+// on mid-stream transport / idle failures. It first retries the pinned upstream,
+// then falls through later mirrors in the chain without closing the caller's
+// ReadCloser (quarantine / client connection stays open).
 type resumingReader struct {
 	client *fallbackClient
 	ctx    context.Context
 	ref    artifact.ArtifactRef
 	up     Upstream
+	chain  []Upstream // full ordered chain for cross-upstream fallthrough
 	ropts  requestOpts
 
 	body   io.ReadCloser
@@ -87,6 +90,7 @@ func (c *fallbackClient) wrapResuming(
 	ctx context.Context,
 	ref artifact.ArtifactRef,
 	up Upstream,
+	chain []Upstream,
 	ropts requestOpts,
 	body io.ReadCloser,
 ) io.ReadCloser {
@@ -98,11 +102,15 @@ func (c *fallbackClient) wrapResuming(
 	if maxR <= 0 {
 		maxR = defaultMaxResumeAttempts
 	}
+	if len(chain) == 0 {
+		chain = []Upstream{up}
+	}
 	return &resumingReader{
 		client:      c,
 		ctx:         ctx,
 		ref:         ref,
 		up:          up,
+		chain:       append([]Upstream(nil), chain...),
 		ropts:       ropts,
 		body:        newIdleReadCloser(body, idle),
 		idleTimeout: idle,
@@ -140,8 +148,6 @@ func (r *resumingReader) Read(p []byte) (int, error) {
 	if !isResumableReadError(err) {
 		return n, err
 	}
-	// offset==0: connection died before any byte — retry full GET.
-	// offset>0: Range resume from the byte already delivered to the caller.
 	if resumeErr := r.resume(); resumeErr != nil {
 		if n > 0 {
 			return n, nil
@@ -168,8 +174,62 @@ func (r *resumingReader) resume() error {
 		r.body = nil
 	}
 
-	ropts := r.ropts
 	from := r.offset
+	candidates := r.resumeCandidates()
+	var lastErr error
+	for _, up := range candidates {
+		if r.client.blocker.isBlocked(up.Name) {
+			continue
+		}
+		body, meta, err := r.fetchFrom(up, from)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		switch {
+		case meta.StatusCode == http.StatusPartialContent && from > 0:
+			r.up = up
+			r.body = newIdleReadCloser(body, r.idleTimeout)
+			return nil
+		case meta.StatusCode == http.StatusOK && from > 0:
+			r.up = up
+			r.body = newIdleReadCloser(body, r.idleTimeout)
+			r.announceRestart = true
+			return nil
+		case meta.StatusCode >= 200 && meta.StatusCode < 300 && from == 0:
+			r.up = up
+			r.body = newIdleReadCloser(body, r.idleTimeout)
+			return nil
+		default:
+			_ = body.Close()
+			lastErr = fmt.Errorf("upstream %s: resume unexpected status %d at offset %d",
+				up.Name, meta.StatusCode, from)
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("upstream: resume at offset %d: no healthy upstream", from)
+	}
+	return lastErr
+}
+
+// resumeCandidates returns the pinned upstream first, then every other mirror
+// in the original chain (cross-upstream fallthrough after pinned death).
+func (r *resumingReader) resumeCandidates() []Upstream {
+	out := make([]Upstream, 0, len(r.chain)+1)
+	out = append(out, r.up)
+	seen := map[string]struct{}{r.up.Name: {}}
+	for _, up := range r.chain {
+		if _, ok := seen[up.Name]; ok {
+			continue
+		}
+		seen[up.Name] = struct{}{}
+		out = append(out, up)
+	}
+	return out
+}
+
+func (r *resumingReader) fetchFrom(up Upstream, from int64) (io.ReadCloser, artifact.UpstreamMeta, error) {
+	ropts := r.ropts
 	if from > 0 {
 		ropts.rangeStart = from
 		ropts.hasRange = true
@@ -177,29 +237,11 @@ func (r *resumingReader) resume() error {
 		ropts.hasRange = false
 		ropts.rangeStart = 0
 	}
-
-	body, meta, _, _, err := r.client.tryFetch(r.ctx, r.ref, r.up, nil, ropts, r.client.maxAttempts)
+	body, meta, _, _, err := r.client.tryFetch(r.ctx, r.ref, up, nil, ropts, r.client.maxAttempts)
 	if err != nil {
-		return fmt.Errorf("upstream %s: resume at offset %d: %w", r.up.Name, from, err)
+		return nil, artifact.UpstreamMeta{}, fmt.Errorf("upstream %s: resume at offset %d: %w", up.Name, from, err)
 	}
-
-	switch {
-	case meta.StatusCode == http.StatusPartialContent && from > 0:
-		r.body = newIdleReadCloser(body, r.idleTimeout)
-		return nil
-	case meta.StatusCode == http.StatusOK && from > 0:
-		// Upstream ignored Range and resent the full object.
-		r.body = newIdleReadCloser(body, r.idleTimeout)
-		r.announceRestart = true
-		return nil
-	case meta.StatusCode >= 200 && meta.StatusCode < 300 && from == 0:
-		r.body = newIdleReadCloser(body, r.idleTimeout)
-		return nil
-	default:
-		_ = body.Close()
-		return fmt.Errorf("upstream %s: resume unexpected status %d at offset %d",
-			r.up.Name, meta.StatusCode, from)
-	}
+	return body, meta, nil
 }
 
 func (r *resumingReader) Close() error {
@@ -239,11 +281,6 @@ func isResumableReadError(err error) bool {
 			return true
 		}
 	}
-	// Bare EOF from a mid-stream close after some bytes is resumable; true
-	// end-of-object EOF is handled before isResumableReadError is consulted
-	// only when the server cleanly finished — hijack/close often surfaces as
-	// unexpected EOF or "connection reset", but some stacks yield plain EOF
-	// with a short body. Treat EOF as resumable when offset>0 (caller check).
 	if errors.Is(err, io.EOF) {
 		return true
 	}
@@ -265,7 +302,6 @@ func newIdleReadCloser(rc io.ReadCloser, idle time.Duration) io.ReadCloser {
 }
 
 func (i *idleReadCloser) Read(p []byte) (int, error) {
-	// Read into a private buffer so a timed-out goroutine cannot race on p.
 	buf := make([]byte, len(p))
 	type result struct {
 		n   int

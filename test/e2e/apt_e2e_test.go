@@ -158,6 +158,7 @@ func buildInReleaseBody(suite, pkgsRelPath, pkgsHex string, pkgsSize int64) stri
 	fmt.Fprintf(&b, "Label: Specula-Test\n")
 	fmt.Fprintf(&b, "Suite: %s\n", suite)
 	fmt.Fprintf(&b, "Codename: %s\n", suite)
+	fmt.Fprintf(&b, "Date: %s\n", time.Now().UTC().Format(time.RFC1123))
 	fmt.Fprintf(&b, "Components: main\n")
 	fmt.Fprintf(&b, "Architectures: amd64\n")
 	fmt.Fprintf(&b, "SHA256:\n")

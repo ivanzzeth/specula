@@ -165,7 +165,7 @@ func TestFetch_DefinitiveHeld_LaterUpstreamNotRetried(t *testing.T) {
 	c := testClient(3) // full budget = 3 attempts
 	_, _, err := c.Fetch(context.Background(), tarballRef("pkg", "v1.0.0"),
 		[]Upstream{
-			{Name: "mirror-a", BaseURL: notFound.URL, Priority: 1}, // definitive 404
+			{Name: "mirror-a", BaseURL: notFound.URL, Priority: 1},  // definitive 404
 			{Name: "flaky-origin", BaseURL: flaky.URL, Priority: 2}, // 500, transient
 		})
 	require.Error(t, err)

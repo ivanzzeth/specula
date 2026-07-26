@@ -98,25 +98,21 @@ func (c *fallbackClient) chain(ups []Upstream) []Upstream {
 	return sortedUpstreams(ups)
 }
 
-// noteSuccess clears the failure streak and records the mirror's latency and
-// serve count. latency measures time-to-response-headers, not body transfer.
+// noteSuccess records the mirror's latency and serve count for the operator
+// view. The failsafe CircuitBreaker already recorded success on the attempt;
+// we must not tick the breaker again (would double-count).
 func (c *fallbackClient) noteSuccess(name string, latency time.Duration) {
 	if c.rt != nil {
-		c.rt.RecordServe(name, latency) // also clears the failure streak
-		return
+		c.rt.recordServeStats(name, latency)
 	}
-	c.blocker.recordSuccess(name)
 }
 
-// noteFailure records the error reason for the operator view, and counts the
-// failure toward auto-blocking only when it was transient.
-func (c *fallbackClient) noteFailure(name string, err error, transient bool) {
+// noteFailure records the error reason for the operator view. Transient
+// failures are already counted by the failsafe CircuitBreaker inside tryFetch;
+// calling recordFailure here would double-count and trip the breaker early.
+func (c *fallbackClient) noteFailure(name string, err error, _ bool) {
 	if c.rt != nil {
-		c.rt.RecordFailure(name, err, transient) // also ticks the block streak
-		return
-	}
-	if transient {
-		c.blocker.recordFailure(name)
+		c.rt.setLastErr(name, err)
 	}
 }
 
@@ -171,9 +167,9 @@ func (c *fallbackClient) Fetch(
 			c.noteSuccess(up.Name, latency)
 			metrics.RecordUpstreamLatency(ref.Protocol, up.Name, latency.Seconds())
 			c.syncBlocked(ref.Protocol, up.Name)
-			// Pin this upstream and wrap for Range resume on mid-stream failure.
+			// Pin this upstream and wrap for Range resume / cross-upstream fallthrough.
 			if body != nil {
-				body = c.wrapResuming(ctx, ref, up, ropts, body)
+				body = c.wrapResuming(ctx, ref, up, sorted, ropts, body)
 			}
 			return body, meta, nil
 		}
@@ -289,7 +285,7 @@ func (c *fallbackClient) Revalidate(
 				return nil, meta, true, nil
 			}
 			if body != nil {
-				body = c.wrapResuming(ctx, ref, up, ropts, body)
+				body = c.wrapResuming(ctx, ref, up, sorted, ropts, body)
 			}
 			return body, meta, false, nil
 		}
@@ -308,28 +304,14 @@ func (c *fallbackClient) Revalidate(
 	return nil, artifact.UpstreamMeta{}, false, resolveFetchError(statusErr, lastErr)
 }
 
-// tryFetch performs up to maxAttempts GET requests against a single upstream.
-// maxAttempts is chosen by the caller (see attemptBudget): the full retry budget
-// for an upstream that may be the only path to the artifact, or 1 when an earlier
-// upstream already gave a definitive answer and this one need only be probed once.
+// tryFetch performs up to maxAttempts GET requests against a single upstream
+// under failsafe-go Retry + CircuitBreaker + attempt Timeout.
 //
-// prev, when non-nil, adds conditional GET headers (If-None-Match /
-// If-Modified-Since). Transient errors (5xx, 429, network errors) trigger a
-// retry with exponential back-off; non-transient errors (4xx except 401 with
-// bearer challenge) return immediately so the caller can try the next upstream.
-//
-// On 401 with a Bearer WWW-Authenticate challenge, fetches a token and retries
-// once without consuming an attempt slot.
+// maxAttempts is chosen by the caller (see attemptBudget). prev, when non-nil,
+// adds conditional GET headers. The bearer-token dance runs inside a single
+// attempt (tryOnce) without consuming a retry slot.
 //
 // Returns (body, meta, latency, transient, error).
-//   - body is non-nil and meta.StatusCode in [200,299] on success.
-//   - meta.StatusCode == 304 on "not modified"; body is nil.
-//   - latency is the wall time of the successful HTTP round-trip up to response
-//     headers. It excludes retry back-off and the bearer-token dance (which
-//     would measure our own waiting, not the mirror's responsiveness), and
-//     excludes body transfer (bodies are streamed to the caller, so their
-//     duration reflects the downstream client's speed). Meaningless on error.
-//   - transient=true means the error should be counted toward auto-blocking.
 func (c *fallbackClient) tryFetch(
 	ctx context.Context,
 	ref artifact.ArtifactRef,
@@ -338,16 +320,37 @@ func (c *fallbackClient) tryFetch(
 	opts requestOpts,
 	maxAttempts int,
 ) (io.ReadCloser, artifact.UpstreamMeta, time.Duration, bool, error) {
+	attempt, transient, err := c.blocker.hub.runFetchAttempt(
+		ctx, up.Name, maxAttempts, c.backoffBase,
+		func(actx context.Context) (fetchAttempt, error) {
+			body, meta, lat, e := c.tryOnce(actx, ref, up, prev, opts)
+			if e != nil {
+				return fetchAttempt{}, e
+			}
+			return fetchAttempt{Body: body, Meta: meta, Latency: lat}, nil
+		},
+	)
+	if err != nil {
+		return nil, artifact.UpstreamMeta{}, 0, transient, err
+	}
+	return attempt.Body, attempt.Meta, attempt.Latency, false, nil
+}
+
+// tryOnce performs a single HTTP GET (plus optional in-attempt bearer dance)
+// against one upstream. Transient failures are wrapped with asTransient so
+// failsafe Retry/CB HandleIf can classify them without string matching.
+func (c *fallbackClient) tryOnce(
+	ctx context.Context,
+	ref artifact.ArtifactRef,
+	up Upstream,
+	prev *artifact.UpstreamMeta,
+	opts requestOpts,
+) (io.ReadCloser, artifact.UpstreamMeta, time.Duration, error) {
 	rawURL := buildURL(up.BaseURL, ref)
 	var (
-		lastErr      error
-		transient    bool
-		authToken    string // bearer token; populated after first 401
-		didAuthRetry bool   // true once the bearer dance has been attempted
+		authToken    string
+		didAuthRetry bool
 	)
-
-	// Pre-populate authToken from the cache for subsequent requests to the
-	// same upstream+scope (avoids a token round-trip for every blob).
 	if ref.Protocol == "oci" {
 		scope := "repository:" + ref.Name + ":pull"
 		if tok := c.getCachedToken(up.Name, scope); tok != "" {
@@ -355,27 +358,16 @@ func (c *fallbackClient) tryFetch(
 		}
 	}
 
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		if attempt > 0 {
-			wait := c.backoffBase * (1 << uint(attempt-1))
-			if wait > 2*time.Second {
-				wait = 2 * time.Second
-			}
-			select {
-			case <-time.After(wait):
-			case <-ctx.Done():
-				return nil, artifact.UpstreamMeta{}, 0, false, ctx.Err()
-			}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, artifact.UpstreamMeta{}, 0, err
 		}
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
-			// Permanent — bad URL, no point retrying.
-			return nil, artifact.UpstreamMeta{}, 0, false,
+			return nil, artifact.UpstreamMeta{}, 0,
 				fmt.Errorf("upstream %s: build request: %w", up.Name, err)
 		}
-
-		// Conditional GET headers (for Revalidate).
 		if prev != nil {
 			if prev.ETag != "" {
 				req.Header.Set("If-None-Match", prev.ETag)
@@ -384,34 +376,25 @@ func (c *fallbackClient) tryFetch(
 				req.Header.Set("If-Modified-Since", prev.LastModified)
 			}
 		}
-
-		// Accept header (e.g. OCI manifest content negotiation).
 		if opts.accept != "" {
 			req.Header.Set("Accept", opts.accept)
 		}
-
-		// Range resume (transparent mid-stream recovery on the Fetch body).
 		if opts.hasRange {
 			req.Header.Set("Range", fmt.Sprintf("bytes=%d-", opts.rangeStart))
 		}
-
-		// Bearer auth token (present after first 401 dance, or from cache).
 		if authToken != "" {
 			req.Header.Set("Authorization", "Bearer "+authToken)
 		}
 
-		// Measure only the round-trip itself: started here, stopped the moment
-		// response headers are available.
 		started := time.Now()
 		resp, doErr := c.http.Do(req)
 		latency := time.Since(started)
 		if doErr != nil {
 			if isContextError(doErr) {
-				return nil, artifact.UpstreamMeta{}, 0, false, doErr
+				return nil, artifact.UpstreamMeta{}, 0, doErr
 			}
-			lastErr = fmt.Errorf("upstream %s: %w", up.Name, doErr)
-			transient = true
-			continue // retry on network error
+			return nil, artifact.UpstreamMeta{}, 0,
+				asTransient(fmt.Errorf("upstream %s: %w", up.Name, doErr))
 		}
 
 		meta := extractMeta(resp, up.Name)
@@ -419,52 +402,39 @@ func (c *fallbackClient) tryFetch(
 		switch {
 		case resp.StatusCode == http.StatusNotModified:
 			_ = resp.Body.Close()
-			return nil, meta, latency, false, nil // caller checks meta.StatusCode
+			return nil, meta, latency, nil
 
 		case resp.StatusCode >= 200 && resp.StatusCode < 300:
-			return resp.Body, meta, latency, false, nil
+			return resp.Body, meta, latency, nil
 
 		case resp.StatusCode == http.StatusUnauthorized && !didAuthRetry:
-			// Bearer token dance: attempt once without consuming a retry slot.
 			_ = resp.Body.Close()
 			didAuthRetry = true
 			wwwAuth := resp.Header.Get("WWW-Authenticate")
 			tok, authErr := c.getOrFetchToken(ctx, wwwAuth, up)
 			if authErr != nil {
-				// No valid challenge or token fetch failed: non-retryable.
-				return nil, meta, 0, false,
+				return nil, meta, 0,
 					fmt.Errorf("upstream %s: HTTP 401 unauthorized: %w", up.Name, authErr)
 			}
 			authToken = tok
-			// Re-run the same attempt slot with the new token.
-			// The for-loop post-statement does attempt++, so decrement first.
-			attempt--
 			continue
 
 		case resp.StatusCode == http.StatusTooManyRequests:
 			_ = resp.Body.Close()
-			lastErr = fmt.Errorf("upstream %s: HTTP 429 (rate limited)", up.Name)
-			transient = true
-			continue // retry on rate limit
+			return nil, meta, 0, asTransient(
+				fmt.Errorf("upstream %s: HTTP 429 (rate limited)", up.Name))
 
 		case resp.StatusCode >= 500:
 			_ = resp.Body.Close()
-			lastErr = fmt.Errorf("upstream %s: HTTP %d", up.Name, resp.StatusCode)
-			transient = true
-			continue // retry on server error
+			return nil, meta, 0, asTransient(
+				fmt.Errorf("upstream %s: HTTP %d", up.Name, resp.StatusCode))
 
 		default:
-			// 4xx (other than 304 / 401 with challenge / 429): non-retryable.
-			// Return a typed StatusError so the caller can preserve the semantic
-			// status (e.g. GOPROXY 404/410 = "does not exist") rather than
-			// flattening it to 502. transient stays false: a definitive 4xx must
-			// never count toward auto-blocking (PRD §7.4).
 			_ = resp.Body.Close()
-			return nil, meta, 0, false,
+			return nil, meta, 0,
 				&StatusError{Upstream: up.Name, StatusCode: resp.StatusCode}
 		}
 	}
-	return nil, artifact.UpstreamMeta{}, 0, transient, lastErr
 }
 
 // ── Bearer token helpers ──────────────────────────────────────────────────────

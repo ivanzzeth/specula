@@ -243,10 +243,34 @@ func (r *Runtime) SetEnabled(name string, enabled bool) {
 // re-admitting it to the fallback chain immediately rather than waiting out the
 // block window.
 func (r *Runtime) Unblock(name string) {
-	r.blocker.recordSuccess(name)
+	r.blocker.unblock(name)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.statLocked(name).lastErr = ""
+}
+
+// recordServeStats records latency / serve count without touching the circuit
+// breaker (Fetch path: failsafe already recorded success on the shared CB).
+func (r *Runtime) recordServeStats(name string, latency time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	s := r.statLocked(name)
+	s.servedCount++
+	s.lastServedAt = time.Now()
+	s.lastLatency = latency
+	s.hasLatency = true
+	s.lastErr = ""
+}
+
+// setLastErr stores the operator-visible last error without ticking the CB
+// (Fetch path: failsafe already recorded the failure when transient).
+func (r *Runtime) setLastErr(name string, err error) {
+	if err == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.statLocked(name).lastErr = err.Error()
 }
 
 // Reorder sets the fallback priority of the named mirrors to their position in
@@ -387,9 +411,9 @@ func deriveHealth(s MirrorState) Health {
 //
 // All methods are safe for concurrent use.
 type Registry struct {
-	mu              sync.Mutex
-	byProto         map[string]*Runtime
-	blockPersister  func(protocol string) BlockPersister // nil = in-memory per Runtime
+	mu             sync.Mutex
+	byProto        map[string]*Runtime
+	blockPersister func(protocol string) BlockPersister // nil = in-memory per Runtime
 }
 
 // NewRegistry constructs an empty Registry.

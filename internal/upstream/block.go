@@ -2,7 +2,6 @@ package upstream
 
 import (
 	"context"
-	"sync"
 	"time"
 )
 
@@ -12,7 +11,7 @@ const (
 	defaultMaxFailures = 5
 
 	// defaultBlockDuration is how long a blocked upstream stays blocked before
-	// it is automatically re-admitted on the next isBlocked check.
+	// it is automatically re-admitted (failsafe CB half-open delay).
 	defaultBlockDuration = 30 * time.Second
 )
 
@@ -30,16 +29,10 @@ type BlockPersister interface {
 	Delete(ctx context.Context, upstream string) error
 }
 
-// blockTracker counts consecutive transient failures per upstream name and
-// temporarily blocks upstreams that exceed the failure threshold.
-// All methods are safe for concurrent use.
+// blockTracker is a thin facade over breakerHub (failsafe CircuitBreaker) so
+// Runtime / metrics / existing call sites keep a stable API.
 type blockTracker struct {
-	mu           sync.Mutex
-	failures     map[string]int
-	blockedUntil map[string]time.Time
-	persister    BlockPersister
-	maxFailures  int
-	blockDur     time.Duration
+	hub *breakerHub
 }
 
 func newBlockTracker() *blockTracker {
@@ -51,127 +44,30 @@ func newBlockTrackerWith(maxFailures int, blockDur time.Duration) *blockTracker 
 }
 
 func newBlockTrackerWithPersister(persister BlockPersister, maxFailures int, blockDur time.Duration) *blockTracker {
-	return &blockTracker{
-		failures:     make(map[string]int),
-		blockedUntil: make(map[string]time.Time),
-		persister:    persister,
-		maxFailures:  maxFailures,
-		blockDur:     blockDur,
-	}
+	return &blockTracker{hub: newBreakerHubWithPersister(persister, maxFailures, blockDur)}
 }
 
-// isBlocked returns true if the upstream named name is in its block period.
-// When the block period has elapsed the entry is cleared and false is returned,
-// allowing the upstream to be retried (auto-unblock).
 func (b *blockTracker) isBlocked(name string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.persister != nil {
-		return b.isBlockedPersisted(name)
-	}
-	until, ok := b.blockedUntil[name]
-	if !ok {
-		return false
-	}
-	if time.Now().Before(until) {
-		return true
-	}
-	// Block period expired: auto-unblock.
-	delete(b.blockedUntil, name)
-	delete(b.failures, name)
-	return false
+	return b.hub.isOpen(name)
 }
 
-func (b *blockTracker) isBlockedPersisted(name string) bool {
-	ctx := context.Background()
-	st, err := b.persister.Load(ctx, name)
-	if err != nil || st.BlockedUntil.IsZero() {
-		return false
-	}
-	if time.Now().Before(st.BlockedUntil) {
-		return true
-	}
-	_ = b.persister.Delete(ctx, name)
-	return false
-}
-
-// recordFailure increments the consecutive-transient-failure counter for name.
-// When the counter reaches maxFailures the upstream is blocked for blockDur.
-// Returns true when name transitions to blocked.
 func (b *blockTracker) recordFailure(name string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.persister != nil {
-		return b.recordFailurePersisted(name)
-	}
-	b.failures[name]++
-	if b.failures[name] >= b.maxFailures {
-		if _, already := b.blockedUntil[name]; !already {
-			b.blockedUntil[name] = time.Now().Add(b.blockDur)
-			return true
-		}
-	}
-	return false
+	return b.hub.recordFailure(name)
 }
 
-func (b *blockTracker) recordFailurePersisted(name string) bool {
-	ctx := context.Background()
-	st, err := b.persister.Load(ctx, name)
-	if err != nil {
-		return false
-	}
-	st.Failures++
-	blocked := false
-	if st.Failures >= b.maxFailures {
-		if st.BlockedUntil.IsZero() {
-			st.BlockedUntil = time.Now().Add(b.blockDur)
-			blocked = true
-		}
-	}
-	_ = b.persister.Save(ctx, name, st)
-	return blocked
-}
-
-// recordSuccess clears any failure state and removes any block for name.
 func (b *blockTracker) recordSuccess(name string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.persister != nil {
-		_ = b.persister.Delete(context.Background(), name)
-		return
-	}
-	delete(b.failures, name)
-	delete(b.blockedUntil, name)
+	b.hub.recordSuccess(name)
 }
 
-// failureCount returns the current consecutive failure count for name (test helper).
 func (b *blockTracker) failureCount(name string) int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.persister != nil {
-		st, err := b.persister.Load(context.Background(), name)
-		if err != nil {
-			return 0
-		}
-		return st.Failures
-	}
-	return b.failures[name]
+	return b.hub.failureCount(name)
 }
 
-// blockedUntilTime returns when name's block window expires, or the zero time
-// when it is not currently blocked. Unlike isBlocked it is a pure read: it does
-// not clear an expired entry, so it is safe to call while rendering a snapshot.
-// An already-elapsed instant therefore means "expired but not yet reaped" and
-// must be treated as unblocked — callers pair this with isBlocked.
 func (b *blockTracker) blockedUntilTime(name string) time.Time {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.persister != nil {
-		st, err := b.persister.Load(context.Background(), name)
-		if err != nil {
-			return time.Time{}
-		}
-		return st.BlockedUntil
-	}
-	return b.blockedUntil[name]
+	return b.hub.blockedUntil(name)
+}
+
+// unblock forces the circuit closed (operator Unblock / test helper).
+func (b *blockTracker) unblock(name string) {
+	b.hub.closeBreaker(name)
 }
