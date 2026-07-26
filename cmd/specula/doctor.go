@@ -17,7 +17,7 @@ import (
 func runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	addr := fs.String("addr", "http://127.0.0.1:7732", "Specula data-plane base URL to probe")
+	addr := fs.String("addr", integrate.DefaultAddr, "Specula data-plane base URL to probe")
 	skipProbe := fs.Bool("skip-probe", false, "skip HTTP check of Addr/v2/")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage:
@@ -26,7 +26,8 @@ func runDoctor(args []string) error {
 
 Catch OCI/CRI wiring footguns before production:
   • containerd 2.2 colon-separated CRI config_path (hosts.toml ignored)
-  • effective config dump still colon after file fix (forgot restart)
+  • empty transfer.v1.local config_path (must match CRI certs.d)
+  • effective config dump still colon/empty after file fix (forgot restart)
   • residual server= public fallback in hosts.toml
   • k3s writing only /etc/containerd/certs.d (live path is agent tree)
   • missing registry.k8s.io / docker.io hosts.toml

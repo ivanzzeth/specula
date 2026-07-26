@@ -15,11 +15,11 @@ func TestHelmReposFromConfig_Defaults(t *testing.T) {
 		t.Fatalf("%+v", repos)
 	}
 	want := map[string]string{
-		"specula-bitnami":               "/helm/bitnami",
-		"specula-prometheus-community":  "/helm/prometheus-community",
-		"specula-longhorn":              "/helm/longhorn",
-		"specula-jetstack":              "/helm/jetstack",
-		"specula-argo":                  "/helm/argo",
+		"specula-bitnami":              "/helm/bitnami",
+		"specula-prometheus-community": "/helm/prometheus-community",
+		"specula-longhorn":             "/helm/longhorn",
+		"specula-jetstack":             "/helm/jetstack",
+		"specula-argo":                 "/helm/argo",
 	}
 	got := map[string]string{}
 	for _, r := range repos {

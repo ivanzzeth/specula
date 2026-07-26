@@ -28,6 +28,8 @@ host."http://127.0.0.1:7732".capabilities = ["pull"]
 	require.NoError(t, os.WriteFile(cfg, []byte(`
 [plugins.'io.containerd.cri.v1.images'.registry]
   config_path = '`+certs+`:/etc/docker/certs.d'
+[plugins.'io.containerd.transfer.v1.local']
+  config_path = '`+certs+`'
 `), 0o644))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +67,8 @@ host."http://127.0.0.1:7732/v2/ghcr.io".capabilities = ["pull"]
 	cfg := filepath.Join(root, "config.toml")
 	require.NoError(t, os.WriteFile(cfg, []byte(`
 [plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = '`+certs+`'
+[plugins.'io.containerd.transfer.v1.local']
   config_path = '`+certs+`'
 `), 0o644))
 
@@ -146,6 +150,8 @@ host."http://127.0.0.1:7732".capabilities = ["pull"]
 	require.NoError(t, os.WriteFile(cfg, []byte(`
 [plugins.'io.containerd.cri.v1.images'.registry]
   config_path = '`+certs+`'
+[plugins.'io.containerd.transfer.v1.local']
+  config_path = '`+certs+`'
 `), 0o644))
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -158,7 +164,9 @@ host."http://127.0.0.1:7732".capabilities = ["pull"]
 		Addr:        srv.URL,
 		ConfigTOMLs: []string{cfg},
 		CertsDirs:   []string{certs},
-		DumpConfig:  func(context.Context) (string, error) { return "config_path = '" + certs + "'\n", nil },
+		DumpConfig: func(context.Context) (string, error) {
+			return "[plugins.'io.containerd.transfer.v1.local']\n  config_path = '" + certs + "'\n", nil
+		},
 	})
 	require.NoError(t, err)
 	assert.False(t, ReportHasBlockingFindings(rep), "clean node: %+v", rep.Results)

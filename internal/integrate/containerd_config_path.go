@@ -19,11 +19,15 @@ import (
 // ctr --hosts-dir <single-dir> still works — exactly the CP failure mode on
 // aliyun-cd-b. See containerd#12808 / #12636.
 //
-// Specula integrate must force a single-root config_path to the certs.d we write.
+// Separately, plugins.'io.containerd.transfer.v1.local'.config_path defaults to
+// '' (empty). Even when CRI registry config_path is fixed, leaving transfer empty
+// means transfer-service consumers never load hosts.toml. Specula integrate
+// always sets BOTH to the same single-root certs.d.
 
 var (
 	reConfigPathAssign = regexp.MustCompile(`(?m)^([ \t]*config_path[ \t]*=[ \t]*)(['"])([^'"]*)(['"])([ \t]*)$`)
 	reDisabledCRI      = regexp.MustCompile(`(?i)disabled_plugins\s*=\s*\[[^\]]*['"]cri['"]`)
+	reTransferSection  = regexp.MustCompile(`(?m)^\[plugins\.(?:'io\.containerd\.transfer\.v1\.local'|"io\.containerd\.transfer\.v1\.local")\][ \t]*\r?\n`)
 )
 
 // containerdConfigTOMLs returns candidate config.toml paths for the live runtime.
@@ -72,14 +76,74 @@ func criConfigPathNeedsFix(content string) (needs bool, reason string) {
 	return false, "already single-root"
 }
 
-// rewriteCRIConfigPath forces every certs.d config_path to preferred (single
-// directory). When none exist, appends a v3 CRI images.registry stanza.
+// transferConfigPathNeedsFix reports whether transfer.v1.local config_path is
+// missing, empty, colon-separated, or not equal to preferred.
+func transferConfigPathNeedsFix(content, preferred string) (needs bool, reason string) {
+	preferred = strings.TrimRight(strings.TrimSpace(preferred), "/")
+	if preferred == "" {
+		preferred = systemContainerdCerts
+	}
+	body, ok := transferSectionBody(content)
+	if !ok {
+		return true, "missing transfer.v1.local config_path"
+	}
+	for _, m := range reConfigPathAssign.FindAllStringSubmatch(body, -1) {
+		val := strings.TrimSpace(m[3])
+		if val == "" {
+			return true, "empty transfer.v1.local config_path"
+		}
+		if isColonSeparatedCertsPath(val) {
+			return true, "colon-separated transfer.v1.local config_path"
+		}
+		if val != preferred {
+			return true, "transfer.v1.local config_path mismatch"
+		}
+		return false, "transfer already single-root"
+	}
+	return true, "missing transfer.v1.local config_path assignment"
+}
+
+// containerdHostsConfigNeedsFix is true when CRI and/or transfer hosts roots need rewrite.
+func containerdHostsConfigNeedsFix(content, preferred string) (needs bool, reason string) {
+	if cri, r := criConfigPathNeedsFix(content); cri {
+		return true, r
+	}
+	if xfer, r := transferConfigPathNeedsFix(content, preferred); xfer {
+		return true, r
+	}
+	return false, "CRI+transfer config_path already single-root"
+}
+
+func transferSectionBody(content string) (body string, ok bool) {
+	loc := reTransferSection.FindStringIndex(content)
+	if loc == nil {
+		return "", false
+	}
+	rest := content[loc[1]:]
+	end := len(rest)
+	off := 0
+	for i, line := range strings.SplitAfter(rest, "\n") {
+		trim := strings.TrimSpace(line)
+		if i > 0 && strings.HasPrefix(trim, "[") {
+			end = off
+			break
+		}
+		off += len(line)
+	}
+	return rest[:end], true
+}
+
+// rewriteCRIConfigPath forces every certs.d config_path under CRI plugin tables
+// to preferred (single directory). When none exist, appends a v3 CRI images.registry stanza.
+// Does not touch transfer.v1.local (see ensureTransferConfigPath).
 func rewriteCRIConfigPath(content, preferred string) (string, bool) {
 	preferred = strings.TrimRight(strings.TrimSpace(preferred), "/")
 	if preferred == "" {
 		preferred = systemContainerdCerts
 	}
 	changed := false
+	// Only rewrite config_path lines that already mention certs.d (or colon lists).
+	// Empty transfer config_path = '' is handled by ensureTransferConfigPath.
 	out := reConfigPathAssign.ReplaceAllStringFunc(content, func(line string) string {
 		m := reConfigPathAssign.FindStringSubmatch(line)
 		if m == nil {
@@ -120,8 +184,53 @@ func rewriteCRIConfigPath(content, preferred string) (string, bool) {
 	return content + block, true
 }
 
-// integrateContainerdCRIConfigPath rewrites config.toml so CRI pulls honour
-// hosts.toml under certsDir. Returns a Result for the OCI merge.
+// ensureTransferConfigPath sets plugins.'io.containerd.transfer.v1.local' config_path
+// to preferred (same certs.d as CRI).
+func ensureTransferConfigPath(content, preferred string) (string, bool) {
+	preferred = strings.TrimRight(strings.TrimSpace(preferred), "/")
+	if preferred == "" {
+		preferred = systemContainerdCerts
+	}
+	loc := reTransferSection.FindStringIndex(content)
+	if loc == nil {
+		block := fmt.Sprintf(`
+
+# managed by specula integrate — transfer service hosts.toml (must match CRI)
+[plugins.'io.containerd.transfer.v1.local']
+  config_path = %q
+`, preferred)
+		return content + block, true
+	}
+	bodyStart := loc[1]
+	body, _ := transferSectionBody(content)
+	bodyEnd := bodyStart + len(body)
+
+	if m := reConfigPathAssign.FindStringSubmatch(body); m != nil {
+		if m[3] == preferred && !isColonSeparatedCertsPath(m[3]) {
+			return content, false
+		}
+		newBody := reConfigPathAssign.ReplaceAllStringFunc(body, func(line string) string {
+			mm := reConfigPathAssign.FindStringSubmatch(line)
+			if mm == nil {
+				return line
+			}
+			return mm[1] + mm[2] + preferred + mm[4] + mm[5]
+		})
+		return content[:bodyStart] + newBody + content[bodyEnd:], true
+	}
+	insert := fmt.Sprintf("  config_path = %q\n", preferred)
+	return content[:bodyStart] + insert + content[bodyStart:], true
+}
+
+// rewriteContainerdHostsConfigPaths fixes CRI registry + transfer.v1.local config_path.
+func rewriteContainerdHostsConfigPaths(content, preferred string) (string, bool) {
+	out, c1 := rewriteCRIConfigPath(content, preferred)
+	out, c2 := ensureTransferConfigPath(out, preferred)
+	return out, c1 || c2
+}
+
+// integrateContainerdCRIConfigPath rewrites config.toml so CRI + transfer pulls
+// honour hosts.toml under certsDir. Returns a Result for the OCI merge.
 func integrateContainerdCRIConfigPath(certsDir string, dryRun, skipRoot bool) Result {
 	certsDir = strings.TrimRight(strings.TrimSpace(certsDir), "/")
 	if certsDir == "" {
@@ -163,18 +272,18 @@ func fixOneContainerdConfigPath(path, certsDir string, dryRun, skipRoot bool) Re
 			if dryRun {
 				return Result{
 					Action: "added",
-					Detail: "would create " + path + " with single-root config_path=" + certsDir + " (containerd 2.2 CRI colon-path bug)",
+					Detail: "would create " + path + " with single-root CRI+transfer config_path=" + certsDir + " (containerd 2.2 CRI/transfer hosts.toml)",
 					Path:   path,
 				}
 			}
 			if skipRoot && isSystemPath(path) {
 				return Result{
 					Action: "skipped",
-					Detail: "skip-root: not writing " + path + " — CRI may ignore hosts.toml until config_path is a single directory; re-run: sudo specula integrate --protocols oci",
+					Detail: "skip-root: not writing " + path + " — CRI/transfer may ignore hosts.toml until config_path is a single directory; re-run: sudo specula integrate --protocols oci",
 					Path:   path,
 				}
 			}
-			body, _ := rewriteCRIConfigPath("", certsDir)
+			body, _ := rewriteContainerdHostsConfigPaths("", certsDir)
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 				if os.IsPermission(err) {
 					return Result{Action: "skipped", Detail: "need root to write " + path, Path: path}
@@ -189,7 +298,7 @@ func fixOneContainerdConfigPath(path, certsDir string, dryRun, skipRoot bool) Re
 			}
 			return Result{
 				Action: "added",
-				Detail: "wrote " + path + " config_path=" + certsDir + " (fix containerd 2.2 CRI colon-path); restart containerd then: crictl pull registry.k8s.io/etcd:3.5.24-0",
+				Detail: "wrote " + path + " CRI+transfer config_path=" + certsDir + "; restart containerd then: crictl pull registry.k8s.io/pause:3.10.1",
 				Path:   path,
 			}
 		}
@@ -200,19 +309,19 @@ func fixOneContainerdConfigPath(path, certsDir string, dryRun, skipRoot bool) Re
 	}
 
 	content := string(raw)
-	needs, reason := criConfigPathNeedsFix(content)
+	needs, reason := containerdHostsConfigNeedsFix(content, certsDir)
 	if !needs {
 		return Result{
 			Action: "already",
-			Detail: "CRI config_path already single-root (" + reason + ")",
+			Detail: "CRI+transfer config_path already single-root (" + reason + ")",
 			Path:   path,
 		}
 	}
-	next, changed := rewriteCRIConfigPath(content, certsDir)
+	next, changed := rewriteContainerdHostsConfigPaths(content, certsDir)
 	if !changed {
-		return Result{Action: "already", Detail: "CRI config_path ok", Path: path}
+		return Result{Action: "already", Detail: "CRI+transfer config_path ok", Path: path}
 	}
-	detail := fmt.Sprintf("fix CRI config_path (%s) → %s — restart containerd so crictl/kubelet use hosts.toml", reason, certsDir)
+	detail := fmt.Sprintf("fix CRI+transfer config_path (%s) → %s — restart containerd so crictl/kubelet use hosts.toml", reason, certsDir)
 	if dryRun {
 		return Result{Action: "added", Detail: "would " + detail, Path: path}
 	}
@@ -236,4 +345,21 @@ func fixOneContainerdConfigPath(path, certsDir string, dryRun, skipRoot bool) Re
 
 func isSystemPath(path string) bool {
 	return strings.HasPrefix(path, "/etc/") || strings.HasPrefix(path, "/var/lib/rancher/")
+}
+
+// preferredCertsFromContent picks the single-root certs.d already present in
+// config (CRI or transfer). Used by doctor so temp/test paths are not flagged
+// as "mismatch" against /etc/containerd/certs.d.
+func preferredCertsFromContent(content string) string {
+	for _, m := range reConfigPathAssign.FindAllStringSubmatch(content, -1) {
+		val := strings.TrimSpace(m[3])
+		if strings.Contains(val, "certs.d") && !isColonSeparatedCertsPath(val) {
+			return val
+		}
+	}
+	dirs := resolveContainerdCertsDirs()
+	if len(dirs) > 0 {
+		return dirs[0]
+	}
+	return systemContainerdCerts
 }

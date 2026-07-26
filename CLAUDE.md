@@ -58,8 +58,9 @@ Known production constraints (do not regress):
 - Non-final mirrors: short dial + fail-fast on dial/TLS/header timeout; soft retry only for 5xx/429.
 - Mid-stream Range resume with cross-upstream fallthrough without closing the caller body.
 - containerd `hosts.toml` must **not** keep `server = "https://…"` public fallbacks on CN nodes.
-- containerd **2.2** CRI `config_path` must be a **single** directory (not `certs.d:/etc/docker/certs.d`). The colon default is ignored by the transfer service — `crictl`/kubelet bypass Specula while `ctr --hosts-dir` still works ([containerd#12808](https://github.com/containerd/containerd/issues/12808)). `integrate --protocols oci` rewrites this.
-- After OCI wire-up on a node: `specula doctor` (or `integrate doctor`) — catches colon `config_path`, stale `containerd config dump`, residual `server=`, k3s wrong certs.d root, missing `registry.k8s.io` hosts, Specula `/v2/` down. Exit 1 on RISK.
+- containerd **2.2** CRI `config_path` must be a **single** directory (not `certs.d:/etc/docker/certs.d`). The colon default is ignored by the transfer service — `crictl`/kubelet bypass Specula while `ctr --hosts-dir` still works ([containerd#12808](https://github.com/containerd/containerd/issues/12808)). `integrate --protocols oci` rewrites this **and** sets `plugins.'io.containerd.transfer.v1.local'.config_path` to the same certs.d (default `''` skips hosts.toml for transfer pulls).
+- `integrate` default `--addr` is `https://127.0.0.1:7732`. Passing `http://` against a TLS-only port auto-upgrades to `https://` (avoids hosts.toml HTTP 400). Use `--skip-scheme-probe` only for offline/tests.
+- After OCI wire-up on a node: `specula doctor` (or `integrate doctor`) — catches colon/empty CRI+transfer `config_path`, stale `containerd config dump`, residual `server=`, k3s wrong certs.d root, missing `registry.k8s.io` hosts, Specula `/v2/` down. Exit 1 on RISK.
 - Gate: `make test-cri` / `scripts/realclient-cri-k8s.sh` (hermetic colon-bypass + single-path Specula + live pause/etcd via CRI). Set `SPECULA_E2E_CRI=0` to skip.
 - OCI install overwrite only when config is still single-`base_url` / one-upstream (or `SPECULA_FORCE_CN_OCI=1`).
 

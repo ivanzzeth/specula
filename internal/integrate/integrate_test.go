@@ -273,11 +273,12 @@ func TestIntegrateContainerdCertsOverridePath(t *testing.T) {
 func TestIntegrateOCIDryRunIncludesContainerd(t *testing.T) {
 	home := t.TempDir()
 	rep, err := Run(Options{
-		Addr:      "http://127.0.0.1:7732",
-		Protocols: []string{"oci"},
-		Home:      home,
-		DryRun:    true,
-		SkipRoot:  true,
+		Addr:            "http://127.0.0.1:7732",
+		Protocols:       []string{"oci"},
+		Home:            home,
+		DryRun:          true,
+		SkipRoot:        true,
+		SkipSchemeProbe: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -292,10 +293,11 @@ func TestIntegrateOCIDryRunIncludesContainerd(t *testing.T) {
 
 func TestRunUnknownProtocol(t *testing.T) {
 	rep, err := Run(Options{
-		Addr:      "http://127.0.0.1:7732",
-		Protocols: []string{"nope"},
-		DryRun:    true,
-		Home:      t.TempDir(),
+		Addr:            "http://127.0.0.1:7732",
+		Protocols:       []string{"nope"},
+		DryRun:          true,
+		Home:            t.TempDir(),
+		SkipSchemeProbe: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -389,11 +391,12 @@ func TestIntegrateCondaChannel(t *testing.T) {
 func TestIntegrateHFEnvEndpoint(t *testing.T) {
 	home := t.TempDir()
 	rep, err := Run(Options{
-		Addr:      "http://127.0.0.1:7732",
-		Protocols: []string{"hf"},
-		Home:      home,
-		DryRun:    false,
-		SkipRoot:  true,
+		Addr:            "http://127.0.0.1:7732",
+		Protocols:       []string{"hf"},
+		Home:            home,
+		DryRun:          false,
+		SkipRoot:        true,
+		SkipSchemeProbe: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -409,4 +412,3 @@ func TestIntegrateHFEnvEndpoint(t *testing.T) {
 		t.Fatalf("missing HF_ENDPOINT:\n%s", b)
 	}
 }
-

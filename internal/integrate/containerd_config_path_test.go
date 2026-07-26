@@ -52,6 +52,63 @@ func TestCriConfigPathNeedsFix_AlreadySingle(t *testing.T) {
 	assert.Contains(t, reason, "single-root")
 }
 
+func TestTransferConfigPathNeedsFix_Empty(t *testing.T) {
+	content := `
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = '/etc/containerd/certs.d'
+[plugins.'io.containerd.transfer.v1.local']
+  config_path = ''
+`
+	needs, reason := transferConfigPathNeedsFix(content, "/etc/containerd/certs.d")
+	assert.True(t, needs)
+	assert.Contains(t, reason, "empty")
+	needsAll, reasonAll := containerdHostsConfigNeedsFix(content, "/etc/containerd/certs.d")
+	assert.True(t, needsAll)
+	assert.Contains(t, reasonAll, "empty")
+}
+
+func TestEnsureTransferConfigPath_SetsEmpty(t *testing.T) {
+	in := `
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = '/etc/containerd/certs.d'
+[plugins.'io.containerd.transfer.v1.local']
+  max_concurrent_downloads = 3
+  config_path = ''
+`
+	out, changed := ensureTransferConfigPath(in, "/etc/containerd/certs.d")
+	require.True(t, changed)
+	assert.Contains(t, out, `config_path = '/etc/containerd/certs.d'`)
+	assert.NotContains(t, out, `config_path = ''`)
+	needs, _ := transferConfigPathNeedsFix(out, "/etc/containerd/certs.d")
+	assert.False(t, needs)
+}
+
+func TestRewriteContainerdHostsConfigPaths_InjectsBoth(t *testing.T) {
+	out, changed := rewriteContainerdHostsConfigPaths("version = 3\n", "/etc/containerd/certs.d")
+	require.True(t, changed)
+	assert.Contains(t, out, `io.containerd.cri.v1.images`)
+	assert.Contains(t, out, `io.containerd.transfer.v1.local`)
+	assert.Contains(t, out, `config_path = "/etc/containerd/certs.d"`)
+}
+
+func TestFixOneContainerdConfigPath_FixesTransferWhenCRIAlreadyOK(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/config.toml"
+	require.NoError(t, os.WriteFile(path, []byte(`
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = '/etc/containerd/certs.d'
+[plugins.'io.containerd.transfer.v1.local']
+  config_path = ''
+`), 0o644))
+	r := fixOneContainerdConfigPath(path, "/etc/containerd/certs.d", false, false)
+	assert.Equal(t, "added", r.Action, r.Detail)
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "[plugins.'io.containerd.transfer.v1.local']")
+	assert.Regexp(t, `config_path = ['"]/etc/containerd/certs\.d['"]`, string(raw))
+	assert.NotContains(t, string(raw), `config_path = ''`)
+}
+
 func TestRewriteCRIConfigPath_ColonToSingle(t *testing.T) {
 	in := `
 [plugins.'io.containerd.cri.v1.images'.registry]
@@ -108,6 +165,7 @@ func TestFixOneContainerdConfigPath_WritesBackup(t *testing.T) {
 	raw, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), `config_path = '/etc/containerd/certs.d'`)
+	assert.Contains(t, string(raw), `io.containerd.transfer.v1.local`)
 	assert.NotContains(t, string(raw), `:/etc/docker`)
 	bak, err := os.ReadFile(path + ".bak.specula")
 	require.NoError(t, err)

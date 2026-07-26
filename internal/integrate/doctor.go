@@ -17,7 +17,7 @@ import (
 type DoctorOptions struct {
 	// Home overrides the user home (tests / non-interactive).
 	Home string
-	// Addr is Specula's data-plane base URL (default http://127.0.0.1:7732).
+	// Addr is Specula's data-plane base URL (default https://127.0.0.1:7732).
 	Addr string
 	// SkipProbe skips HTTP reachability of Addr/v2/.
 	SkipProbe bool
@@ -85,7 +85,7 @@ func Doctor(opts DoctorOptions) (Report, error) {
 // Specula (colon config_path, residual server=, wrong certs.d root).
 func AuditOCIRisks() []Result {
 	home, _ := os.UserHomeDir()
-	return auditOCIRisks(DoctorOptions{Home: home}, "http://127.0.0.1:7732")
+	return auditOCIRisks(DoctorOptions{Home: home}, DefaultAddr)
 }
 
 func auditOCIRisks(opts DoctorOptions, addr string) []Result {
@@ -132,12 +132,13 @@ func auditCRIConfigPathFiles(tomls []string) []Result {
 			continue
 		}
 		sawAny = true
-		needs, reason := criConfigPathNeedsFix(string(raw))
+		content := string(raw)
+		needs, reason := containerdHostsConfigNeedsFix(content, preferredCertsFromContent(content))
 		if needs {
 			out = append(out, Result{
 				Protocol: "oci",
 				Action:   "risk",
-				Detail:   fmt.Sprintf("CRI config_path footgun (%s) — crictl/kubelet ignore hosts.toml and dial public origins (*.pkg.dev); fix: sudo specula integrate --protocols oci && systemctl restart containerd", reason),
+				Detail:   fmt.Sprintf("CRI/transfer config_path footgun (%s) — crictl/kubelet may ignore hosts.toml and dial public origins (*.pkg.dev); fix: sudo specula integrate --protocols oci && systemctl restart containerd", reason),
 				Path:     path,
 			})
 		}
@@ -196,6 +197,20 @@ func auditEffectiveCRIConfigPath(opts DoctorOptions) []Result {
 			Detail:   "effective `containerd config dump` still embeds certs.d:/etc/docker/certs.d — restart containerd after integrate, or re-run: sudo specula integrate --protocols oci",
 			Path:     "containerd config dump",
 		}}
+	}
+	// Empty transfer config_path is the default and means transfer-service
+	// consumers never load hosts.toml — sync with CRI certs.d.
+	if body, ok := transferSectionBody(dump); ok {
+		for _, m := range reConfigPathAssign.FindAllStringSubmatch(body, -1) {
+			if strings.TrimSpace(m[3]) == "" {
+				return []Result{{
+					Protocol: "oci",
+					Action:   "risk",
+					Detail:   "effective `containerd config dump` has empty transfer.v1.local config_path — set it to the same certs.d as CRI (sudo specula integrate --protocols oci && systemctl restart containerd)",
+					Path:     "containerd config dump",
+				}}
+			}
+		}
 	}
 	return nil
 }

@@ -114,6 +114,13 @@ func startEphemeralContainerd(t *testing.T, configPath, sock string) *criContain
 func writeContainerdConfig(t *testing.T, path, root, state, sock, configPath string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	// Always set transfer.v1.local config_path to the same hosts root as CRI.
+	// Production defaults leave it '' which skips hosts.toml for transfer pulls.
+	transferPath := configPath
+	if strings.Contains(configPath, ":") {
+		// Colon CRI footgun tests: leave transfer empty (production default).
+		transferPath = ""
+	}
 	body := fmt.Sprintf(`version = 3
 root = %q
 state = %q
@@ -122,12 +129,14 @@ state = %q
 [plugins.'io.containerd.cri.v1.images']
   [plugins.'io.containerd.cri.v1.images'.registry]
     config_path = %q
+[plugins.'io.containerd.transfer.v1.local']
+  config_path = %q
 [plugins.'io.containerd.cri.v1.runtime']
   [plugins.'io.containerd.cri.v1.runtime'.containerd]
     default_runtime_name = 'runc'
     [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc]
       runtime_type = 'io.containerd.runc.v2'
-`, root, state, sock, configPath)
+`, root, state, sock, configPath, transferPath)
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 }
 

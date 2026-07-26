@@ -31,11 +31,12 @@ func runIntegrate(args []string) error {
 
 	fs := flag.NewFlagSet("integrate", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	addr := fs.String("addr", "http://127.0.0.1:7732", "Specula data-plane base URL")
+	addr := fs.String("addr", integrate.DefaultAddr, "Specula data-plane base URL (default https://127.0.0.1:7732)")
 	protocols := fs.String("protocols", strings.Join(integrate.DefaultProtocols, ","),
 		"comma-separated protocols: go,npm,pypi,oci,helm,git,apt,cargo,conda,hf")
 	dryRun := fs.Bool("dry-run", false, "print planned changes without writing")
 	skipRoot := fs.Bool("skip-root", false, "skip apt /etc/docker actions that need root")
+	skipSchemeProbe := fs.Bool("skip-scheme-probe", false, "do not auto-upgrade http://→https:// when the port speaks TLS only")
 	configPath := fs.String("config", "", "path to specula.yaml (optional; enables multi-source helm/apt/conda wiring)")
 	registryHost := fs.String("registry-host", "",
 		"OCI hostname to wire to --addr (k3s: registries.yaml + certs.d; vanilla: certs.d)")
@@ -58,10 +59,12 @@ Add Specula as a client-side mirror without destroying existing config:
   apt    write /etc/apt/sources.list.d/specula.list (never edit sources.list)
 
 Examples:
-  specula integrate --addr http://127.0.0.1:7732
-  sudo specula integrate --protocols oci --addr http://127.0.0.1:7732
+  specula integrate --addr https://127.0.0.1:7732
+  sudo specula integrate --protocols oci --addr https://127.0.0.1:7732
   sudo specula integrate --protocols oci --addr https://specula.example.test:7732 --ca-file /etc/specula/ca.crt
   specula integrate --protocols docker   # alias of oci
+  # plain http only when the data plane is truly cleartext:
+  specula integrate --addr http://127.0.0.1:7732   # auto-upgrades to https if port is TLS-only
 
 Flags:
 `)
@@ -80,13 +83,14 @@ Flags:
 	}
 
 	rep, err := integrate.Run(integrate.Options{
-		Addr:         *addr,
-		Protocols:    protos,
-		DryRun:       *dryRun,
-		SkipRoot:     *skipRoot,
-		ConfigPath:   *configPath,
-		RegistryHost: *registryHost,
-		CAFile:       *caFile,
+		Addr:            *addr,
+		Protocols:       protos,
+		DryRun:          *dryRun,
+		SkipRoot:        *skipRoot,
+		ConfigPath:      *configPath,
+		RegistryHost:    *registryHost,
+		CAFile:          *caFile,
+		SkipSchemeProbe: *skipSchemeProbe,
 	})
 	if err != nil {
 		return err

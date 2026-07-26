@@ -20,7 +20,7 @@ var DefaultProtocols = []string{"go", "npm", "pypi", "oci", "helm", "git", "apt"
 
 // Options configures an integrate run.
 type Options struct {
-	// Addr is the Specula data-plane base URL, e.g. http://127.0.0.1:7732
+	// Addr is the Specula data-plane base URL, e.g. https://127.0.0.1:7732
 	Addr string
 	// Protocols is the list of protocol names to wire (go, npm, pypi, oci, helm, git, apt).
 	Protocols []string
@@ -41,6 +41,9 @@ type Options struct {
 	// When Addr is https:// and CAFile is set, TLS trust uses ca_file / ca= instead of
 	// skip_verify. Ignored for plain http:// endpoints.
 	CAFile string
+	// SkipSchemeProbe disables http→https auto-upgrade when the port speaks TLS only.
+	// Unit tests that pass explicit http:// httptest URLs should set this.
+	SkipSchemeProbe bool
 }
 
 // Result is one protocol's integrate outcome.
@@ -61,7 +64,7 @@ type Report struct {
 
 // Run applies additive client wiring for the requested protocols.
 func Run(opts Options) (Report, error) {
-	addr, err := normalizeAddr(opts.Addr)
+	addr, upgraded, err := resolveDataPlaneAddr(opts.Addr, opts.SkipSchemeProbe)
 	if err != nil {
 		return Report{}, err
 	}
@@ -87,6 +90,14 @@ func Run(opts Options) (Report, error) {
 	}
 
 	rep := Report{Addr: addr, DryRun: opts.DryRun}
+	if upgraded {
+		rep.Results = append(rep.Results, Result{
+			Protocol: "addr",
+			Action:   "added",
+			Detail:   "auto-upgraded http:// → https:// (port speaks TLS; http hosts.toml would get HTTP 400 on pull)",
+			Path:     addr,
+		})
+	}
 	for _, p := range protos {
 		p = strings.ToLower(strings.TrimSpace(p))
 		var r Result
@@ -174,19 +185,6 @@ func Status(home string) (Report, error) {
 		rep.Results = append(rep.Results, oci...)
 	}
 	return rep, nil
-}
-
-func normalizeAddr(addr string) (string, error) {
-	addr = strings.TrimSpace(addr)
-	if addr == "" {
-		addr = "http://127.0.0.1:7732"
-	}
-	u, err := url.Parse(addr)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf("invalid --addr %q (want http://host:port)", addr)
-	}
-	u.Path = strings.TrimRight(u.Path, "/")
-	return u.String(), nil
 }
 
 func statePath(home string) string {

@@ -45,7 +45,7 @@ existing mirrors.
 
 ```bash
 make build-go
-./bin/specula integrate --addr http://127.0.0.1:7732
+./bin/specula integrate --addr https://127.0.0.1:7732
 # preview only:     ./bin/specula integrate --dry-run
 # check state:      ./bin/specula integrate status
 # OCI/CRI preflight: ./bin/specula doctor   # exit 1 on colon config_path / server= / unreachable
@@ -329,8 +329,9 @@ curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
 This updates:
 - `/etc/docker/daemon.json`: `registry-mirrors` (**docker.io only**) and `insecure-registries`
 - `/etc/containerd/certs.d/<registry>/hosts.toml`: non-Hub registries get `override_path` so pulls reach Specula with the host in the path
-- `/etc/containerd/config.toml`: forces CRI `config_path` to a **single** directory (containerd 2.2’s default `certs.d:/etc/docker/certs.d` is ignored by the transfer service — `crictl`/`kubelet` then bypass Specula and dial `*.pkg.dev`; `ctr --hosts-dir` still works). Restart containerd after integrate.
-- Preflight: `./bin/specula doctor` (alias `integrate doctor`) flags colon `config_path`, stale effective dump (forgot restart), residual `server=`, k3s wrong certs.d root, missing `registry.k8s.io` hosts, and Specula `/v2/` down — before kubeadm hangs.
+- `/etc/containerd/config.toml`: forces CRI **and** `transfer.v1.local` `config_path` to the same **single** certs.d directory (containerd 2.2’s default colon CRI path is ignored by transfer; empty transfer `config_path` also skips hosts.toml). Restart containerd after integrate.
+- Default `--addr` is `https://127.0.0.1:7732`. If you pass `http://` but the port only speaks TLS, integrate auto-upgrades to `https://` (avoids HTTP 400 in hosts.toml).
+- Preflight: `./bin/specula doctor` (alias `integrate doctor`) flags colon/empty CRI+transfer `config_path`, stale effective dump (forgot restart), residual `server=`, k3s wrong certs.d root, missing `registry.k8s.io` hosts, and Specula `/v2/` down — before kubeadm hangs.
 
 Without sudo, Specula still writes user-dir daemon.json / `~/.config/specula/certs.d/`, but
 **dockerd/containerd ignore those paths** — re-run with sudo for a real one-click.

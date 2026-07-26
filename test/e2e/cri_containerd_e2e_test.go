@@ -149,6 +149,7 @@ func TestCRI_LiveK8sPauseAndEtcd(t *testing.T) {
 
 	ctd := startEphemeralContainerd(t, cfg, sock)
 	for _, ref := range []string{
+		"registry.k8s.io/pause:3.10.1",
 		"registry.k8s.io/pause:3.9",
 		"registry.k8s.io/etcd:3.5.24-0",
 	} {

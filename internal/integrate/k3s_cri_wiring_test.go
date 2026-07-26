@@ -59,8 +59,9 @@ version = 3
 	fixed, err := os.ReadFile(cfgPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(fixed), "config_path = '"+certs+"'")
+	assert.Contains(t, string(fixed), "io.containerd.transfer.v1.local")
 	assert.NotContains(t, string(fixed), ":/etc/docker")
-	needs, _ = criConfigPathNeedsFix(string(fixed))
+	needs, _ = containerdHostsConfigNeedsFix(string(fixed), certs)
 	assert.False(t, needs)
 
 	// 3) k3s registries.yaml for cluster-local Specula hostname (no TLS on http)
@@ -101,6 +102,7 @@ func TestVanillaKubeadmLayout_ColonDefaultFixed(t *testing.T) {
 	assert.True(t, strings.Contains(string(got), "config_path = '"+certs+"'") ||
 		strings.Contains(string(got), `config_path = "`+certs+`"`),
 		string(got))
+	assert.Contains(t, string(got), "transfer.v1.local")
 	assert.NotContains(t, string(got), ":/etc/docker/certs.d")
 
 	// Residual server= on an orphan registry must be stripped by WriteContainerdHosts.
