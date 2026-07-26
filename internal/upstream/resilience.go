@@ -265,10 +265,15 @@ func (h *breakerHub) runFetchAttempt(
 }
 
 // isTransientExecError reports whether err should count toward retry / CB.
-// Context cancellation and definitive *StatusError are never transient.
+// Definitive *StatusError and parent-context cancellation are never transient.
+// Dial/TLS/header deadlines wrapped with asTransient ARE transient (CN CDN).
 func isTransientExecError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var te *transientError
+	if errors.As(err, &te) {
+		return true
 	}
 	if isContextError(err) {
 		return false
@@ -278,12 +283,7 @@ func isTransientExecError(err error) bool {
 		return false
 	}
 	if errors.Is(err, circuitbreaker.ErrOpen) {
-		// Open breaker: chain skips; do not feed back into CB recording.
 		return false
-	}
-	var te *transientError
-	if errors.As(err, &te) {
-		return true
 	}
 	if errors.Is(err, retrypolicy.ErrExceeded) {
 		return true

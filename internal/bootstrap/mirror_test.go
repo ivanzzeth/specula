@@ -24,7 +24,9 @@ func TestWriteContainerdHosts_DockerIO(t *testing.T) {
 	got, err := os.ReadFile(filepath.Join(dir, "docker.io", "hosts.toml"))
 	require.NoError(t, err)
 	s := string(got)
-	require.Contains(t, s, `server = "https://registry-1.docker.io"`)
+	// No public `server =` fallback — that lets containerd dial Hub/pkg.dev
+	// when Specula is slow (CN kubeadm hang class).
+	require.NotContains(t, s, "server =")
 	require.Contains(t, s, `[host."http://127.0.0.1:30732"]`)
 	require.Contains(t, s, `capabilities = ["pull", "resolve"]`)
 	require.Contains(t, s, `skip_verify = true`)
@@ -33,9 +35,29 @@ func TestWriteContainerdHosts_DockerIO(t *testing.T) {
 	got2, err := os.ReadFile(filepath.Join(dir, "registry.k8s.io", "hosts.toml"))
 	require.NoError(t, err)
 	s2 := string(got2)
-	require.Contains(t, s2, `server = "https://registry.k8s.io"`)
+	require.NotContains(t, s2, "server =")
 	require.Contains(t, s2, `[host."http://127.0.0.1:30732/v2/registry.k8s.io"]`)
 	require.Contains(t, s2, `override_path = true`)
+}
+
+// TestWriteContainerdHosts_NoPublicServerFallback pins the CN failure mode:
+// hosts.toml must not list registry.k8s.io / pkg.dev as a containerd fallback.
+func TestWriteContainerdHosts_NoPublicServerFallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, bootstrap.WriteContainerdHosts(bootstrap.MirrorOptions{
+		CertsDir:   dir,
+		Endpoint:   "https://127.0.0.1:7732",
+		Registries: []string{"registry.k8s.io", "ghcr.io"},
+		CaFile:     "/etc/specula/ca.crt",
+	}))
+	for _, reg := range []string{"registry.k8s.io", "ghcr.io"} {
+		body, err := os.ReadFile(filepath.Join(dir, reg, "hosts.toml"))
+		require.NoError(t, err)
+		s := string(body)
+		require.NotContains(t, s, "server =", reg)
+		require.NotContains(t, s, "pkg.dev", reg)
+		require.Contains(t, s, "127.0.0.1:7732", reg)
+	}
 }
 
 func TestWriteContainerdHosts_RequiresFields(t *testing.T) {

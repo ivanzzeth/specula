@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"os/user"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -35,5 +38,39 @@ func TestPatchConfigForSystemInstall(t *testing.T) {
 	}
 	if !strings.Contains(out, "/var/lib/specula/git") {
 		t.Fatalf("missing git path: %s", out)
+	}
+}
+
+// TestChownPathRecursive: service install must fix nested data dirs, not only
+// /var/lib/specula itself — otherwise a root wipe of blobs/ leaves the daemon
+// with permission denied on mkdir shard (no hand-chown required; reinstall fixes it).
+func TestChownPathRecursive(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "blobs", "ab")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(nested, "x")
+	if err := os.WriteFile(marker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chownPath(dir, u.Username); err != nil {
+		t.Fatalf("chownPath: %v", err)
+	}
+	// Walk succeeded over nested paths (regression: old chownPath only touched dir).
+	var seen int
+	_ = filepath.Walk(dir, func(p string, _ os.FileInfo, err error) error {
+		if err == nil {
+			seen++
+		}
+		return err
+	})
+	if seen < 3 {
+		t.Fatalf("expected nested walk ≥3 paths, got %d", seen)
 	}
 }
