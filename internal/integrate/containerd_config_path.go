@@ -27,7 +27,11 @@ import (
 var (
 	reConfigPathAssign = regexp.MustCompile(`(?m)^([ \t]*config_path[ \t]*=[ \t]*)(['"])([^'"]*)(['"])([ \t]*)$`)
 	reDisabledCRI      = regexp.MustCompile(`(?i)disabled_plugins\s*=\s*\[[^\]]*['"]cri['"]`)
-	reTransferSection  = regexp.MustCompile(`(?m)^\[plugins\.(?:'io\.containerd\.transfer\.v1\.local'|"io\.containerd\.transfer\.v1\.local")\][ \t]*\r?\n`)
+	// Allow leading whitespace: containerd config dump and some drop-ins indent
+	// plugin tables ("  [plugins.'io.containerd.transfer.v1.local']"). Matching
+	// only column-0 headers caused integrate to APPEND a duplicate table →
+	// "table io.containerd.transfer.v1.local already exists" on restart.
+	reTransferSection = regexp.MustCompile(`(?m)^[ \t]*\[plugins\.(?:'io\.containerd\.transfer\.v1\.local'|"io\.containerd\.transfer\.v1\.local")\][ \t]*(?:\r?\n|$)`)
 )
 
 // containerdConfigTOMLs returns candidate config.toml paths for the live runtime.

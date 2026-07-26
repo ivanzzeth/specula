@@ -2,11 +2,23 @@ package integrate
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func countTransferSections(s string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "[plugins.") && strings.Contains(trim, "io.containerd.transfer.v1.local") {
+			n++
+		}
+	}
+	return n
+}
 
 func TestIsColonSeparatedCertsPath(t *testing.T) {
 	assert.True(t, isColonSeparatedCertsPath(`/etc/containerd/certs.d:/etc/docker/certs.d`))
@@ -82,6 +94,45 @@ func TestEnsureTransferConfigPath_SetsEmpty(t *testing.T) {
 	needs, _ := transferConfigPathNeedsFix(out, "/etc/containerd/certs.d")
 	assert.False(t, needs)
 }
+
+// TestEnsureTransferConfigPath_IndentedExisting_NoDuplicate pins the CP failure:
+// containerd config dump / some drop-ins indent plugin tables with two spaces.
+// Missing that in the matcher caused integrate to APPEND a second
+// [plugins.'io.containerd.transfer.v1.local'] → TOML
+// "table io.containerd.transfer.v1.local already exists" → restart fails.
+func TestEnsureTransferConfigPath_IndentedExisting_NoDuplicate(t *testing.T) {
+	in := `version = 3
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = '/etc/containerd/certs.d'
+  [plugins.'io.containerd.transfer.v1.local']
+    max_concurrent_downloads = 3
+    config_path = ''
+    max_concurrent_unpacks = 1
+`
+	out, changed := ensureTransferConfigPath(in, "/etc/containerd/certs.d")
+	require.True(t, changed, "must rewrite empty config_path in place")
+	assert.Equal(t, 1, countTransferSections(out),
+		"must not append a second transfer table; got:\n%s", out)
+	assert.Contains(t, out, `config_path = '/etc/containerd/certs.d'`)
+	assert.NotContains(t, out, `config_path = ''`)
+	assert.NotContains(t, out, "managed by specula integrate — transfer service",
+		"in-place rewrite must not append the managed comment block")
+}
+
+func TestRewriteContainerdHostsConfigPaths_IndentedTransfer_NoDuplicate(t *testing.T) {
+	in := `version = 3
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = '/etc/containerd/certs.d:/etc/docker/certs.d'
+  [plugins.'io.containerd.transfer.v1.local']
+    config_path = ''
+`
+	out, changed := rewriteContainerdHostsConfigPaths(in, "/etc/containerd/certs.d")
+	require.True(t, changed)
+	assert.Equal(t, 1, countTransferSections(out), "got:\n%s", out)
+	assert.NotContains(t, out, ":/etc/docker")
+	assert.NotContains(t, out, `config_path = ''`)
+}
+
 
 func TestRewriteContainerdHostsConfigPaths_InjectsBoth(t *testing.T) {
 	out, changed := rewriteContainerdHostsConfigPaths("version = 3\n", "/etc/containerd/certs.d")
