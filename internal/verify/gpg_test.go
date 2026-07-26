@@ -524,6 +524,62 @@ func TestGPGVerifier_FullChain_Pass(t *testing.T) {
 		"full chain pass must reach TierSigned")
 }
 
+// TestGPGVerifier_Pool_ArchiveScopedCacheName_Pass is the multi-archive mount
+// regression: poolCacheName scopes CAS keys as "<archive>/<component>/…" but
+// Packages Filename never includes the Specula archive mount. verifyPool must
+// still resolve the pin (else every /apt/ubuntu/pool/… .deb 502s after a good
+// apt-get update).
+func TestGPGVerifier_Pool_ArchiveScopedCacheName_Pass(t *testing.T) {
+	key := newAptTestKey(t)
+	v, err := NewGPGVerifier(key.keyFile)
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	debContent := []byte("archive-scoped pool payload")
+	debPath, debDigest := writeQuarantine(t, debContent)
+	debSHA256Hex := debDigest[7:]
+
+	const poolPath = "pool/main/h/hello/hello_1.0.0_amd64.deb"
+	packagesContent := buildPackagesContent(poolPath, debSHA256Hex)
+	packagesPath, packagesDigest := writeQuarantine(t, packagesContent)
+	packagesHex := packagesDigest[7:]
+
+	sums := []string{fmt.Sprintf("%s %d main/binary-amd64/Packages", packagesHex, len(packagesContent))}
+	inReleaseData := signInRelease(t, key, sums)
+	inReleasePath, inReleaseDigest := writeQuarantine(t, inReleaseData)
+
+	inReleaseRef := artifact.ArtifactRef{
+		Protocol: "apt", Name: "ubuntu", Version: "noble/InRelease",
+		Digest: inReleaseDigest, Mutable: true,
+	}
+	res1, err := v.Verify(ctx, inReleaseRef, &artifact.Artifact{Path: inReleasePath, Digest: inReleaseDigest})
+	require.NoError(t, err)
+	require.Equal(t, artifact.StatusPass, res1.Status)
+
+	packagesRef := artifact.ArtifactRef{
+		Protocol: "apt", Name: "ubuntu",
+		Version: "noble/main/binary-amd64/Packages",
+		Digest:  packagesDigest, Mutable: true,
+	}
+	res2, err := v.Verify(ctx, packagesRef, &artifact.Artifact{Path: packagesPath, Digest: packagesDigest})
+	require.NoError(t, err)
+	require.Equal(t, artifact.StatusPass, res2.Status)
+
+	// CAS key shape from poolCacheName("ubuntu", "main/h/hello").
+	debRef := artifact.ArtifactRef{
+		Protocol: "apt",
+		Name:     "ubuntu/main/h/hello",
+		Version:  "hello_1.0.0_amd64.deb",
+		Digest:   debDigest,
+		Mutable:  false,
+	}
+	res3, err := v.Verify(ctx, debRef, &artifact.Artifact{Path: debPath, Digest: debDigest})
+	require.NoError(t, err)
+	assert.Equal(t, artifact.StatusPass, res3.Status,
+		"archive-scoped pool ref must still chain-verify: %s", res3.Message)
+	assert.Equal(t, artifact.TierSigned, res3.Tier)
+}
+
 // TestGPGVerifier_Pool_DigestMismatch_Fail verifies chain link 3: if the actual
 // .deb SHA256 does not match the Packages-verified value, FAIL.
 func TestGPGVerifier_Pool_DigestMismatch_Fail(t *testing.T) {

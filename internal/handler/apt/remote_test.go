@@ -26,8 +26,9 @@ func TestSelectUpstreams(t *testing.T) {
 
 	ups, ok := h.selectUpstreams("ubuntu")
 	require.True(t, ok)
-	require.Len(t, ups, 1)
+	require.Len(t, ups, 2)
 	assert.Equal(t, "https://mirrors.example/ubuntu", ups[0].BaseURL)
+	assert.Equal(t, "https://archive.ubuntu.com/ubuntu", ups[1].BaseURL)
 
 	ups, ok = h.selectUpstreams("")
 	require.True(t, ok)

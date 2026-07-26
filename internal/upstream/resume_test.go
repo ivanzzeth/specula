@@ -114,7 +114,7 @@ func TestFetch_LongBodyExceedsFormerClientTimeout(t *testing.T) {
 	defer srv.Close()
 
 	c := resumeTestClient()
-	tr := c.http.Transport.(*http.Transport)
+	tr := c.http.Transport.(*userAgentRoundTripper).base.(*http.Transport)
 	tr.ResponseHeaderTimeout = 30 * time.Millisecond
 	c.idleBodyTimeout = 200 * time.Millisecond
 

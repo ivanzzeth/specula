@@ -648,10 +648,11 @@ func (v *GPGVerifier) verifyInReleasePin(ctx context.Context, ref artifact.Artif
 // newest signed statement overwrites the old (see PutPoolPins) and stale cached
 // bytes then fail closed on the mismatch below.
 func (v *GPGVerifier) verifyPool(ctx context.Context, ref artifact.ArtifactRef, art *artifact.Artifact) (artifact.Result, error) {
-	// Pool path is "pool/<name>/<version>" matching the "Filename:" field in Packages.
-	poolPath := "pool/" + ref.Name + "/" + ref.Version
-
-	expectedHex, err := v.pins.PoolPin(ctx, v.scope, poolPath)
+	// Packages "Filename:" is always "pool/<component>/…/<file>" with no Specula
+	// archive mount. CAS keys may be archive-scoped via poolCacheName
+	// ("ubuntu/main/h/hello"); try the literal Name first, then strip one
+	// leading segment on pin miss so multi-archive mounts still chain-verify.
+	poolPath, expectedHex, err := v.resolvePoolPin(ctx, ref)
 	if err != nil {
 		// Fail closed: an unreadable or ambiguous pin is not permission to serve.
 		return artifact.Result{
@@ -683,6 +684,31 @@ func (v *GPGVerifier) verifyPool(ctx context.Context, ref artifact.ArtifactRef, 
 		Tier:    artifact.TierSigned,
 		Message: fmt.Sprintf("gpg: pool file %q SHA256 chain-verified (InRelease→Packages→.deb, TierSigned)", poolPath),
 	}, nil
+}
+
+// resolvePoolPin looks up the Packages Filename pin for an immutable pool ref.
+// Returns the Filename-shaped path that hit (for error messages) and its hex,
+// or ("pool/"+Name+"/"+Version, "", nil) when nothing is pinned.
+func (v *GPGVerifier) resolvePoolPin(ctx context.Context, ref artifact.ArtifactRef) (poolPath, hex string, err error) {
+	candidates := []string{"pool/" + ref.Name + "/" + ref.Version}
+	if i := strings.IndexByte(ref.Name, '/'); i > 0 {
+		alt := "pool/" + ref.Name[i+1:] + "/" + ref.Version
+		if alt != candidates[0] {
+			candidates = append(candidates, alt)
+		}
+	}
+	poolPath = candidates[0]
+	for _, candidate := range candidates {
+		poolPath = candidate
+		hex, err = v.pins.PoolPin(ctx, v.scope, candidate)
+		if err != nil {
+			return poolPath, "", err
+		}
+		if hex != "" {
+			return candidate, hex, nil
+		}
+	}
+	return candidates[0], "", nil
 }
 
 // --------------------------------------------------------------------------

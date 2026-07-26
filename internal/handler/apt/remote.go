@@ -66,7 +66,22 @@ func (h *Handler) selectUpstreams(repo string) (ups []upstream.Upstream, ok bool
 	if !hit || up.BaseURL == "" {
 		return nil, false
 	}
-	return []upstream.Upstream{up}, true
+	chain := []upstream.Upstream{up}
+	// When the allowlisted archive upstream is blocked (HTTP 403 UA filter,
+	// regional outage), fall through protocol-level apt.upstreams.
+	seen := map[string]struct{}{strings.TrimRight(up.BaseURL, "/"): {}}
+	for _, u := range h.upstreams {
+		base := strings.TrimRight(u.BaseURL, "/")
+		if base == "" {
+			continue
+		}
+		if _, dup := seen[base]; dup {
+			continue
+		}
+		seen[base] = struct{}{}
+		chain = append(chain, u)
+	}
+	return chain, true
 }
 
 // poolCacheName scopes pool CAS keys by archive when a repo prefix is present.

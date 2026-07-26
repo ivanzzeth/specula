@@ -61,24 +61,50 @@ func newUpstreamHTTPClientFast() *http.Client {
 }
 
 func newUpstreamHTTPClientWith(dial, tlsHS, headerTimeout time.Duration) *http.Client {
+	base := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   dial,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          200,
+		MaxIdleConnsPerHost:   32,
+		MaxConnsPerHost:       64,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   tlsHS,
+		ResponseHeaderTimeout: headerTimeout,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 	return &http.Client{
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   dial,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          200,
-			MaxIdleConnsPerHost:   32,
-			MaxConnsPerHost:       64,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   tlsHS,
-			ResponseHeaderTimeout: headerTimeout,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
+		// CN mirrors (e.g. tuna) return 403 to Go's default User-Agent
+		// ("Go-http-client/1.1"). Always identify as Specula.
+		Transport: &userAgentRoundTripper{base: base, ua: defaultUpstreamUserAgent},
 	}
 }
+
+// defaultUpstreamUserAgent is sent on every upstream fetch. Tsinghua's Ubuntu
+// mirror rejects the Go stdlib default UA with HTTP 403 while accepting curl /
+// wget — that silent reject made Specula apt pool fetches 502 forever.
+const defaultUpstreamUserAgent = "Specula/upstream"
+
+// userAgentRoundTripper sets User-Agent when the request does not already have one.
+type userAgentRoundTripper struct {
+	base http.RoundTripper
+	ua   string
+}
+
+func (t *userAgentRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("User-Agent") == "" {
+		clone := req.Clone(req.Context())
+		clone.Header.Set("User-Agent", t.ua)
+		req = clone
+	}
+	return t.base.RoundTrip(req)
+}
+
+// Unwrap exposes the underlying RoundTripper (tests tweak *http.Transport).
+func (t *userAgentRoundTripper) Unwrap() http.RoundTripper { return t.base }
 
 // resumingReader wraps an upstream response body and transparently Range-resumes
 // on mid-stream transport / idle failures. It first retries the pinned upstream,
