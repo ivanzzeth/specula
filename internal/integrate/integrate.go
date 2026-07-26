@@ -124,7 +124,7 @@ func Run(opts Options) (Report, error) {
 		case "git":
 			r = integrateGit(home, addr, opts.DryRun)
 		case "apt":
-			r = integrateApt(addr, opts.DryRun, opts.SkipRoot, cfg)
+			r = integrateApt(addr, opts.CAFile, opts.DryRun, opts.SkipRoot, cfg)
 		case "cargo", "crates", "rust":
 			r = integrateCargo(home, addr, opts.DryRun)
 			r.Protocol = "cargo"

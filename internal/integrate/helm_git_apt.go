@@ -46,7 +46,7 @@ func integrateHelm(addr string, dryRun bool, cfg *config.Config) Result {
 	return Result{Action: "added", Detail: "helm repo add " + strings.Join(added, ","), Path: "helm"}
 }
 
-func integrateApt(addr string, dryRun, skipRoot bool, cfg *config.Config) Result {
+func integrateApt(addr, caFile string, dryRun, skipRoot bool, cfg *config.Config) Result {
 	if skipRoot {
 		return Result{Action: "skipped", Detail: "apt integrate requires root (skipped)"}
 	}
@@ -63,23 +63,88 @@ func integrateApt(addr string, dryRun, skipRoot bool, cfg *config.Config) Result
 		"deb [trusted=yes] %s %s-updates main restricted universe multiverse\n"+
 		"deb [trusted=yes] %s %s-security main restricted universe multiverse\n",
 		archive, archiveURL, suite, archiveURL, suite, archiveURL, suite)
+
+	listAlready := false
 	if _, err := os.Stat(path); err == nil {
 		cur, _ := os.ReadFile(path)
 		wantNeedle := archiveURL + " " + suite + " "
 		if strings.Contains(string(cur), wantNeedle) {
-			return Result{Action: "already", Detail: "specula.list already points at Specula (" + suite + ", archive=" + archive + ")", Path: path}
+			listAlready = true
 		}
 	}
+
+	caDetail := ""
 	if dryRun {
-		return Result{Action: "added", Detail: "would write " + path + " (suite=" + suite + ", archive=" + archive + ")", Path: path}
-	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		if os.IsPermission(err) {
-			return Result{Action: "skipped", Detail: "need root to write " + path + " — re-run: sudo specula integrate --protocols apt", Path: path}
+		if ca := strings.TrimSpace(caFile); ca != "" && strings.HasPrefix(strings.ToLower(base), "https://") {
+			caDetail = "; would install apt CA trust from --ca-file"
 		}
-		return Result{Action: "error", Err: err.Error(), Path: path}
+		if listAlready {
+			return Result{Action: "already", Detail: "specula.list already points at Specula (" + suite + ", archive=" + archive + ")" + caDetail, Path: path}
+		}
+		return Result{Action: "added", Detail: "would write " + path + " (suite=" + suite + ", archive=" + archive + ")" + caDetail, Path: path}
 	}
-	return Result{Action: "added", Detail: "wrote apt source suite=" + suite + " archive=" + archive + " (apt-get update to refresh)", Path: path}
+
+	if !listAlready {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			if os.IsPermission(err) {
+				return Result{Action: "skipped", Detail: "need root to write " + path + " — re-run: sudo specula integrate --protocols apt", Path: path}
+			}
+			return Result{Action: "error", Err: err.Error(), Path: path}
+		}
+	}
+
+	if ca := strings.TrimSpace(caFile); ca != "" && strings.HasPrefix(strings.ToLower(base), "https://") {
+		caDetail = installAptCATrust(ca, dryRun, skipRoot)
+		if strings.Contains(caDetail, "failed") {
+			return Result{Action: "error", Err: caDetail, Path: path}
+		}
+	}
+
+	action := "added"
+	detail := "wrote apt source suite=" + suite + " archive=" + archive + " (apt-get update to refresh)"
+	if listAlready {
+		action = "already"
+		detail = "specula.list already points at Specula (" + suite + ", archive=" + archive + ")"
+	}
+	if caDetail != "" {
+		detail = detail + "; " + caDetail
+	}
+	return Result{Action: action, Detail: detail, Path: path}
+}
+
+// installAptCATrust makes apt trust Specula's HTTPS dial cert.
+//
+// ``deb [trusted=yes]`` only skips Release GPG checks — apt still verifies TLS.
+// Without the Specula CA in the system trust store, apt-get update fails with
+// "certificate issuer is unknown" and kubeadm-prep cannot install packages when
+// the host's default mirrors are unreachable (e.g. Aliyun cloud mirror off-VPC).
+func installAptCATrust(caFile string, dryRun, skipRoot bool) string {
+	caFile = strings.TrimSpace(caFile)
+	if caFile == "" {
+		return ""
+	}
+	dest := "/usr/local/share/ca-certificates/specula.crt"
+	if dryRun {
+		return "would install apt CA → " + dest
+	}
+	if skipRoot {
+		return "apt CA install skipped (need root for " + dest + ")"
+	}
+	caBytes, err := os.ReadFile(caFile)
+	if err != nil {
+		return "apt CA install failed: " + err.Error()
+	}
+	if err := os.MkdirAll("/usr/local/share/ca-certificates", 0o755); err != nil {
+		return "apt CA install failed: " + err.Error()
+	}
+	if err := os.WriteFile(dest, caBytes, 0o644); err != nil {
+		return "apt CA install failed: " + err.Error()
+	}
+	out, err := exec.Command("update-ca-certificates").CombinedOutput()
+	if err != nil {
+		return fmt.Sprintf("apt CA install failed (update-ca-certificates): %v: %s", err, bytesTrim(out))
+	}
+	return "apt CA ← " + dest
 }
 
 // detectAptSuite returns VERSION_CODENAME from /etc/os-release, or "jammy" as fallback.

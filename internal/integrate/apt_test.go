@@ -11,7 +11,7 @@ func TestDetectAptSuiteFallback(t *testing.T) {
 }
 
 func TestIntegrateAptDryRun(t *testing.T) {
-	r := integrateApt("http://127.0.0.1:7732", true, false, nil)
+	r := integrateApt("http://127.0.0.1:7732", "", true, false, nil)
 	if r.Action != "added" && r.Action != "already" {
 		t.Fatalf("%+v", r)
 	}
@@ -20,6 +20,19 @@ func TestIntegrateAptDryRun(t *testing.T) {
 	}
 	if r.Action == "added" && !contains(r.Detail, "archive=ubuntu") {
 		t.Fatalf("expected archive=ubuntu in detail: %s", r.Detail)
+	}
+}
+
+func TestIntegrateAptDryRunHTTPSMentionsCA(t *testing.T) {
+	// Regression: https Specula without installing --ca-file into system trust
+	// makes apt-get update fail ("certificate issuer is unknown") even with
+	// deb [trusted=yes] — that flag only skips Release GPG, not TLS.
+	r := integrateApt("https://192.0.2.10:7732", "/etc/specula/ca.crt", true, false, nil)
+	if r.Action != "added" && r.Action != "already" {
+		t.Fatalf("%+v", r)
+	}
+	if !contains(r.Detail, "apt CA") {
+		t.Fatalf("expected apt CA mention in dry-run detail: %s", r.Detail)
 	}
 }
 
