@@ -106,11 +106,22 @@ func TestLoad_ExampleFile(t *testing.T) {
 
 	// OCI spot-check.
 	oci := cfg.Protocols["oci"]
-	assert.Len(t, oci.Upstreams, 3)
+	assert.Len(t, oci.Upstreams, 4) // daocloud → 1ms → aliyun → docker-hub
 	require.NotNil(t, oci.MutableTTLSeconds)
 	assert.Equal(t, int64(300), *oci.MutableTTLSeconds)
 	assert.Contains(t, oci.Verification.Tiers, "tofu")
 	assert.Contains(t, oci.Verification.Tiers, "checksum")
+	require.NotNil(t, oci.OCI)
+	require.NotEmpty(t, oci.OCI.RemoteRegistries)
+	var ghcr *config.OCIRemoteRegistry
+	for i := range oci.OCI.RemoteRegistries {
+		if oci.OCI.RemoteRegistries[i].Host == "ghcr.io" {
+			ghcr = &oci.OCI.RemoteRegistries[i]
+			break
+		}
+	}
+	require.NotNil(t, ghcr, "example must allowlist ghcr.io")
+	assert.GreaterOrEqual(t, len(ghcr.Upstreams), 2, "CN remotes need multi-mirror chain")
 
 	// Go protocol must reach "signed" tier.
 	goProto := cfg.Protocols["go"]

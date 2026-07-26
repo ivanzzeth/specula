@@ -353,8 +353,15 @@ type OCIRemoteRegistry struct {
 	// (e.g. "ghcr.io", "codeberg.org"). Compared case-insensitively.
 	Host string `koanf:"host"`
 
-	// BaseURL overrides the upstream root (default: https://<host>).
+	// BaseURL is a single-mirror shorthand (legacy). Equivalent to one upstream
+	// ahead of the official https://<host> origin. Prefer Upstreams when you
+	// want a multi-mirror chain (e.g. DaoCloud → 1ms → origin).
 	BaseURL string `koanf:"base_url"`
+
+	// Upstreams is an ordered CN/other mirror chain for this host. Specula
+	// always appends https://<host> as the final official origin after these
+	// (and after BaseURL if set). Empty + empty BaseURL → origin only.
+	Upstreams []UpstreamConfig `koanf:"upstreams"`
 }
 
 // GitConfig holds the git-clone acceleration settings for the "git" protocol

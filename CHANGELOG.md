@@ -5,6 +5,16 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+### Added
+
+- **OCI `remote_registries[].upstreams`**: multi-mirror chain per host (e.g.
+  DaoCloud → 1ms), with `https://<host>` always appended as official origin.
+  Legacy single `base_url` still works. Fixes the class of CN allowlist 403s
+  that a one-mirror remote could not fall through.
+- **CN example upstream expansion**: Hub adds `docker.1ms.run`; remotes use
+  daocloud→1ms; PyPI +USTC/Tencent; apt +USTC/Huawei; Cargo prefers rsproxy;
+  conda +USTC cloud.
+
 ## [0.11.0] — HA coalesce: PG advisory lock + tarball stampede — (tag pending)
 
 ### Added

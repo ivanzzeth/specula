@@ -55,13 +55,17 @@ data:
             base_url: https://docker.m.daocloud.io
             priority: 1
             official: false
+          - name: 1ms
+            base_url: https://docker.1ms.run
+            priority: 2
+            official: false
           - name: aliyun
             base_url: https://registry.aliyuncs.com
-            priority: 2
+            priority: 3
             official: false
           - name: docker-hub
             base_url: https://registry-1.docker.io
-            priority: 3
+            priority: 4
             official: true
         verification:
           tiers: [tofu, checksum]
@@ -69,17 +73,53 @@ data:
         oci:
           remote_registries:
             - host: quay.io
-              base_url: https://quay.m.daocloud.io
+              upstreams:
+                - name: daocloud
+                  base_url: https://quay.m.daocloud.io
+                  priority: 1
+                - name: 1ms
+                  base_url: https://quay.1ms.run
+                  priority: 2
             - host: ghcr.io
-              base_url: https://ghcr.m.daocloud.io
+              upstreams:
+                - name: daocloud
+                  base_url: https://ghcr.m.daocloud.io
+                  priority: 1
+                - name: 1ms
+                  base_url: https://ghcr.1ms.run
+                  priority: 2
             - host: registry.k8s.io
-              base_url: https://k8s.m.daocloud.io
+              upstreams:
+                - name: daocloud
+                  base_url: https://k8s.m.daocloud.io
+                  priority: 1
+                - name: 1ms
+                  base_url: https://k8s.1ms.run
+                  priority: 2
             - host: gcr.io
-              base_url: https://gcr.m.daocloud.io
+              upstreams:
+                - name: daocloud
+                  base_url: https://gcr.m.daocloud.io
+                  priority: 1
+                - name: 1ms
+                  base_url: https://gcr.1ms.run
+                  priority: 2
             - host: k8s.gcr.io
-              base_url: https://k8s-gcr.m.daocloud.io
+              upstreams:
+                - name: daocloud
+                  base_url: https://k8s-gcr.m.daocloud.io
+                  priority: 1
+                - name: 1ms
+                  base_url: https://k8s.1ms.run
+                  priority: 2
             - host: mcr.microsoft.com
-              base_url: https://mcr.m.daocloud.io
+              upstreams:
+                - name: daocloud
+                  base_url: https://mcr.m.daocloud.io
+                  priority: 1
+                - name: 1ms
+                  base_url: https://mcr.1ms.run
+                  priority: 2
             - host: codeberg.org
       go:
         mutable_ttl_seconds: 300

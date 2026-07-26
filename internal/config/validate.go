@@ -335,7 +335,7 @@ func Validate(cfg *Config) error {
 			}
 		}
 
-		// oci.remote_registries: host required; base_url if set must be http(s).
+		// oci.remote_registries: host required; base_url / upstreams[].base_url if set must be http(s).
 		if proto.OCI != nil {
 			for i, rr := range proto.OCI.RemoteRegistries {
 				if strings.TrimSpace(rr.Host) == "" {
@@ -345,6 +345,18 @@ func Validate(cfg *Config) error {
 					if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 						add("protocols.%s.oci.remote_registries[%d].base_url: must be http(s) URL, got %q",
 							name, i, rr.BaseURL)
+					}
+				}
+				for j, up := range rr.Upstreams {
+					u := strings.TrimSpace(up.BaseURL)
+					if u == "" {
+						add("protocols.%s.oci.remote_registries[%d].upstreams[%d].base_url: required",
+							name, i, j)
+						continue
+					}
+					if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+						add("protocols.%s.oci.remote_registries[%d].upstreams[%d].base_url: must be http(s) URL, got %q",
+							name, i, j, up.BaseURL)
 					}
 				}
 			}

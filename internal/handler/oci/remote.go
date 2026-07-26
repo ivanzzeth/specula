@@ -1,14 +1,19 @@
 package oci
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
-// RemoteRegistryMap maps a hostname (lowercase) to the upstream used for
-// path-style multi-registry pulls (/v2/<host>/<repo>/…).
-type RemoteRegistryMap map[string]upstream.Upstream
+// RemoteRegistryMap maps a hostname (lowercase) to the ordered upstream chain
+// used for path-style multi-registry pulls (/v2/<host>/<repo>/…).
+//
+// When CN mirrors are configured, the chain is mirror(s) → official origin so
+// DaoCloud allowlist 403s (and similar) fall through — same precedence as Hub's
+// daocloud→1ms→docker-hub chain.
+type RemoteRegistryMap map[string][]upstream.Upstream
 
 // remoteRegistry is the unexported alias used inside the handler.
 type remoteRegistry = RemoteRegistryMap
@@ -20,14 +25,33 @@ func WithRemoteRegistries(regs remoteRegistry) Option {
 	return func(h *Handler) { h.remoteRegs = regs }
 }
 
-// RemoteRegistrySpec is a host + optional base URL used when wiring the handler
-// from config (avoids importing internal/config into the handler package).
+// RemoteUpstreamSpec is one mirror in a remote-registry chain (config→handler
+// wiring without importing internal/config).
+type RemoteUpstreamSpec struct {
+	Name     string
+	BaseURL  string
+	Priority int
+}
+
+// RemoteRegistrySpec is a host + optional mirror chain used when wiring the
+// handler from config.
 type RemoteRegistrySpec struct {
-	Host    string
-	BaseURL string
+	Host      string
+	BaseURL   string // legacy single-mirror shorthand
+	Upstreams []RemoteUpstreamSpec
 }
 
 // RemoteRegistriesFromSpecs builds the allowlist map from config-like specs.
+//
+// Chain construction:
+//  1. BaseURL (if set and not already origin) as an early mirror
+//  2. Upstreams sorted by Priority ascending (stable; unset Priority → after
+//     named priorities, in declaration order among themselves)
+//  3. Always append https://<host> as official origin (unless the only source
+//     is already origin)
+//
+// Duplicate BaseURLs are dropped (first wins). Empty BaseURL + empty Upstreams
+// → origin-only chain.
 func RemoteRegistriesFromSpecs(specs []RemoteRegistrySpec) RemoteRegistryMap {
 	out := make(RemoteRegistryMap, len(specs))
 	for _, s := range specs {
@@ -35,16 +59,99 @@ func RemoteRegistriesFromSpecs(specs []RemoteRegistrySpec) RemoteRegistryMap {
 		if host == "" {
 			continue
 		}
-		base := strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
-		if base == "" {
-			base = "https://" + host
+		origin := "https://" + host
+		type cand struct {
+			name string
+			url  string
+			pri  int
+			ord  int // declaration order for stable sort
 		}
-		out[host] = upstream.Upstream{
-			Name:     "remote:" + host,
-			BaseURL:  base,
-			Priority: 1,
-			Official: true,
+		cands := make([]cand, 0, 1+len(s.Upstreams))
+		ord := 0
+		if base := strings.TrimRight(strings.TrimSpace(s.BaseURL), "/"); base != "" && base != origin {
+			cands = append(cands, cand{
+				name: "mirror",
+				url:  base,
+				pri:  0, // before explicit upstreams with priority≥1
+				ord:  ord,
+			})
+			ord++
 		}
+		for _, u := range s.Upstreams {
+			url := strings.TrimRight(strings.TrimSpace(u.BaseURL), "/")
+			if url == "" || url == origin {
+				continue
+			}
+			name := strings.TrimSpace(u.Name)
+			if name == "" {
+				name = "mirror"
+			}
+			pri := u.Priority
+			if pri == 0 {
+				// Unset priority: after BaseURL shorthand (0) and after any
+				// explicitly prioritised entries; keep declaration order.
+				pri = 1000 + ord
+			}
+			cands = append(cands, cand{name: name, url: url, pri: pri, ord: ord})
+			ord++
+		}
+		sort.SliceStable(cands, func(i, j int) bool {
+			if cands[i].pri != cands[j].pri {
+				return cands[i].pri < cands[j].pri
+			}
+			return cands[i].ord < cands[j].ord
+		})
+
+		seen := make(map[string]struct{}, len(cands)+1)
+		chain := make([]upstream.Upstream, 0, len(cands)+1)
+		pri := 1
+		for _, c := range cands {
+			if _, dup := seen[c.url]; dup {
+				continue
+			}
+			seen[c.url] = struct{}{}
+			chain = append(chain, upstream.Upstream{
+				Name:     "remote:" + host + ":" + c.name,
+				BaseURL:  c.url,
+				Priority: pri,
+				Official: false,
+			})
+			pri++
+		}
+		if _, hasOrigin := seen[origin]; !hasOrigin {
+			chain = append(chain, upstream.Upstream{
+				Name:     "remote:" + host,
+				BaseURL:  origin,
+				Priority: pri,
+				Official: true,
+			})
+		} else if len(chain) == 0 {
+			// BaseURL/Upstreams pointed only at origin — still need a chain.
+			chain = []upstream.Upstream{{
+				Name:     "remote:" + host,
+				BaseURL:  origin,
+				Priority: 1,
+				Official: true,
+			}}
+		} else {
+			// Origin already listed as a "mirror"; mark the last matching entry official.
+			for i := range chain {
+				if chain[i].BaseURL == origin {
+					chain[i].Official = true
+					chain[i].Name = "remote:" + host
+				}
+			}
+		}
+		// If somehow empty (shouldn't happen), origin-only.
+		if len(chain) == 0 {
+			chain = []upstream.Upstream{{
+				Name:     "remote:" + host,
+				BaseURL:  origin,
+				Priority: 1,
+				Official: true,
+			}}
+		}
+		out[host] = chain
 	}
 	return out
 }
@@ -62,8 +169,8 @@ func parseRemoteName(imageName string, regs remoteRegistry) (host, repo string, 
 		return "", "", false
 	}
 	first := strings.ToLower(name[:i])
-	up, allowed := regs[first]
-	if !allowed || up.BaseURL == "" {
+	chain, allowed := regs[first]
+	if !allowed || len(chain) == 0 || chain[0].BaseURL == "" {
 		return "", "", false
 	}
 	return first, name[i+1:], true
@@ -86,12 +193,12 @@ func looksLikeRegistryHost(imageName string) bool {
 // upstream Fetch paths. Cache keys keep the full imageName; only the Fetch
 // ArtifactRef.Name is stripped.
 //
-//   - allowlisted host prefix → single remote upstream + stripped repo
+//   - allowlisted host prefix → remote chain (mirrors→origin) + stripped repo
 //   - host-looking but not allowlisted → ok=false (caller should 404)
 //   - otherwise → Hub chain + full name
 func (h *Handler) upstreamForName(imageName string) (ups []upstream.Upstream, fetchName string, ok bool) {
 	if host, repo, hit := parseRemoteName(imageName, h.remoteRegs); hit {
-		return []upstream.Upstream{h.remoteRegs[host]}, repo, true
+		return h.remoteRegs[host], repo, true
 	}
 	if looksLikeRegistryHost(imageName) {
 		return nil, "", false

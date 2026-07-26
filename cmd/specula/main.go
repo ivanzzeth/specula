@@ -724,7 +724,15 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 		if pc.OCI != nil && len(pc.OCI.RemoteRegistries) > 0 {
 			specs := make([]oci.RemoteRegistrySpec, 0, len(pc.OCI.RemoteRegistries))
 			for _, rr := range pc.OCI.RemoteRegistries {
-				specs = append(specs, oci.RemoteRegistrySpec{Host: rr.Host, BaseURL: rr.BaseURL})
+				ups := make([]oci.RemoteUpstreamSpec, 0, len(rr.Upstreams))
+				for _, u := range rr.Upstreams {
+					ups = append(ups, oci.RemoteUpstreamSpec{
+						Name: u.Name, BaseURL: u.BaseURL, Priority: u.Priority,
+					})
+				}
+				specs = append(specs, oci.RemoteRegistrySpec{
+					Host: rr.Host, BaseURL: rr.BaseURL, Upstreams: ups,
+				})
 			}
 			opts = append(opts, oci.WithRemoteRegistries(oci.RemoteRegistriesFromSpecs(specs)))
 		}

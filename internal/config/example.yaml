@@ -34,6 +34,12 @@ server:
   # Control plane: embedded WebUI + Admin API (email auth, first user = admin).
   control_plane_addr: "0.0.0.0:7733"
 
+  # Optional HTTPS for BOTH planes (ListenAndServeTLS). Cluster installs MUST set
+  # this — nodes dial https://…; plain http:// + skip_verify is a known footgun.
+  # tls:
+  #   cert_file: /etc/specula/tls/server.crt
+  #   key_file: /etc/specula/tls/server.key
+
   # Multi-replica HA mode: requires postgres meta, a stampede lock
   # (coalesce.lock_driver=redis OR postgres), and shared CAS (blob.driver=s3 OR
   # blob.driver=local with local.shared=true on a PVC/NFS). Git stays
@@ -164,13 +170,19 @@ protocols:
         base_url: https://docker.m.daocloud.io
         priority: 1
         official: false
+      - name: 1ms
+        # 毫秒镜像 — Chinese-cloud backed (not Cloudflare R2); covers DaoCloud
+        # allowlist gaps for Hub library images.
+        base_url: https://docker.1ms.run
+        priority: 2
+        official: false
       - name: aliyun
         base_url: https://registry.aliyuncs.com
-        priority: 2
+        priority: 3
         official: false
       - name: docker-hub
         base_url: https://registry-1.docker.io
-        priority: 3
+        priority: 4
         official: true
 
     verification:
@@ -189,23 +201,66 @@ protocols:
 
     # Multi-registry pull-through (path-style + containerd override_path).
     # Unqualified names (library/nginx) still use upstreams above (Hub chain).
-    # Prefixed names (codeberg.org/org/repo) strip the host and fetch from that
+    # Prefixed names (ghcr.io/org/repo) strip the host and fetch from that
     # registry — only hosts listed here are allowed (SSRF allowlist).
+    # Nested under `oci:` because ProtocolConfig.OCI holds OCIConfig
+    # (YAML path: protocols.oci.oci.remote_registries).
+    # Prefer `upstreams:` (multi-mirror). Legacy single `base_url:` still works.
+    # Specula ALWAYS appends https://<host> as the final official origin
+    # (mirror allowlist 403 → next mirror → real registry).
     oci:
       remote_registries:
-        # CN-reachable mirrors (DaoCloud). Outside CN, omit base_url to use https://<host>.
+        # CN default chain: DaoCloud → 1ms → origin. Outside CN, omit upstreams
+        # (and base_url) to use https://<host> only.
         - host: ghcr.io
-          base_url: https://ghcr.m.daocloud.io
+          upstreams:
+            - name: daocloud
+              base_url: https://ghcr.m.daocloud.io
+              priority: 1
+            - name: 1ms
+              base_url: https://ghcr.1ms.run
+              priority: 2
         - host: quay.io
-          base_url: https://quay.m.daocloud.io
+          upstreams:
+            - name: daocloud
+              base_url: https://quay.m.daocloud.io
+              priority: 1
+            - name: 1ms
+              base_url: https://quay.1ms.run
+              priority: 2
         - host: registry.k8s.io
-          base_url: https://k8s.m.daocloud.io
+          upstreams:
+            - name: daocloud
+              base_url: https://k8s.m.daocloud.io
+              priority: 1
+            - name: 1ms
+              base_url: https://k8s.1ms.run
+              priority: 2
         - host: gcr.io
-          base_url: https://gcr.m.daocloud.io
+          upstreams:
+            - name: daocloud
+              base_url: https://gcr.m.daocloud.io
+              priority: 1
+            - name: 1ms
+              base_url: https://gcr.1ms.run
+              priority: 2
         - host: k8s.gcr.io
-          base_url: https://k8s-gcr.m.daocloud.io
+          upstreams:
+            - name: daocloud
+              base_url: https://k8s-gcr.m.daocloud.io
+              priority: 1
+            - name: 1ms
+              # 1ms folds legacy k8s.gcr.io under the same k8s endpoint.
+              base_url: https://k8s.1ms.run
+              priority: 2
         - host: mcr.microsoft.com
-          base_url: https://mcr.m.daocloud.io
+          upstreams:
+            - name: daocloud
+              base_url: https://mcr.m.daocloud.io
+              priority: 1
+            - name: 1ms
+              base_url: https://mcr.1ms.run
+              priority: 2
         - host: codeberg.org
         # - host: mirror.example
         #   base_url: https://mirror.example
@@ -223,13 +278,21 @@ protocols:
         base_url: https://pypi.tuna.tsinghua.edu.cn
         priority: 1
         official: false
+      - name: ustc
+        base_url: https://mirrors.ustc.edu.cn/pypi/web
+        priority: 2
+        official: false
       - name: aliyun
         base_url: https://mirrors.aliyun.com/pypi
-        priority: 2
+        priority: 3
+        official: false
+      - name: tencent
+        base_url: https://mirrors.cloud.tencent.com/pypi
+        priority: 4
         official: false
       - name: pypi-org
         base_url: https://pypi.org
-        priority: 3
+        priority: 5
         official: true
 
     verification:
@@ -347,13 +410,21 @@ protocols:
         base_url: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
         priority: 1
         official: false
+      - name: ustc
+        base_url: https://mirrors.ustc.edu.cn/ubuntu
+        priority: 2
+        official: false
+      - name: huawei
+        base_url: https://mirrors.huaweicloud.com/repository/ubuntu
+        priority: 3
+        official: false
       - name: aliyun
         base_url: https://mirrors.aliyun.com/ubuntu
-        priority: 2
+        priority: 4
         official: false
       - name: ubuntu-archive
         base_url: https://archive.ubuntu.com/ubuntu
-        priority: 3
+        priority: 5
         official: true
 
     # Multi-archive allowlist: /apt/<name>/dists|pool/… routes to that archive
@@ -399,6 +470,7 @@ protocols:
           base_url: https://charts.bitnami.com/bitnami
         - name: prometheus-community
           base_url: https://prometheus-community.github.io/helm-charts
+        # chorei cluster add-ons (names MUST match AddonSpec.helm_repo_name)
         - name: longhorn
           base_url: https://charts.longhorn.io
         - name: jetstack
@@ -496,29 +568,29 @@ protocols:
     # .crate files are immutable (checksum; pin when upstream advertises digest).
     mutable_ttl_seconds: 300
 
-    # Sparse index hosts (index.crates.io layout). Prefer official first;
-    # rsproxy is a CN-friendly fallback (pair with matching dl_upstreams below).
+    # Sparse index hosts (index.crates.io layout). CN example prefers rsproxy
+    # first; outside CN, swap so index.crates.io is priority 1 / official.
     upstreams:
-      - name: index-crates-io
-        base_url: https://index.crates.io
-        priority: 1
-        official: true
       - name: rsproxy-index
         base_url: https://rsproxy.cn/index
-        priority: 2
+        priority: 1
         official: false
+      - name: index-crates-io
+        base_url: https://index.crates.io
+        priority: 2
+        official: true
 
     cargo:
       # .crate download mirrors (static.crates.io layout: /crates/<name>/<name>-<ver>.crate).
       dl_upstreams:
-        - name: static-crates-io
-          base_url: https://static.crates.io
-          priority: 1
-          official: true
         - name: rsproxy-dl
           base_url: https://rsproxy.cn
-          priority: 2
+          priority: 1
           official: false
+        - name: static-crates-io
+          base_url: https://static.crates.io
+          priority: 2
+          official: true
       # Path-style multi-registry allowlist (/cargo/index/<name>/…). Unknown → 404.
       # Index fetches use each registry's base_url; .crate downloads still use dl_upstreams.
       registries:
@@ -550,9 +622,13 @@ protocols:
         base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
         priority: 1
         official: false
+      - name: ustc-cloud
+        base_url: https://mirrors.ustc.edu.cn/anaconda/cloud
+        priority: 2
+        official: false
       - name: anaconda-cloud
         base_url: https://conda.anaconda.org
-        priority: 2
+        priority: 3
         official: true
 
     # Per-channel roots: /conda/<name>/… strips <name> and fetches against BaseURL.

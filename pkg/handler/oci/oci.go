@@ -33,6 +33,7 @@ func WithRemoteRegistries(regs intoci.RemoteRegistryMap) Option {
 }
 
 type RemoteRegistrySpec = intoci.RemoteRegistrySpec
+type RemoteUpstreamSpec = intoci.RemoteUpstreamSpec
 
 func RemoteRegistriesFromSpecs(specs []RemoteRegistrySpec) intoci.RemoteRegistryMap {
 	return intoci.RemoteRegistriesFromSpecs(specs)
