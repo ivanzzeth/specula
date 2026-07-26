@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
+	"github.com/ivanzzeth/specula/internal/metrics"
 )
 
 // ErrRestartFromBeginning is returned once from a resumingReader when a Range
@@ -26,6 +27,10 @@ const (
 	// after the connection is up. It deliberately does NOT cover body transfer.
 	defaultResponseHeaderTimeout = 30 * time.Second
 
+	// fastResponseHeaderTimeout is the non-final-mirror header wait. CN CDNs
+	// that never answer should fail over in seconds, not hang for 30s.
+	fastResponseHeaderTimeout = 8 * time.Second
+
 	// defaultIdleBodyTimeout is how long a body Read may block with no bytes
 	// before we close the connection and attempt a Range resume.
 	defaultIdleBodyTimeout = 60 * time.Second
@@ -34,27 +39,42 @@ const (
 	defaultMaxResumeAttempts = 16
 
 	defaultDialTimeout         = 30 * time.Second
+	fastDialTimeout            = 5 * time.Second
 	defaultTLSHandshakeTimeout = 30 * time.Second
+	fastTLSHandshakeTimeout    = 5 * time.Second
 )
 
-// newUpstreamHTTPClient builds the shared HTTP client for upstream fetches.
-// Client.Timeout is intentionally unset: an absolute deadline that includes the
-// response body is what killed multi-minute OCI layer pulls (Client.Timeout
-// while reading body → quarantine → 502). Safety nets live on the Transport
-// (dial / TLS / response headers) and on the idle body reader instead.
+// newUpstreamHTTPClient builds the patient HTTP client for last-hop / sole
+// upstream fetches. Client.Timeout is intentionally unset: an absolute deadline
+// that includes the response body is what killed multi-minute OCI layer pulls
+// (Client.Timeout while reading body → quarantine → 502). Safety nets live on
+// the Transport (dial / TLS / response headers) and on the idle body reader.
 func newUpstreamHTTPClient() *http.Client {
+	return newUpstreamHTTPClientWith(defaultDialTimeout, defaultTLSHandshakeTimeout, defaultResponseHeaderTimeout)
+}
+
+// newUpstreamHTTPClientFast builds the fail-fast client for non-final mirrors:
+// short dial/TLS/header waits so a dead CDN (DaoCloud→R2) yields to the next
+// mirror in seconds rather than ~30s × attempts.
+func newUpstreamHTTPClientFast() *http.Client {
+	return newUpstreamHTTPClientWith(fastDialTimeout, fastTLSHandshakeTimeout, fastResponseHeaderTimeout)
+}
+
+func newUpstreamHTTPClientWith(dial, tlsHS, headerTimeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
-				Timeout:   defaultDialTimeout,
+				Timeout:   dial,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
 			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
+			MaxIdleConns:          200,
+			MaxIdleConnsPerHost:   32,
+			MaxConnsPerHost:       64,
 			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   defaultTLSHandshakeTimeout,
-			ResponseHeaderTimeout: defaultResponseHeaderTimeout,
+			TLSHandshakeTimeout:   tlsHS,
+			ResponseHeaderTimeout: headerTimeout,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 	}
@@ -177,13 +197,15 @@ func (r *resumingReader) resume() error {
 	from := r.offset
 	candidates := r.resumeCandidates()
 	var lastErr error
-	for _, up := range candidates {
+	for i, up := range candidates {
 		if r.client.blocker.isBlocked(up.Name) {
 			continue
 		}
-		body, meta, err := r.fetchFrom(up, from)
+		remainingAfter := len(candidates) - 1 - i
+		body, meta, err := r.fetchFrom(up, from, remainingAfter)
 		if err != nil {
 			lastErr = err
+			metrics.RecordUpstreamFailover(r.ref.Protocol, up.Name, failoverReason(err))
 			continue
 		}
 		switch {
@@ -228,7 +250,7 @@ func (r *resumingReader) resumeCandidates() []Upstream {
 	return out
 }
 
-func (r *resumingReader) fetchFrom(up Upstream, from int64) (io.ReadCloser, artifact.UpstreamMeta, error) {
+func (r *resumingReader) fetchFrom(up Upstream, from int64, remainingAfter int) (io.ReadCloser, artifact.UpstreamMeta, error) {
 	ropts := r.ropts
 	if from > 0 {
 		ropts.rangeStart = from
@@ -237,7 +259,9 @@ func (r *resumingReader) fetchFrom(up Upstream, from int64) (io.ReadCloser, arti
 		ropts.hasRange = false
 		ropts.rangeStart = 0
 	}
-	body, meta, _, _, err := r.client.tryFetch(r.ctx, r.ref, up, nil, ropts, r.client.maxAttempts)
+	// Same budget as Fetch: soft retry on non-final, full/compressed on last hop.
+	budget := r.client.attemptBudget(nil, remainingAfter, up, remainingAfter == 0 && len(r.chain) > 1)
+	body, meta, _, _, err := r.client.tryFetch(r.ctx, r.ref, up, nil, ropts, budget, remainingAfter)
 	if err != nil {
 		return nil, artifact.UpstreamMeta{}, fmt.Errorf("upstream %s: resume at offset %d: %w", up.Name, from, err)
 	}

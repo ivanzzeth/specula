@@ -43,8 +43,12 @@ type tokenEntry struct {
 
 // fallbackClient is the production implementation of Client.
 type fallbackClient struct {
-	http    *http.Client
-	blocker *blockTracker
+	// http is the patient client (full dial/TLS/header budgets) used for the
+	// last hop or when httpFast is unset (tests that inject a custom Transport).
+	http *http.Client
+	// httpFast is the short-dial client for non-final mirrors. Nil → use http.
+	httpFast *http.Client
+	blocker  *blockTracker
 	// rt, when non-nil, is the per-protocol Runtime that records mirror
 	// measurements and supplies the operator's runtime overrides. It is
 	// optional: a client built with NewClient has no Runtime and behaves
@@ -70,6 +74,7 @@ type fallbackClient struct {
 func newFallbackClient() *fallbackClient {
 	return &fallbackClient{
 		http:              newUpstreamHTTPClient(),
+		httpFast:          newUpstreamHTTPClientFast(),
 		blocker:           newBlockTracker(),
 		maxAttempts:       defaultMaxAttempts,
 		backoffBase:       defaultBackoffBase,
@@ -77,6 +82,14 @@ func newFallbackClient() *fallbackClient {
 		maxResumeAttempts: defaultMaxResumeAttempts,
 		tokens:            make(map[string]tokenEntry),
 	}
+}
+
+// httpFor selects the patient vs fail-fast HTTP client.
+func (c *fallbackClient) httpFor(remainingAfter int) *http.Client {
+	if remainingAfter > 0 && c.httpFast != nil {
+		return c.httpFast
+	}
+	return c.http
 }
 
 // newFallbackClientWithRuntime returns a Client bound to rt: it shares rt's
@@ -152,27 +165,54 @@ func (c *fallbackClient) Fetch(
 	ropts := buildRequestOpts(opts)
 	sorted := c.chain(upstreams)
 	var (
-		lastErr   error
-		statusErr *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
-		tried     int
+		lastErr            error
+		statusErr          *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
+		tried              int
+		priorTransportFail bool // any earlier transport failure (not StatusError)
+		skipNext           string
 	)
 	for i, up := range sorted {
+		if skipNext != "" && up.Name == skipNext {
+			skipNext = ""
+			continue
+		}
 		if c.blocker.isBlocked(up.Name) {
 			c.syncBlocked(ref.Protocol, up.Name)
 			continue
 		}
 		tried++
 		remainingAfter := len(sorted) - 1 - i
-		body, meta, latency, transient, err := c.tryFetch(
-			ctx, ref, up, nil, ropts, c.attemptBudget(statusErr, remainingAfter),
+		budget := c.attemptBudget(statusErr, remainingAfter, up, priorTransportFail)
+
+		var (
+			body      io.ReadCloser
+			meta      artifact.UpstreamMeta
+			latency   time.Duration
+			transient bool
+			err       error
+			winner    Upstream
 		)
+		winner = up
+		if hedgeEligible(ref, remainingAfter, sorted, i, c.blocker) {
+			body, meta, latency, transient, err, winner = c.tryFetchHedged(
+				ctx, ref, up, sorted[i+1], nil, ropts, budget, remainingAfter,
+			)
+			if err == nil && winner.Name != up.Name {
+				skipNext = winner.Name
+				metrics.RecordUpstreamFailover(ref.Protocol, up.Name, "hedge_lost")
+			}
+		} else {
+			body, meta, latency, transient, err = c.tryFetch(
+				ctx, ref, up, nil, ropts, budget, remainingAfter,
+			)
+		}
 		if err == nil {
-			c.noteSuccess(up.Name, latency)
-			metrics.RecordUpstreamLatency(ref.Protocol, up.Name, latency.Seconds())
-			c.syncBlocked(ref.Protocol, up.Name)
+			c.noteSuccess(winner.Name, latency)
+			metrics.RecordUpstreamLatency(ref.Protocol, winner.Name, latency.Seconds())
+			c.syncBlocked(ref.Protocol, winner.Name)
 			// Pin this upstream and wrap for Range resume / cross-upstream fallthrough.
 			if body != nil {
-				body = c.wrapResuming(ctx, ref, up, sorted, ropts, body)
+				body = c.wrapResuming(ctx, ref, winner, sorted, ropts, body)
 			}
 			return body, meta, nil
 		}
@@ -184,9 +224,17 @@ func (c *fallbackClient) Fetch(
 			return nil, artifact.UpstreamMeta{}, err
 		}
 		c.noteFailure(up.Name, err, transient)
+		if isDialClassError(err) {
+			// Weight dial/TLS death higher toward open — CB already counted once.
+			c.blocker.hub.recordFailure(up.Name)
+		}
 		c.syncBlocked(ref.Protocol, up.Name)
+		metrics.RecordUpstreamFailover(ref.Protocol, up.Name, failoverReason(err))
 		lastErr = err
 		rememberStatusErr(&statusErr, err)
+		if statusErr == nil {
+			priorTransportFail = true
+		}
 	}
 	if tried == 0 {
 		return nil, artifact.UpstreamMeta{}, errors.New("upstream: all upstreams are blocked")
@@ -203,21 +251,34 @@ func (c *fallbackClient) Fetch(
 //     (statusErr != nil — e.g. goproxy.cn said 404), a later upstream is worth
 //     exactly ONE attempt: enough to catch a clean 200, no retries that would
 //     multiply a dead origin's latency (CN: proxy.golang.org × 3 × ~10 s).
-//   - When MORE mirrors remain after this one (remainingAfter > 0), also use
-//     ONE attempt — fail over to the next mirror instead of burning
-//     maxAttempts × dial/TLS timeouts on a dead CDN first. Live CN bug:
-//     DaoCloud→R2 dial timeout × 3 (~90 s) before 1ms ever ran, per OCI blob.
-//
-// The LAST upstream in the chain still gets the full budget (only path left).
-// Auto-block still learns dead mirrors from these single failures.
+//   - When MORE mirrors remain after this one (remainingAfter > 0), allow TWO
+//     attempts so a single 5xx/429 can recover — but dial/TLS/header timeouts
+//     fail-fast (see runFetchAttempt failFastDial) so a dead CDN still yields
+//     in one short dial, not maxAttempts × 30s.
+//   - On the LAST hop, if it is Official and earlier mirrors already
+//     transport-failed (CN: unreachable Hub/pkg.dev), compress to ONE attempt
+//     instead of burning the full budget on a GFW-dead origin.
 //
 // This never suppresses a real 200: an upstream that HAS the artifact and
 // answers on its first attempt still wins outright (served > definitive-not-found).
-func (c *fallbackClient) attemptBudget(statusErr *StatusError, remainingAfter int) int {
+func (c *fallbackClient) attemptBudget(
+	statusErr *StatusError,
+	remainingAfter int,
+	up Upstream,
+	priorTransportFail bool,
+) int {
 	if statusErr != nil {
 		return 1
 	}
 	if remainingAfter > 0 {
+		// Soft retry for 5xx/429 only when the client allows retries at all.
+		// Dial-class still fail-fast via runFetchAttempt(failFastDial).
+		if c.maxAttempts < 2 {
+			return 1
+		}
+		return 2
+	}
+	if up.Official && priorTransportFail {
 		return 1
 	}
 	return c.maxAttempts
@@ -277,9 +338,10 @@ func (c *fallbackClient) Revalidate(
 	ropts := buildRequestOpts(opts)
 	sorted := c.chain(upstreams)
 	var (
-		lastErr   error
-		statusErr *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
-		tried     int
+		lastErr            error
+		statusErr          *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
+		tried              int
+		priorTransportFail bool
 	)
 	for i, up := range sorted {
 		if c.blocker.isBlocked(up.Name) {
@@ -288,8 +350,9 @@ func (c *fallbackClient) Revalidate(
 		}
 		tried++
 		remainingAfter := len(sorted) - 1 - i
+		budget := c.attemptBudget(statusErr, remainingAfter, up, priorTransportFail)
 		body, meta, latency, transient, err := c.tryFetch(
-			ctx, ref, up, &prev, ropts, c.attemptBudget(statusErr, remainingAfter),
+			ctx, ref, up, &prev, ropts, budget, remainingAfter,
 		)
 		if err == nil {
 			c.noteSuccess(up.Name, latency)
@@ -310,9 +373,16 @@ func (c *fallbackClient) Revalidate(
 			return nil, artifact.UpstreamMeta{}, false, err
 		}
 		c.noteFailure(up.Name, err, transient)
+		if isDialClassError(err) {
+			c.blocker.hub.recordFailure(up.Name)
+		}
 		c.syncBlocked(ref.Protocol, up.Name)
+		metrics.RecordUpstreamFailover(ref.Protocol, up.Name, failoverReason(err))
 		lastErr = err
 		rememberStatusErr(&statusErr, err)
+		if statusErr == nil {
+			priorTransportFail = true
+		}
 	}
 	if tried == 0 {
 		return nil, artifact.UpstreamMeta{}, false,
@@ -322,11 +392,12 @@ func (c *fallbackClient) Revalidate(
 }
 
 // tryFetch performs up to maxAttempts GET requests against a single upstream
-// under failsafe-go Retry + CircuitBreaker + attempt Timeout.
+// under failsafe-go Retry + CircuitBreaker.
 //
-// maxAttempts is chosen by the caller (see attemptBudget). prev, when non-nil,
-// adds conditional GET headers. The bearer-token dance runs inside a single
-// attempt (tryOnce) without consuming a retry slot.
+// maxAttempts is chosen by the caller (see attemptBudget). remainingAfter
+// selects the fail-fast HTTP client and dial-class no-retry policy.
+// prev, when non-nil, adds conditional GET headers. The bearer-token dance
+// runs inside a single attempt (tryOnce) without consuming a retry slot.
 //
 // Returns (body, meta, latency, transient, error).
 func (c *fallbackClient) tryFetch(
@@ -336,11 +407,14 @@ func (c *fallbackClient) tryFetch(
 	prev *artifact.UpstreamMeta,
 	opts requestOpts,
 	maxAttempts int,
+	remainingAfter int,
 ) (io.ReadCloser, artifact.UpstreamMeta, time.Duration, bool, error) {
+	hc := c.httpFor(remainingAfter)
+	failFastDial := remainingAfter > 0
 	attempt, transient, err := c.blocker.hub.runFetchAttempt(
-		ctx, up.Name, maxAttempts, c.backoffBase,
+		ctx, up.Name, maxAttempts, c.backoffBase, failFastDial,
 		func(actx context.Context) (fetchAttempt, error) {
-			body, meta, lat, e := c.tryOnce(actx, ref, up, prev, opts)
+			body, meta, lat, e := c.tryOnce(actx, hc, ref, up, prev, opts)
 			if e != nil {
 				return fetchAttempt{}, e
 			}
@@ -358,11 +432,15 @@ func (c *fallbackClient) tryFetch(
 // failsafe Retry/CB HandleIf can classify them without string matching.
 func (c *fallbackClient) tryOnce(
 	ctx context.Context,
+	hc *http.Client,
 	ref artifact.ArtifactRef,
 	up Upstream,
 	prev *artifact.UpstreamMeta,
 	opts requestOpts,
 ) (io.ReadCloser, artifact.UpstreamMeta, time.Duration, error) {
+	if hc == nil {
+		hc = c.http
+	}
 	rawURL := buildURL(up.BaseURL, ref)
 	var (
 		authToken    string
@@ -404,7 +482,7 @@ func (c *fallbackClient) tryOnce(
 		}
 
 		started := time.Now()
-		resp, doErr := c.http.Do(req)
+		resp, doErr := hc.Do(req)
 		latency := time.Since(started)
 		if doErr != nil {
 			// Parent fill/caller ctx done → stop. A per-upstream dial/TLS/

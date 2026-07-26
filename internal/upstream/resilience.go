@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -223,6 +224,7 @@ func (h *breakerHub) runFetchAttempt(
 	upName string,
 	maxAttempts int,
 	backoffBase time.Duration,
+	failFastDial bool,
 	fn func(context.Context) (fetchAttempt, error),
 ) (fetchAttempt, bool, error) {
 	if maxAttempts <= 0 {
@@ -235,6 +237,9 @@ func (h *breakerHub) runFetchAttempt(
 	breaker := h.breaker(upName)
 	retry := retrypolicy.NewBuilder[fetchAttempt]().
 		HandleIf(func(_ fetchAttempt, err error) bool {
+			if failFastDial && isDialClassError(err) {
+				return false
+			}
 			return isTransientExecError(err)
 		}).
 		WithMaxRetries(maxAttempts-1).
@@ -262,6 +267,70 @@ func (h *breakerHub) runFetchAttempt(
 	h.consecutive[upName] = 0
 	h.mu.Unlock()
 	return out, false, nil
+}
+
+// isDialClassError reports dial / TLS / response-header timeouts and similar
+// transport failures that should fail-fast to the next mirror when more
+// upstreams remain. HTTP 5xx/429 are NOT dial-class (worth one soft retry).
+func isDialClassError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, frag := range []string{
+		"i/o timeout",
+		"deadline exceeded",
+		"connection refused",
+		"connection reset",
+		"no such host",
+		"network is unreachable",
+		"tls handshake",
+		"timeout awaiting response headers",
+		"use of closed network connection",
+		"broken pipe",
+	} {
+		if strings.Contains(msg, frag) {
+			return true
+		}
+	}
+	// Bare context deadline from Transport (parent still live) is dial-class.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	return false
+}
+
+// failoverReason maps an upstream error to a bounded Prometheus label.
+func failoverReason(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	if errors.Is(err, circuitbreaker.ErrOpen) {
+		return "circuit_open"
+	}
+	var se *StatusError
+	if errors.As(err, &se) {
+		if se.StatusCode == http.StatusTooManyRequests {
+			return "http_429"
+		}
+		if se.StatusCode >= 500 {
+			return "http_5xx"
+		}
+		return "http_4xx"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "429") || strings.Contains(msg, "rate limited"):
+		return "http_429"
+	case strings.Contains(msg, "http 5") || strings.Contains(msg, "http 50"):
+		return "http_5xx"
+	case strings.Contains(msg, "timeout awaiting response headers"):
+		return "header_timeout"
+	case isDialClassError(err):
+		return "dial_timeout"
+	default:
+		return "transport"
+	}
 }
 
 // isTransientExecError reports whether err should count toward retry / CB.

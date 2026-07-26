@@ -117,6 +117,7 @@ type controllableOCIRegistry struct {
 	img      *minimalOCIImage
 	policy   blobPolicy
 	blobGets atomic.Int64
+	requests atomic.Int64 // all /v2/ hits (manifest+blob+version)
 
 	mu      sync.Mutex
 	dropped bool // whether the one-shot mid-stream drop already happened
@@ -133,11 +134,14 @@ func startControllableOCIRegistry(t *testing.T, img *minimalOCIImage, policy blo
 
 func (r *controllableOCIRegistry) URL() string { return r.srv.URL }
 
+func (r *controllableOCIRegistry) Requests() int64 { return r.requests.Load() }
+
 func (r *controllableOCIRegistry) asUpstream(name string, priority int) upstream.Upstream {
 	return upstream.Upstream{Name: name, BaseURL: r.srv.URL, Priority: priority}
 }
 
 func (r *controllableOCIRegistry) serve(w http.ResponseWriter, req *http.Request) {
+	r.requests.Add(1)
 	p := req.URL.Path
 	switch {
 	case p == "/v2/" || p == "/v2":

@@ -319,6 +319,7 @@ curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
 会更新：
 - `/etc/docker/daemon.json`：`registry-mirrors`（**仅 docker.io**）与 `insecure-registries`
 - `/etc/containerd/certs.d/<registry>/hosts.toml`：非 Hub 仓库带 `override_path`，透明重定向到 Specula 路径式回源
+- `/etc/containerd/config.toml`：把 CRI `config_path` 强制成**单一**目录（containerd 2.2 默认的 `certs.d:/etc/docker/certs.d` 会被 transfer 当成字面路径忽略 — 于是 `crictl`/`kubelet` 绕过 Specula 直连 `*.pkg.dev`，而 `ctr --hosts-dir` 仍正常）。integrate 后需 `systemctl restart containerd`。
 
 无 sudo 时仍会写用户目录下的 daemon.json / `~/.config/specula/certs.d/`，但 **dockerd/containerd 默认不读用户路径** — 真正一键请加 sudo。
 

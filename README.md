@@ -328,6 +328,7 @@ curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
 This updates:
 - `/etc/docker/daemon.json`: `registry-mirrors` (**docker.io only**) and `insecure-registries`
 - `/etc/containerd/certs.d/<registry>/hosts.toml`: non-Hub registries get `override_path` so pulls reach Specula with the host in the path
+- `/etc/containerd/config.toml`: forces CRI `config_path` to a **single** directory (containerd 2.2’s default `certs.d:/etc/docker/certs.d` is ignored by the transfer service — `crictl`/`kubelet` then bypass Specula and dial `*.pkg.dev`; `ctr --hosts-dir` still works). Restart containerd after integrate.
 
 Without sudo, Specula still writes user-dir daemon.json / `~/.config/specula/certs.d/`, but
 **dockerd/containerd ignore those paths** — re-run with sudo for a real one-click.

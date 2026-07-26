@@ -22,7 +22,7 @@ export CGO_ENABLED := 0
         test-trust-oracle test-trust-oracle-mutations test-trust-oracle-signed \
         test-groundtruth test-groundtruth-meta \
         test-mutation \
-        test-realclient test-e2e test-ui test-all
+        test-realclient test-cri test-e2e test-ui test-all
 
 # Container image (Docker Hub: ivanzz/specula)
 IMAGE_NAME ?= specula
@@ -239,12 +239,17 @@ test-realclient:
 	bash scripts/realclient-git.sh
 	bash scripts/realclient-docker.sh
 	bash scripts/realclient-oci-remote.sh
+	bash scripts/realclient-cri-k8s.sh
 	bash scripts/realclient-offline.sh
 	bash scripts/realclient-cargo.sh
 	bash scripts/realclient-conda.sh
 	bash scripts/realclient-hf.sh
 	bash scripts/realclient-multisource.sh
 	bash scripts/realclient-maturity.sh
+
+## test-cri: containerd CRI + k8s/k3s hosts.toml / config_path gate (needs: sudo + containerd + crictl)
+test-cri:
+	bash scripts/realclient-cri-k8s.sh
 
 ## test-e2e: the dimensions needing a real binary + real infra (needs: network + docker + clients)
 test-e2e: test-conformance test-realclient

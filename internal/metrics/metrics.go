@@ -209,6 +209,18 @@ var (
 		[]string{"protocol", "upstream"},
 	)
 
+	// UpstreamFailoverTotal counts times Fetch/Revalidate/resume abandoned one
+	// upstream and moved to the next (or hedged away from it). reason is a
+	// bounded set: dial_timeout | header_timeout | http_5xx | http_429 |
+	// http_4xx | transport | circuit_open | hedge_lost | unknown.
+	UpstreamFailoverTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "specula_upstream_failover_total",
+			Help: "Upstream chain failovers by protocol, abandoned upstream, and reason.",
+		},
+		[]string{"protocol", "upstream", "reason"},
+	)
+
 	// VerificationTotal counts verification outcomes — the metric that makes the
 	// honest tiered trust model (PRD §G2) independently observable.
 	//
@@ -286,6 +298,7 @@ func init() {
 		CacheMissesTotal,
 		UpstreamLatencySeconds,
 		UpstreamBlocked,
+		UpstreamFailoverTotal,
 		VerificationTotal,
 		CacheBytes,
 		CacheObjects,
@@ -347,6 +360,15 @@ func SetUpstreamBlocked(protocol, upstream string, blocked bool) {
 		v = 1.0
 	}
 	UpstreamBlocked.WithLabelValues(protocol, upstream).Set(v)
+}
+
+// RecordUpstreamFailover increments the failover counter when the chain
+// abandons one upstream (or loses a mutable hedge race).
+func RecordUpstreamFailover(protocol, upstream, reason string) {
+	if reason == "" {
+		reason = "unknown"
+	}
+	UpstreamFailoverTotal.WithLabelValues(protocol, upstream, reason).Inc()
 }
 
 // RecordRequest counts one served data-plane request.

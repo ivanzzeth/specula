@@ -71,7 +71,9 @@ func integrateContainerdCerts(home, addr, caFile string, dryRun, skipRoot bool) 
 		}
 		return strings.Contains(string(b1), "override_path") &&
 			strings.Contains(string(b1), endpoint+"/v2/codeberg.org") &&
-			strings.Contains(string(b2), endpoint)
+			strings.Contains(string(b2), endpoint) &&
+			!strings.Contains(string(b1), "server =") &&
+			!strings.Contains(string(b2), "server =")
 	}
 
 	writeTo := func(dir string) Result {
@@ -104,7 +106,8 @@ func integrateContainerdCerts(home, addr, caFile string, dryRun, skipRoot bool) 
 		if r.Action == "added" {
 			r.Detail += "; copy to " + primaryDir + " or re-run: sudo specula integrate --protocols oci"
 		}
-		return r
+		cfgFix := integrateContainerdCRIConfigPath(primaryDir, dryRun, skipRoot)
+		return mergeOCIResults(r, cfgFix)
 	}
 
 	// Prefer the live containerd certs.d (k3s agent path or /etc/containerd).
@@ -116,7 +119,8 @@ func integrateContainerdCerts(home, addr, caFile string, dryRun, skipRoot bool) 
 				if r.Action == "added" || r.Action == "already" {
 					r.Detail += "; WARNING: live containerd uses " + systemDir + " — run: sudo specula integrate --protocols oci"
 				}
-				return r
+				cfgFix := integrateContainerdCRIConfigPath(primaryDir, dryRun, skipRoot)
+				return mergeOCIResults(r, cfgFix)
 			}
 			return Result{Action: "error", Err: err.Error(), Path: systemDir}
 		}
@@ -136,7 +140,8 @@ func integrateContainerdCerts(home, addr, caFile string, dryRun, skipRoot bool) 
 		// Best-effort user copy for visibility.
 		_ = writeTo(userDir)
 	}
-	return last
+	cfgFix := integrateContainerdCRIConfigPath(primaryDir, dryRun, skipRoot)
+	return mergeOCIResults(last, cfgFix)
 }
 
 // mergeOCIResults combines dockerd daemon.json + containerd certs.d outcomes

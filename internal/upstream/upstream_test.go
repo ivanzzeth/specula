@@ -363,8 +363,8 @@ func TestFetch_RetryTransientThenSuccess(t *testing.T) {
 }
 
 func TestFetch_RetryExhaustedFallsToNextUpstream(t *testing.T) {
-	// bad: always 500 — non-final upstream gets ONE attempt then fail-over
-	// (CN: don't burn maxAttempts × dial on DaoCloud before 1ms).
+	// bad: always 500 — non-final upstream gets budget=2 (one soft retry) then
+	// fail-over (CN: don't burn maxAttempts × dial on DaoCloud before 1ms).
 	bad, badHits := countingServer(t, http.StatusInternalServerError, "")
 	defer bad.Close()
 	good := okServer(t, "ok", nil)
@@ -381,8 +381,8 @@ func TestFetch_RetryExhaustedFallsToNextUpstream(t *testing.T) {
 	defer body.Close()
 
 	assert.Equal(t, "good", meta.Upstream)
-	assert.Equal(t, int64(1), badHits.Load(),
-		"non-final upstream must be probed once then fall through")
+	assert.Equal(t, int64(2), badHits.Load(),
+		"non-final upstream must soft-retry once (budget=2) then fall through")
 }
 
 // ── Auto-block tests ──────────────────────────────────────────────────────────

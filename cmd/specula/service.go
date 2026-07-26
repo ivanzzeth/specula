@@ -126,18 +126,24 @@ func serviceInstall(args []string) error {
 		fmt.Fprintf(os.Stderr, "keeping existing config %s\n", *configPath)
 	}
 
-	// OCI remote_registries must be the CN multi-mirror chain (DaoCloud→1ms→
-	// origin). Soft merge leaves a stale single base_url forever and CN nodes
-	// hang on DaoCloud's Cloudflare R2 blob host. Always overwrite the oci
-	// section from the embedded example on install/reinstall.
-	if _, err := config.ApplyExample(*configPath, config.ApplyExampleOptions{
-		Overwrite: true,
-		Sections:  []string{"oci"},
-		Backup:    true,
-	}); err != nil {
-		return fmt.Errorf("apply-example --overwrite --section oci: %w", err)
+	// OCI remote_registries must be the CN multi-mirror chain when the live
+	// file still has a stale single base_url / one-upstream shape. Soft merge
+	// leaves that forever and CN nodes hang on DaoCloud's Cloudflare R2.
+	// Override with SPECULA_FORCE_CN_OCI=1 (always) or =0 (never).
+	live, loadErr := config.Load(*configPath)
+	needOCI := loadErr != nil || config.ShouldOverwriteOCIOnInstall(live)
+	if needOCI {
+		if _, err := config.ApplyExample(*configPath, config.ApplyExampleOptions{
+			Overwrite: true,
+			Sections:  []string{"oci"},
+			Backup:    true,
+		}); err != nil {
+			return fmt.Errorf("apply-example --overwrite --section oci: %w", err)
+		}
+		fmt.Fprintln(os.Stderr, "applied embedded OCI remote_registries (CN multi-mirror)")
+	} else {
+		fmt.Fprintln(os.Stderr, "keeping existing OCI remote_registries (multi-mirror already present)")
 	}
-	fmt.Fprintln(os.Stderr, "applied embedded OCI remote_registries (CN multi-mirror)")
 
 	unitBody, err := renderUnit(*binaryPath, *configPath, *unitUser)
 	if err != nil {

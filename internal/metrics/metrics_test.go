@@ -46,6 +46,7 @@ func TestRegisteredOnImportAlone(t *testing.T) {
 		"specula_cache_misses_total":       CacheMissesTotal,
 		"specula_upstream_latency_seconds": UpstreamLatencySeconds,
 		"specula_upstream_blocked":         UpstreamBlocked,
+		"specula_upstream_failover_total":  UpstreamFailoverTotal,
 		"specula_verification_total":       VerificationTotal,
 	} {
 		err := prometheus.DefaultRegisterer.Register(c)

@@ -78,7 +78,76 @@ func WriteContainerdHosts(opts MirrorOptions) error {
 			return fmt.Errorf("bootstrap: write %s: %w", path, err)
 		}
 	}
+	// Upgrade path: older installs may still have top-level `server =` on
+	// registries we did not rewrite above (or that alreadyOK skipped). Strip
+	// residual public fallbacks so containerd cannot dial Hub/pkg.dev.
+	if _, err := StripPublicServerFallback(certs); err != nil {
+		return err
+	}
 	return nil
+}
+
+// StripPublicServerFallback walks certs.d/**/hosts.toml and removes any
+// top-level `server = "..."` lines (containerd public-registry fallback).
+// Returns how many files were rewritten.
+func StripPublicServerFallback(certsDir string) (int, error) {
+	certs := strings.TrimSpace(certsDir)
+	if certs == "" {
+		return 0, fmt.Errorf("bootstrap: certs-dir is required")
+	}
+	entries, err := os.ReadDir(certs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("bootstrap: readdir %s: %w", certs, err)
+	}
+	rewritten := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		path := filepath.Join(certs, e.Name(), "hosts.toml")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return rewritten, fmt.Errorf("bootstrap: read %s: %w", path, err)
+		}
+		cleaned, changed := stripServerLines(string(raw))
+		if !changed {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(cleaned), 0o644); err != nil {
+			return rewritten, fmt.Errorf("bootstrap: write %s: %w", path, err)
+		}
+		rewritten++
+	}
+	return rewritten, nil
+}
+
+// stripServerLines removes TOML lines that set top-level `server = ...`.
+// Nested keys under [host."…"] are left alone (none use that name today).
+func stripServerLines(body string) (string, bool) {
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines))
+	changed := false
+	for _, line := range lines {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "server") {
+			rest := strings.TrimSpace(strings.TrimPrefix(trim, "server"))
+			if strings.HasPrefix(rest, "=") {
+				changed = true
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	if !changed {
+		return body, false
+	}
+	return strings.Join(out, "\n"), true
 }
 
 func renderHostsTOML(registry, endpoint string, skipVerify bool, caFile string) string {
