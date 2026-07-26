@@ -1063,8 +1063,8 @@ entries:
         - https://github.com/longhorn/charts/releases/download/longhorn-1.9.1/longhorn-1.9.1.tgz
 generated: "2024-01-01T00:00:00.000000000Z"
 `)
-
-	out, err := rewriteIndexURLs(input)
+	rec := &allowHostRecorder{}
+	out, err := rewriteIndexURLs(input, rec)
 	require.NoError(t, err)
 	outStr := string(out)
 
@@ -1082,6 +1082,17 @@ generated: "2024-01-01T00:00:00.000000000Z"
 	assert.Contains(t, outStr, "../../tarball/other.example.com/nginx-2.0.0.tgz")
 	assert.Contains(t, outStr,
 		"../../tarball/github.com/longhorn/charts/releases/download/longhorn-1.9.1/longhorn-1.9.1.tgz")
+
+	// Cross-host chart origins must be registered on the shared tarball allowlist.
+	assert.Contains(t, rec.hosts, "charts.example.com")
+	assert.Contains(t, rec.hosts, "other.example.com")
+	assert.Contains(t, rec.hosts, "github.com")
+}
+
+type allowHostRecorder struct{ hosts []string }
+
+func (r *allowHostRecorder) Allow(host string) {
+	r.hosts = append(r.hosts, host)
 }
 
 // TestRewriteIndexURLs_RelativeURLs_LeftUnchanged verifies that relative
@@ -1095,7 +1106,7 @@ entries:
       urls:
         - nginx-1.0.0.tgz
 `)
-	out, err := rewriteIndexURLs(input)
+	out, err := rewriteIndexURLs(input, nil)
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "nginx-1.0.0.tgz",
 		"relative URLs must not be modified")
@@ -1114,7 +1125,7 @@ entries:
         - https://mirror1.example.com/charts/chart-1.0.0.tgz
         - https://mirror2.example.com/charts/chart-1.0.0.tgz
 `)
-	out, err := rewriteIndexURLs(input)
+	out, err := rewriteIndexURLs(input, nil)
 	require.NoError(t, err)
 	outStr := string(out)
 	assert.NotContains(t, outStr, "https://mirror1.example.com", "all URLs must be rewritten")
@@ -1128,7 +1139,7 @@ entries:
 // degrades gracefully rather than blocking chart discovery).
 func TestRewriteIndexURLs_InvalidYAML_DegradeGracefully(t *testing.T) {
 	input := []byte("not yaml: {{{")
-	out, err := rewriteIndexURLs(input)
+	out, err := rewriteIndexURLs(input, nil)
 	require.NoError(t, err, "invalid YAML must not return an error")
 	assert.Equal(t, input, out, "invalid YAML must be returned unchanged")
 }
@@ -1137,7 +1148,7 @@ func TestRewriteIndexURLs_InvalidYAML_DegradeGracefully(t *testing.T) {
 // document does not cause errors.
 func TestRewriteIndexURLs_EmptyIndex_NoError(t *testing.T) {
 	input := []byte("apiVersion: v1\nentries: {}\n")
-	out, err := rewriteIndexURLs(input)
+	out, err := rewriteIndexURLs(input, nil)
 	require.NoError(t, err)
 	assert.NotEmpty(t, out)
 }
@@ -1156,7 +1167,7 @@ entries:
       urls:
         - https://charts.example.com/chart-1.0.0.tgz
 `)
-	out, err := rewriteIndexURLs(input)
+	out, err := rewriteIndexURLs(input, nil)
 	require.NoError(t, err)
 	outStr := string(out)
 
@@ -1190,7 +1201,7 @@ entries:
 `)
 	// The URL "https://example.com/" has nothing after the last slash (empty
 	// segment). The rewriting logic: idx == len(u)-1 → no rewrite.
-	out, err := rewriteIndexURLs(input)
+	out, err := rewriteIndexURLs(input, nil)
 	require.NoError(t, err)
 	// Either unchanged or degrades gracefully — the important thing is no panic.
 	assert.NotEmpty(t, out)
@@ -1370,7 +1381,7 @@ entries:
 	body := bytes.NewReader(indexData)
 	umeta := artifact.UpstreamMeta{}
 
-	entry, err := h.fetchBodyAndStore(context.Background(), ref, body, umeta, rewriteIndexURLs)
+	entry, err := h.fetchBodyAndStore(context.Background(), ref, body, umeta, func(b []byte) ([]byte, error) { return rewriteIndexURLs(b, nil) })
 	require.NoError(t, err)
 	require.NotNil(t, entry)
 

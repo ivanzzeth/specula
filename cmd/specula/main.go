@@ -436,8 +436,11 @@ func run() error {
 	mountPyPI(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
 	mountNPM(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
 	mountAPT(dataMux, cfg, cm, metaStore, log, upstreams, gpgV, stampedeLocker)
-	mountHelm(dataMux, cfg, cm, metaStore, log, upstreams, helmProvV, stampedeLocker)
-	mountTarball(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	// Shared SSRF allowlist: seeded from tarball+helm config; helm index rewrite
+	// Allow()s cross-host chart origins (e.g. github.com) at serve time.
+	tarballAllow := tarballhandler.NewHostAllowlist(tarballAllowlistHosts(cfg))
+	mountHelm(dataMux, cfg, cm, metaStore, log, upstreams, helmProvV, stampedeLocker, tarballAllow)
+	mountTarball(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker, tarballAllow)
 	mountGit(dataMux, cfg, metaStore, log, gitSignedV)
 	mountCargo(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
 	mountConda(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
@@ -1046,7 +1049,7 @@ func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 // protocol config. The .prov GPG verifier (helm's signed anchor) is passed in
 // when configured; the same instance is registered in the shared chain. Without
 // it, helm tops out at tofu.
-func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, provV *verify.HelmProvVerifier, locker coalesce.Locker) {
+func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, provV *verify.HelmProvVerifier, locker coalesce.Locker, tarballAllow *tarballhandler.HostAllowlist) {
 	pc, ok := cfg.Protocols["helm"]
 	opts := []helmhandler.Option{
 		helmhandler.WithMeta(metaStore),
@@ -1055,6 +1058,9 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 	}
 	if locker != nil {
 		opts = append(opts, helmhandler.WithLocker(locker))
+	}
+	if tarballAllow != nil {
+		opts = append(opts, helmhandler.WithTarballAllowlist(tarballAllow))
 	}
 	if ok {
 		if len(pc.Upstreams) > 0 {
@@ -1078,16 +1084,16 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 }
 
 // mountTarball wires the generic URL-keyed tarball handler at /tarball/ using the
-// "tarball" protocol config. The SSRF allowlist is the union of protocols.tarball
-// upstream hosts AND hosts that other protocols rewrite into /tarball/ (helm
-// chart urls) — otherwise a helm-only config 403s every helm pull.
+// "tarball" protocol config. The SSRF allowlist is shared with helm (seeded from
+// protocols.tarball + helm hosts; grown when helm rewrites absolute chart urls).
 // tarball tops out at TOFU (immutable digest pin) in this batch.
-func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
+func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker, allow *tarballhandler.HostAllowlist) {
 	pc, ok := cfg.Protocols["tarball"]
 	opts := []tarballhandler.Option{
 		tarballhandler.WithMeta(metaStore),
 		tarballhandler.WithPathPrefix(tarballPrefix),
 		tarballhandler.WithLogger(log.With("protocol", tarballhandler.Protocol)),
+		tarballhandler.WithHostAllowlist(allow),
 	}
 	if locker != nil {
 		opts = append(opts, tarballhandler.WithLocker(locker))
@@ -1095,11 +1101,14 @@ func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager,
 	if ok && len(pc.Upstreams) > 0 {
 		opts = append(opts, tarballhandler.WithUpstream(dataPlaneUpstream(cfg, ups, "tarball"), upstreamsFor("tarball", pc.Upstreams)))
 	}
-	hosts := tarballAllowlistHosts(cfg)
-	opts = append(opts, tarballhandler.WithAllowedHosts(hosts))
 	mux.Handle(tarballPrefix+"/", metrics.Middleware("tarball", tarballhandler.NewHandler(cm, opts...)))
+	n := 0
+	if allow != nil {
+		// cheap size for log only — Allows("") is false; count via seed length
+		n = len(tarballAllowlistHosts(cfg))
+	}
 	log.Info("specula: mounted tarball handler",
-		"path", tarballPrefix+"/", "configured", ok, "allowed_hosts", len(hosts))
+		"path", tarballPrefix+"/", "configured", ok, "allowed_hosts_seed", n)
 }
 
 // tarballAllowlistHosts returns the SSRF allowlist for /tarball/. Helm rewrites

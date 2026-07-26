@@ -74,7 +74,7 @@ func contentTypeForFile(file string) string {
 //	 resolved against the repository URL."
 func (h *Handler) serveIndex(w http.ResponseWriter, r *http.Request, repo string) {
 	ref := indexRef(repo)
-	h.serveMutable(w, r, ref, contentTypeForFile(indexFile), rewriteIndexURLs)
+	h.serveMutable(w, r, ref, contentTypeForFile(indexFile), h.rewriteIndex)
 }
 
 // serveMutable is the shared pipeline for the mutable index endpoint:
@@ -103,6 +103,10 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 		if entry.SoftExpired {
 			h.swrRefreshAsync(ref, transform)
 		}
+		// Re-seed tarball SSRF hosts from the (already rewritten) cached index.
+		// Allow() ran at store time, but the in-memory allowlist is process-local —
+		// after restart a warm index hit would otherwise 403 cross-host chart pulls.
+		h.seedTarballAllowFromCachedIndex(ctx, ref, entry)
 		h.serveFromCache(w, r, ref, entry, ct)
 		return
 	}
@@ -501,6 +505,56 @@ func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef
 // index.yaml URL rewriting
 // --------------------------------------------------------------------------
 
+// rewriteIndex is the serveMutable transform: rewrite absolute chart URLs and
+// Allow() each discovered host on the shared tarball SSRF allowlist.
+func (h *Handler) rewriteIndex(data []byte) ([]byte, error) {
+	return rewriteIndexURLs(data, h.tarballAllow)
+}
+
+// seedTarballAllowFromCachedIndex scans a cached (rewritten) index for
+// ../../tarball/<host>/… paths and Allow()s those hosts.
+func (h *Handler) seedTarballAllowFromCachedIndex(ctx context.Context, ref artifact.ArtifactRef, entry *artifact.CacheEntry) {
+	if h.tarballAllow == nil || entry == nil {
+		return
+	}
+	rc, _, err := h.serveBytes(ctx, ref, entry)
+	if err != nil {
+		return
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(io.LimitReader(rc, 32<<20))
+	if err != nil {
+		return
+	}
+	allowHostsFromRewrittenIndex(data, h.tarballAllow)
+}
+
+// allowHostsFromRewrittenIndex extracts hosts from Specula tarball-relative
+// chart urls written by rewriteIndexURLs.
+func allowHostsFromRewrittenIndex(data []byte, allow interface{ Allow(host string) }) {
+	if allow == nil || len(data) == 0 {
+		return
+	}
+	const marker = "tarball/"
+	rest := data
+	for {
+		i := bytes.Index(rest, []byte(marker))
+		if i < 0 {
+			return
+		}
+		rest = rest[i+len(marker):]
+		end := bytes.IndexAny(rest, "/ \n\r\t\"'")
+		if end <= 0 {
+			return
+		}
+		host := string(rest[:end])
+		if host != "" && !strings.Contains(host, "..") {
+			allow.Allow(host)
+		}
+		rest = rest[end:]
+	}
+}
+
 // rewriteIndexURLs rewrites absolute http/https chart download URLs in a Helm
 // index.yaml so helm clients keep fetching THROUGH Specula (never bypass to
 // the upstream host).
@@ -523,6 +577,10 @@ func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef
 // ../../tarball/github.com/…/file.tgz resolves to
 // https://specula:7732/tarball/github.com/…/file.tgz.
 //
+// allow (optional) receives each absolute URL's host so the tarball SSRF
+// allowlist permits the subsequent helm pull without requiring the operator to
+// pre-list every forge that appears in chart indexes.
+//
 // Helm Chart Repository Spec (https://helm.sh/docs/topics/chart_repository/):
 //
 //	"urls: A list of URLs for each version of the chart. Relative URLs are
@@ -530,12 +588,12 @@ func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef
 //
 // If the YAML cannot be parsed the original bytes are returned unchanged so
 // Specula degrades gracefully rather than blocking chart discovery.
-func rewriteIndexURLs(data []byte) ([]byte, error) {
+func rewriteIndexURLs(data []byte, allow interface{ Allow(host string) }) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return data, nil // degrade gracefully
 	}
-	rewriteYAMLURLs(doc.Content[0])
+	rewriteYAMLURLs(doc.Content[0], allow)
 	out, err := yaml.Marshal(doc.Content[0])
 	if err != nil {
 		return data, nil // degrade gracefully
@@ -560,8 +618,8 @@ func absoluteURLToTarballRel(raw string) string {
 // rewriteYAMLURLs recursively walks a parsed yaml.Node tree and replaces
 // every absolute http/https URL found inside "urls" sequence nodes with a
 // Specula tarball-relative path. Non-http/s values and relative URLs are
-// left unchanged.
-func rewriteYAMLURLs(n *yaml.Node) {
+// left unchanged. allow receives each absolute URL hostname when non-nil.
+func rewriteYAMLURLs(n *yaml.Node, allow interface{ Allow(host string) }) {
 	if n == nil {
 		return
 	}
@@ -579,15 +637,20 @@ func rewriteYAMLURLs(n *yaml.Node) {
 					if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
 						continue // already relative or non-http — leave as-is
 					}
+					if allow != nil {
+						if parsed, err := url.Parse(u); err == nil && parsed.Hostname() != "" {
+							allow.Allow(parsed.Hostname())
+						}
+					}
 					item.Value = absoluteURLToTarballRel(u)
 				}
 			} else {
-				rewriteYAMLURLs(valNode)
+				rewriteYAMLURLs(valNode, allow)
 			}
 		}
 	case yaml.SequenceNode:
 		for _, child := range n.Content {
-			rewriteYAMLURLs(child)
+			rewriteYAMLURLs(child, allow)
 		}
 	}
 }

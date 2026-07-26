@@ -40,13 +40,20 @@ CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
 REPO_ALIAS="specula-helm-test"
 
 # Upstream config: parent directory of the stable chart repo so that the repo
-# path "charts" maps to https://mirror.azure.cn/kubernetes/charts/index.yaml
+# path "charts" maps to https://mirror.azure.cn/kubernetes/charts/index.yaml.
+# Also wire longhorn (index urls point at github.com releases) to cover the
+# cross-host tarball allowlist path — same-host azure alone would not exercise it.
 UPSTREAM_BASE="https://mirror.azure.cn/kubernetes"
+LONGHORN_BASE="https://charts.longhorn.io"
 SPECULA_REPO_URL="http://127.0.0.1:${DATA_PORT}/helm/charts"
+SPECULA_LONGHORN_URL="http://127.0.0.1:${DATA_PORT}/helm/longhorn"
 
 # Chart to pull during the test (from the azure mirror's stable archive).
 TEST_CHART="mysql"
 TEST_CHART_VERSION="1.6.9"
+# Cross-host chart: index on charts.longhorn.io, .tgz on github.com releases.
+CROSS_HOST_CHART="longhorn"
+CROSS_HOST_VERSION="1.9.1"
 
 PASS=0
 FAIL=0
@@ -95,10 +102,16 @@ protocols:
         base_url: ${UPSTREAM_BASE}
         priority: 0
         official: true
+      - name: longhorn
+        base_url: ${LONGHORN_BASE}
+        priority: 1
+        official: true
     helm:
       repositories:
         - name: charts
           base_url: ${UPSTREAM_BASE}/charts
+        - name: longhorn
+          base_url: ${LONGHORN_BASE}
     mutable_ttl_seconds: 1800
 EOF
 
@@ -291,6 +304,71 @@ else
     fail "helm pull --verify had unexpected outcome (exit ${VERIFY_EXIT})"
     echo "$VERIFY_OUTPUT"
 fi
+
+# ── 14. Cross-host chart: longhorn index → github.com releases via /tarball/ ─
+# Regression: rewrite alone is not enough — tarball SSRF must Allow() hosts
+# discovered in index urls, or helm pull gets 403 host not in allowed list.
+echo ""
+echo "==> cross-host: helm repo add longhorn (${SPECULA_LONGHORN_URL})"
+REPO_LH="specula-longhorn-test"
+helm repo remove "$REPO_LH" 2>/dev/null || true
+CMD_EXIT=0
+CMD_OUTPUT=$(helm repo add "$REPO_LH" "$SPECULA_LONGHORN_URL" 2>&1) || CMD_EXIT=$?
+echo "$CMD_OUTPUT"
+if [ "$CMD_EXIT" -eq 0 ]; then
+    pass "helm repo add longhorn (exit 0)"
+else
+    fail "helm repo add longhorn (exit ${CMD_EXIT})"
+fi
+
+echo ""
+echo "==> helm repo update ${REPO_LH}"
+CMD_EXIT=0
+CMD_OUTPUT=$(helm repo update "$REPO_LH" 2>&1) || CMD_EXIT=$?
+echo "$CMD_OUTPUT"
+if [ "$CMD_EXIT" -eq 0 ]; then
+    pass "helm repo update longhorn (exit 0)"
+else
+    fail "helm repo update longhorn (exit ${CMD_EXIT})"
+fi
+
+LH_INDEX=$(mktemp /tmp/specula-helm-lh-index-XXXXXX.yaml)
+curl -fsS --max-time 60 "${SPECULA_LONGHORN_URL}/index.yaml" -o "$LH_INDEX" || fail "GET longhorn index.yaml"
+if grep -qE "\.\./\.\./tarball/github\.com/.+\.tgz" "$LH_INDEX"; then
+    pass "longhorn index rewrites chart urls through /tarball/github.com/"
+else
+    fail "longhorn index missing ../../tarball/github.com/… chart urls"
+fi
+rm -f "$LH_INDEX"
+
+# Before index rewrite Allow(), this path returned 403 even though github.com
+# appeared in the rewritten index. Prove the dynamic allowlist with a direct GET.
+echo ""
+echo "==> GET /tarball/github.com/…/longhorn-${CROSS_HOST_VERSION}.tgz (must not 403)"
+LH_TGZ_PATH="/tarball/github.com/longhorn/charts/releases/download/longhorn-${CROSS_HOST_VERSION}/longhorn-${CROSS_HOST_VERSION}.tgz"
+# Warm allowlist: index fetch above already ran rewriteIndex → Allow(github.com).
+HTTP_STATUS=$(curl -s -o /tmp/specula-lh-chart.tgz -w "%{http_code}" --max-time 120 \
+    "http://127.0.0.1:${DATA_PORT}${LH_TGZ_PATH}")
+if [ "$HTTP_STATUS" = "200" ] && [ -s /tmp/specula-lh-chart.tgz ]; then
+    pass "cross-host tarball fetch HTTP 200 (github.com allowed after index rewrite)"
+else
+    fail "cross-host tarball fetch HTTP ${HTTP_STATUS} (expected 200 after Allow(github.com))"
+fi
+
+echo ""
+echo "==> helm pull ${REPO_LH}/${CROSS_HOST_CHART} --version ${CROSS_HOST_VERSION}"
+PULL_LH=$(mktemp -d)
+CMD_EXIT=0
+CMD_OUTPUT=$(helm pull "${REPO_LH}/${CROSS_HOST_CHART}" --version "$CROSS_HOST_VERSION" \
+    --destination "$PULL_LH" 2>&1) || CMD_EXIT=$?
+echo "$CMD_OUTPUT"
+LH_FILE=$(ls "$PULL_LH"/${CROSS_HOST_CHART}-*.tgz 2>/dev/null | head -1)
+if [ "$CMD_EXIT" -eq 0 ] && [ -n "$LH_FILE" ]; then
+    pass "helm pull cross-host longhorn (exit 0, got ${LH_FILE##*/})"
+else
+    fail "helm pull cross-host longhorn (exit ${CMD_EXIT}) — allowlist gap?"
+fi
+helm repo remove "$REPO_LH" 2>/dev/null || true
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

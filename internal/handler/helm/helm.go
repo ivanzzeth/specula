@@ -78,6 +78,10 @@ type Handler struct {
 	// Empty → legacy: repo segment is a subpath under upstreams BaseURL.
 	repos RepositoryMap
 
+	// tarballAllow receives hosts from absolute chart URLs rewritten into
+	// /tarball/<host>/…. Shared with the tarball handler's SSRF allowlist.
+	tarballAllow interface{ Allow(host string) }
+
 	// fetchSF collapses concurrent COLD fetches for the same request identity
 	// (ARCHITECTURE §7): N concurrent cold requests for one artifact become ONE
 	// upstream round trip. Keyed by protocol|name|version|digest — what the
@@ -131,6 +135,12 @@ func WithLocker(l coalesce.Locker) Option {
 // the signed tier. Optional; without it Helm tops out at consensus/tofu.
 func WithProvenanceVerifier(v *verify.HelmProvVerifier) Option {
 	return func(h *Handler) { h.provVerifier = v }
+}
+
+// WithTarballAllowlist registers hosts discovered when rewriting absolute chart
+// URLs into /tarball/<host>/… so the tarball SSRF gate permits those pulls.
+func WithTarballAllowlist(a interface{ Allow(host string) }) Option {
+	return func(h *Handler) { h.tarballAllow = a }
 }
 
 // NewHandler constructs a classic-HTTP Helm Handler backed by the CacheManager.

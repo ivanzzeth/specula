@@ -33,6 +33,9 @@ func WithQuarantineDir(dir string) Option                      { return inthelm.
 func WithLogger(l *slog.Logger) Option                         { return inthelm.WithLogger(l) }
 func WithLocker(l coalesce.Locker) Option                      { return inthelm.WithLocker(l) }
 func WithProvenanceVerifier(v *verify.HelmProvVerifier) Option { return inthelm.WithProvenanceVerifier(v) }
+func WithTarballAllowlist(a interface{ Allow(host string) }) Option {
+	return inthelm.WithTarballAllowlist(a)
+}
 
 type RepositorySpec = inthelm.RepositorySpec
 

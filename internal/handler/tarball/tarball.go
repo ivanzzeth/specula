@@ -115,9 +115,10 @@ type Handler struct {
 	quarantineDir string              // directory for on-disk quarantine temp files
 	scheme        string              // URL scheme for upstream fetches ("http" or "https")
 
-	// allowedHosts gates which upstream hosts may be proxied (SSRF guard).
-	// Empty = allow none (fail closed).
-	allowedHosts []string
+	// allow gates which upstream hosts may be proxied (SSRF guard).
+	// nil/empty = allow none (fail closed). Shared with helm so index rewrite
+	// can Allow() cross-host chart origins at serve time.
+	allow *HostAllowlist
 
 	// fetchSF collapses concurrent COLD fetches for the same request identity
 	// within one process; locker (optional) extends that across replicas
@@ -172,7 +173,21 @@ func WithLogger(l *slog.Logger) Option {
 // land on sibling hostnames (allowlist is checked on the request path host only;
 // expansion keeps intentional CDN hosts usable if callers encode them).
 func WithAllowedHosts(hosts []string) Option {
-	return func(h *Handler) { h.allowedHosts = expandTarballAllowedHosts(hosts) }
+	return func(h *Handler) {
+		if h.allow == nil {
+			h.allow = NewHostAllowlist(hosts)
+			return
+		}
+		for _, host := range hosts {
+			h.allow.Allow(host)
+		}
+	}
+}
+
+// WithHostAllowlist injects a shared allowlist (e.g. seeded in main and also
+// passed to helm so rewriteIndexURLs can Allow cross-host chart origins).
+func WithHostAllowlist(a *HostAllowlist) Option {
+	return func(h *Handler) { h.allow = a }
 }
 
 // expandTarballAllowedHosts adds well-known CDN siblings for forge hosts.
@@ -599,15 +614,10 @@ func (h *Handler) serveFromCache(w http.ResponseWriter, r *http.Request, ref art
 // Allowlist guard
 // --------------------------------------------------------------------------
 
-// isAllowedHost reports whether host is in the configured allowedHosts list.
-// Returns false (deny) when the list is empty — fail-closed SSRF posture.
+// isAllowedHost reports whether host is in the SSRF allowlist.
+// Returns false (deny) when unset/empty — fail-closed posture.
 func (h *Handler) isAllowedHost(host string) bool {
-	for _, allowed := range h.allowedHosts {
-		if allowed == host {
-			return true
-		}
-	}
-	return false // empty allowedHosts → deny all
+	return h.allow.Allows(host)
 }
 
 // --------------------------------------------------------------------------

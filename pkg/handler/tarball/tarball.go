@@ -13,14 +13,18 @@ import (
 )
 
 type (
-	Handler = inttarball.Handler
-	Option  = inttarball.Option
+	Handler       = inttarball.Handler
+	Option        = inttarball.Option
+	HostAllowlist = inttarball.HostAllowlist
 )
 
 const Protocol = inttarball.Protocol
 
 func NewHandler(cm cache.CacheManager, opts ...Option) *Handler {
 	return inttarball.NewHandler(cm, opts...)
+}
+func NewHostAllowlist(seed []string) *HostAllowlist {
+	return inttarball.NewHostAllowlist(seed)
 }
 func WithMeta(m meta.MetadataStore) Option { return inttarball.WithMeta(m) }
 func WithUpstream(c upstream.Client, ups []upstream.Upstream) Option {
@@ -31,5 +35,8 @@ func WithPathPrefix(prefix string) Option    { return inttarball.WithPathPrefix(
 func WithQuarantineDir(dir string) Option    { return inttarball.WithQuarantineDir(dir) }
 func WithLogger(l *slog.Logger) Option       { return inttarball.WithLogger(l) }
 func WithAllowedHosts(hosts []string) Option { return inttarball.WithAllowedHosts(hosts) }
-func WithScheme(scheme string) Option        { return inttarball.WithScheme(scheme) }
-func WithLocker(l coalesce.Locker) Option    { return inttarball.WithLocker(l) }
+func WithHostAllowlist(a *HostAllowlist) Option {
+	return inttarball.WithHostAllowlist(a)
+}
+func WithScheme(scheme string) Option     { return inttarball.WithScheme(scheme) }
+func WithLocker(l coalesce.Locker) Option { return inttarball.WithLocker(l) }
