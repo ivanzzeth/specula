@@ -196,6 +196,15 @@ fi
 echo "==> apt-get update: PASS (exit 0, no GPG errors)"
 cat "$UPDATE_OUT"
 
+# apt-get can exit 0 while leaving indexes empty (Ign/Err + "Failed to fetch").
+# That used to let realclient proceed to download and fail obscurely.
+if grep -q "Failed to fetch" "$UPDATE_OUT"; then
+    die "apt-get update exited 0 but Failed to fetch present — Specula returned an error (check $WORK/daemon.log)"
+fi
+if ! grep -qE "^Get:.*InRelease" "$UPDATE_OUT"; then
+    die "apt-get update exited 0 but no Get: … InRelease line — indexes not refreshed"
+fi
+
 # ── Step 6: download a real .deb and verify with dpkg-deb ────────────────────
 # Conformance gate (C): pool/*.deb is served correctly.
 # Ref: Debian Repository Format §Pool.

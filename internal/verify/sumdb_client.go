@@ -15,6 +15,8 @@ import (
 	xsumdb "golang.org/x/mod/sumdb"
 	"golang.org/x/mod/sumdb/note"
 	"golang.org/x/mod/sumdb/tlog"
+
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
 // defaultSumDBKey is the well-known verifier key for sum.golang.org.
@@ -120,7 +122,10 @@ func newSpecOps(vkeyText, baseURL string, store TreeSizeStore, httpc *http.Clien
 		return nil, err
 	}
 	if httpc == nil {
-		httpc = &http.Client{Timeout: 30 * time.Second}
+		httpc = &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: upstream.WrapUserAgent(http.DefaultTransport),
+		}
 	}
 	return &specOps{
 		endpoint:          endpoint,

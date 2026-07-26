@@ -19,11 +19,11 @@
 #
 # Non-conformances found and fixed in this run:
 #   1. Absolute chart URLs in index.yaml bypassed the Specula proxy.
-#      Fix: rewriteIndexURLs() in internal/handler/helm/endpoints.go rewrites
-#           absolute http/https URLs in every "urls" sequence to just the
-#           filename (last path segment), so helm resolves them relative to the
-#           Specula repo URL. Spec ref: "urls: A list of URLs for each version
-#           of the chart. Relative URLs are resolved against the repository URL."
+#      Fix: rewriteIndexURLs() rewrites absolute http/https urls to
+#           ../../tarball/<host>/<path>.tgz so helm resolves them through
+#           Specula's tarball handler (same-host and cross-host charts).
+#           mountTarball unions helm upstream/repo hosts into the SSRF
+#           allowlist — a helm-only config must not 403 chart pulls.
 #
 # Usage:  scripts/realclient-helm.sh
 # Exit 0 only if all assertions pass.
@@ -180,11 +180,13 @@ else
     else
         pass "index.yaml urls are relative (absolute upstream URLs rewritten)"
     fi
-    # Assert chart filenames appear in the urls field
-    if grep -qE "^[[:space:]]+-[[:space:]][a-z].*\.tgz$" "$INDEX_FILE"; then
-        pass "index.yaml urls contain relative chart filenames"
+    # Absolute chart urls are rewritten to Specula tarball-relative paths
+    # (../../tarball/<host>/<path>.tgz) so helm pull stays on Specula — including
+    # cross-host charts (e.g. longhorn → github.com releases). See rewriteIndexURLs.
+    if grep -qE "^[[:space:]]+-[[:space:]]+\.\./\.\./tarball/.+\.tgz$" "$INDEX_FILE"; then
+        pass "index.yaml urls contain Specula tarball-relative chart paths"
     else
-        fail "index.yaml urls do not contain relative chart filenames"
+        fail "index.yaml urls do not contain Specula tarball-relative chart paths"
     fi
 fi
 rm -f "$INDEX_FILE"

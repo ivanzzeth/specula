@@ -44,8 +44,13 @@ type hedgeOutcome struct {
 }
 
 // tryFetchHedged races primary against next after defaultHedgeDelay. The first
-// successful headers win; the loser body (if any) is closed. On dual failure
-// returns the primary's error (caller continues the chain).
+// successful headers win; the loser body (if any) is closed.
+//
+// Critical: the winner's child context must NOT be canceled when this function
+// returns — http.Response.Body is bound to the request context, and apt/OCI
+// callers stream into quarantine after Fetch returns. Canceling the winner
+// here caused 100% "context canceled" on apt InRelease whenever a second
+// upstream made the request hedgeable (realclient-apt.sh + CN failover chain).
 func (c *fallbackClient) tryFetchHedged(
 	ctx context.Context,
 	ref artifact.ArtifactRef,
@@ -57,8 +62,13 @@ func (c *fallbackClient) tryFetchHedged(
 ) (io.ReadCloser, artifact.UpstreamMeta, time.Duration, bool, error, Upstream) {
 	ctxP, cancelP := context.WithCancel(ctx)
 	ctxN, cancelN := context.WithCancel(ctx)
-	defer cancelP()
-	defer cancelN()
+	won := false
+	defer func() {
+		if !won {
+			cancelP()
+			cancelN()
+		}
+	}()
 
 	ch := make(chan hedgeOutcome, 2)
 
@@ -100,9 +110,9 @@ func (c *fallbackClient) tryFetchHedged(
 				continue
 			}
 			if copied.up.Name == primary.Name {
-				cancelN()
+				cancelN() // lose the hedge peer only
 			} else {
-				cancelP()
+				cancelP() // lose primary only
 			}
 			// Drain the other attempt so a late success cannot leak a body.
 			go func() {
@@ -111,6 +121,7 @@ func (c *fallbackClient) tryFetchHedged(
 					_ = other.body.Close()
 				}
 			}()
+			won = true
 			return copied.body, copied.meta, copied.latency, false, nil, copied.up
 		}
 	}

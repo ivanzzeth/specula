@@ -166,8 +166,9 @@ func Status(home string) (Report, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Still audit local client configs even without prior integrate.
-			rep := Report{Results: AuditClientRisks(home)}
+			rep := Report{Addr: DefaultAddr, Results: AuditClientRisks(home)}
 			rep.Results = append(rep.Results, AuditOCIRisks()...)
+			rep.Results = append(rep.Results, AuditAptRisks(DefaultAddr)...)
 			if len(rep.Results) == 0 {
 				return Report{}, fmt.Errorf("no integrate state yet — run: specula integrate")
 			}
@@ -183,6 +184,14 @@ func Status(home string) (Report, error) {
 	oci := AuditOCIRisks()
 	if len(oci) > 0 {
 		rep.Results = append(rep.Results, oci...)
+	}
+	addr := rep.Addr
+	if addr == "" {
+		addr = DefaultAddr
+	}
+	apt := AuditAptRisks(addr)
+	if len(apt) > 0 {
+		rep.Results = append(rep.Results, apt...)
 	}
 	return rep, nil
 }

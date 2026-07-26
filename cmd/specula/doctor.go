@@ -24,13 +24,15 @@ func runDoctor(args []string) error {
   specula doctor [flags]
   specula integrate doctor [flags]
 
-Catch OCI/CRI wiring footguns before production:
+Catch OCI/CRI/apt wiring footguns before production:
   • containerd 2.2 colon-separated CRI config_path (hosts.toml ignored)
   • empty transfer.v1.local config_path (must match CRI certs.d)
   • effective config dump still colon/empty after file fix (forgot restart)
   • residual server= public fallback in hosts.toml
   • k3s writing only /etc/containerd/certs.d (live path is agent tree)
   • missing registry.k8s.io / docker.io hosts.toml
+  • apt https list without Specula CA in system trust (TLS ≠ trusted=yes)
+  • apt http:// list while Specula addr is https://
   • Specula /v2/ unreachable
 
 Exit 1 when any RISK or error is reported.

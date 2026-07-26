@@ -25,6 +25,9 @@ type DoctorOptions struct {
 	ConfigTOMLs []string
 	// CertsDirs overrides certs.d roots to scan (tests).
 	CertsDirs []string
+	// AptListPath / AptCAPath override live apt integrate paths (tests).
+	AptListPath string
+	AptCAPath   string
 	// DumpConfig returns effective containerd config (default: containerd config dump).
 	DumpConfig func(ctx context.Context) (string, error)
 	// Probe checks Specula reachability (default: GET Addr/v2/).
@@ -47,6 +50,7 @@ func Doctor(opts DoctorOptions) (Report, error) {
 	}
 	rep := Report{Addr: addr}
 	rep.Results = append(rep.Results, auditOCIRisks(opts, addr)...)
+	rep.Results = append(rep.Results, auditAptRisksFromOpts(opts, addr)...)
 	rep.Results = append(rep.Results, AuditClientRisks(home)...)
 	if !opts.SkipProbe {
 		probe := opts.Probe
@@ -86,6 +90,18 @@ func Doctor(opts DoctorOptions) (Report, error) {
 func AuditOCIRisks() []Result {
 	home, _ := os.UserHomeDir()
 	return auditOCIRisks(DoctorOptions{Home: home}, DefaultAddr)
+}
+
+func auditAptRisksFromOpts(opts DoctorOptions, addr string) []Result {
+	list := opts.AptListPath
+	if list == "" {
+		list = defaultAptListPath
+	}
+	ca := opts.AptCAPath
+	if ca == "" {
+		ca = defaultAptCAPath
+	}
+	return auditAptRisksAt(list, ca, addr)
 }
 
 func auditOCIRisks(opts DoctorOptions, addr string) []Result {

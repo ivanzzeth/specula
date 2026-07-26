@@ -1,10 +1,12 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -121,6 +123,57 @@ func TestFetch_MutableHedgePrefersFasterNext(t *testing.T) {
 	assert.Equal(t, "fast", meta.Upstream)
 	assert.Less(t, time.Since(start), 350*time.Millisecond,
 		"hedge should return the fast mirror without waiting for slow")
+}
+
+// TestFetch_MutableHedge_WinnerBodyReadableAfterReturn pins the apt
+// realclient failure: tryFetchHedged used to defer-cancel BOTH child
+// contexts, including the winner's — so streaming InRelease into quarantine
+// hit "context canceled" whenever a second upstream made the request hedgeable.
+func TestFetch_MutableHedge_WinnerBodyReadableAfterReturn(t *testing.T) {
+	const payloadSize = 256 << 10 // 256KiB — larger than typical bufio buffers
+	payload := bytes.Repeat([]byte("a"), payloadSize)
+
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+		w.WriteHeader(http.StatusOK)
+		// Stream slowly so the body cannot be fully buffered before Fetch returns.
+		chunk := 8 << 10
+		for i := 0; i < len(payload); i += chunk {
+			end := i + chunk
+			if end > len(payload) {
+				end = len(payload)
+			}
+			_, _ = w.Write(payload[i:end])
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}))
+	t.Cleanup(primary.Close)
+
+	// Hedge peer: never wins (hangs).
+	peer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+		_, _ = io.WriteString(w, "peer")
+	}))
+	t.Cleanup(peer.Close)
+
+	c := testClient(1)
+	ref := artifact.ArtifactRef{Protocol: "apt", Name: "ubuntu", Version: "jammy/InRelease", Mutable: true}
+	body, meta, err := c.Fetch(context.Background(), ref,
+		[]Upstream{
+			{Name: "aliyun", BaseURL: primary.URL, Priority: 1},
+			{Name: "archive", BaseURL: peer.URL, Priority: 2, Official: true},
+		})
+	require.NoError(t, err)
+	require.NotNil(t, body)
+	defer body.Close()
+
+	got, err := io.ReadAll(body)
+	require.NoError(t, err, "winner body must stay readable after Fetch returns (no deferred cancel on winner ctx)")
+	assert.Equal(t, payload, got)
+	assert.Equal(t, "aliyun", meta.Upstream)
 }
 
 func TestFailoverReason(t *testing.T) {

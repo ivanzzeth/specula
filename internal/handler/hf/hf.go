@@ -70,7 +70,9 @@ func NewHandler(cm cache.CacheManager, opts ...Option) *Handler {
 		fetchSF:       coalesce.NewLocalCoalescer(),
 		mutableTTLSec: 300,
 		log:           slog.Default(),
-		httpClient:    http.DefaultClient,
+		httpClient: &http.Client{
+			Transport: upstream.WrapUserAgent(http.DefaultTransport),
+		},
 	}
 	for _, o := range opts {
 		o(h)

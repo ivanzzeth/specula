@@ -1078,8 +1078,9 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 }
 
 // mountTarball wires the generic URL-keyed tarball handler at /tarball/ using the
-// "tarball" protocol config. The allowed-host allowlist is derived from the
-// configured upstream base URLs (a request host outside the list is rejected).
+// "tarball" protocol config. The SSRF allowlist is the union of protocols.tarball
+// upstream hosts AND hosts that other protocols rewrite into /tarball/ (helm
+// chart urls) — otherwise a helm-only config 403s every helm pull.
 // tarball tops out at TOFU (immutable digest pin) in this batch.
 func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["tarball"]
@@ -1091,17 +1092,48 @@ func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager,
 	if locker != nil {
 		opts = append(opts, tarballhandler.WithLocker(locker))
 	}
-	hosts := []string{}
-	if ok {
-		if len(pc.Upstreams) > 0 {
-			opts = append(opts, tarballhandler.WithUpstream(dataPlaneUpstream(cfg, ups, "tarball"), upstreamsFor("tarball", pc.Upstreams)))
-		}
-		hosts = upstreamHosts(pc.Upstreams)
-		opts = append(opts, tarballhandler.WithAllowedHosts(hosts))
+	if ok && len(pc.Upstreams) > 0 {
+		opts = append(opts, tarballhandler.WithUpstream(dataPlaneUpstream(cfg, ups, "tarball"), upstreamsFor("tarball", pc.Upstreams)))
 	}
+	hosts := tarballAllowlistHosts(cfg)
+	opts = append(opts, tarballhandler.WithAllowedHosts(hosts))
 	mux.Handle(tarballPrefix+"/", metrics.Middleware("tarball", tarballhandler.NewHandler(cm, opts...)))
 	log.Info("specula: mounted tarball handler",
 		"path", tarballPrefix+"/", "configured", ok, "allowed_hosts", len(hosts))
+}
+
+// tarballAllowlistHosts returns the SSRF allowlist for /tarball/. Helm rewrites
+// absolute chart urls to ../../tarball/<host>/…, so helm upstream and repository
+// hosts must be included even when protocols.tarball is unset.
+func tarballAllowlistHosts(cfg *config.Config) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	add := func(hosts []string) {
+		for _, h := range hosts {
+			if h == "" {
+				continue
+			}
+			if _, dup := seen[h]; dup {
+				continue
+			}
+			seen[h] = struct{}{}
+			out = append(out, h)
+		}
+	}
+	if pc, ok := cfg.Protocols["tarball"]; ok {
+		add(upstreamHosts(pc.Upstreams))
+	}
+	if pc, ok := cfg.Protocols["helm"]; ok {
+		add(upstreamHosts(pc.Upstreams))
+		if pc.Helm != nil {
+			repos := make([]config.UpstreamConfig, 0, len(pc.Helm.Repositories))
+			for _, r := range pc.Helm.Repositories {
+				repos = append(repos, config.UpstreamConfig{BaseURL: r.BaseURL})
+			}
+			add(upstreamHosts(repos))
+		}
+	}
+	return out
 }
 
 // mountGit wires the git-clone acceleration handler at /git/ using the "git"

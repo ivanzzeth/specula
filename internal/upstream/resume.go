@@ -79,14 +79,26 @@ func newUpstreamHTTPClientWith(dial, tlsHS, headerTimeout time.Duration) *http.C
 	return &http.Client{
 		// CN mirrors (e.g. tuna) return 403 to Go's default User-Agent
 		// ("Go-http-client/1.1"). Always identify as Specula.
-		Transport: &userAgentRoundTripper{base: base, ua: defaultUpstreamUserAgent},
+		Transport: WrapUserAgent(base),
 	}
 }
 
-// defaultUpstreamUserAgent is sent on every upstream fetch. Tsinghua's Ubuntu
-// mirror rejects the Go stdlib default UA with HTTP 403 while accepting curl /
-// wget — that silent reject made Specula apt pool fetches 502 forever.
-const defaultUpstreamUserAgent = "Specula/upstream"
+// DefaultUserAgent is sent on every Specula→upstream fetch when the request
+// does not already set User-Agent. Tsinghua's Ubuntu mirror (and similar CN
+// mirrors) reject Go's stdlib default with HTTP 403.
+const DefaultUserAgent = "Specula/upstream"
+
+// legacy alias used inside this package before export.
+const defaultUpstreamUserAgent = DefaultUserAgent
+
+// WrapUserAgent returns a RoundTripper that sets DefaultUserAgent when missing.
+// base may be nil (uses http.DefaultTransport).
+func WrapUserAgent(base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return &userAgentRoundTripper{base: base, ua: DefaultUserAgent}
+}
 
 // userAgentRoundTripper sets User-Agent when the request does not already have one.
 type userAgentRoundTripper struct {

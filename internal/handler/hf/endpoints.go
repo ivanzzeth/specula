@@ -161,7 +161,7 @@ func (h *Handler) passthrough(w http.ResponseWriter, r *http.Request, hubPath st
 
 	client := h.httpClient
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Transport: upstream.WrapUserAgent(http.DefaultTransport)}
 	}
 	resp, err := client.Do(req)
 	if err != nil {

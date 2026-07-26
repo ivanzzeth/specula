@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/mod/module"
 
+	"github.com/ivanzzeth/specula/internal/upstream"
 	"github.com/ivanzzeth/specula/internal/verify"
 )
 
@@ -30,7 +31,7 @@ type SumDBHandler struct {
 	endpoint verify.SumDBEndpoint  // upstream URL resolver (direct or proxy shape)
 	name     string                // sumdb name this passthrough will serve
 	private  verify.PrivateMatcher // GONOSUMDB private-module matcher
-	client   *http.Client          // upstream HTTP client (nil = http.DefaultClient)
+	client   *http.Client          // upstream HTTP client (nil = Specula UA transport)
 	log      *slog.Logger
 }
 
@@ -74,8 +75,10 @@ func NewSumDBHandler(upstreamURL string, opts ...SumDBOption) *SumDBHandler {
 	s := &SumDBHandler{
 		endpoint: endpoint,
 		name:     verify.DefaultSumDBName,
-		client:   http.DefaultClient,
-		log:      slog.Default(),
+		client: &http.Client{
+			Transport: upstream.WrapUserAgent(http.DefaultTransport),
+		},
+		log: slog.Default(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -179,7 +182,7 @@ func (s *SumDBHandler) serve(w http.ResponseWriter, r *http.Request, sub string)
 
 	httpc := s.client
 	if httpc == nil {
-		httpc = http.DefaultClient
+		httpc = &http.Client{Transport: upstream.WrapUserAgent(http.DefaultTransport)}
 	}
 	resp, err := httpc.Do(req)
 	if err != nil {

@@ -36,7 +36,10 @@ func RepositoriesFromSpecs(specs []RepositorySpec) RepositoryMap {
 			Name:     "apt:" + name,
 			BaseURL:  base,
 			Priority: 1,
-			Official: true,
+			// Allowlisted archive BaseURL is typically a mirror (aliyun/tuna),
+			// not the authoritative origin — leave Official false so last-hop
+			// budget compression and origin checks stay meaningful.
+			Official: false,
 		}
 	}
 	return out

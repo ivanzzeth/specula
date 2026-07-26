@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
 // PrefetchOptions configures WarmImages.
@@ -41,7 +43,10 @@ func WarmImages(ctx context.Context, opts PrefetchOptions) ([]WarmResult, error)
 	}
 	client := opts.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 60 * time.Second}
+		client = &http.Client{
+			Timeout:   60 * time.Second,
+			Transport: upstream.WrapUserAgent(http.DefaultTransport),
+		}
 	}
 	out := make([]WarmResult, 0, len(opts.Images))
 	for _, ref := range opts.Images {

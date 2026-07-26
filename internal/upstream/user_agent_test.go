@@ -28,7 +28,25 @@ func TestUpstreamClientSetsSpeculaUserAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if gotUA != defaultUpstreamUserAgent {
-		t.Fatalf("User-Agent=%q want %q", gotUA, defaultUpstreamUserAgent)
+	if gotUA != DefaultUserAgent {
+		t.Fatalf("User-Agent=%q want %q", gotUA, DefaultUserAgent)
+	}
+}
+
+func TestWrapUserAgent_SetsWhenMissing(t *testing.T) {
+	var gotUA string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	c := &http.Client{Transport: WrapUserAgent(nil)}
+	resp, err := c.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if gotUA != DefaultUserAgent {
+		t.Fatalf("User-Agent=%q want %q", gotUA, DefaultUserAgent)
 	}
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/ivanzzeth/specula/internal/artifact"
 	"github.com/ivanzzeth/specula/internal/publishmeta"
+	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
 // HTTPMirrorDigestFetcher is the production MirrorDigestFetcher: it resolves the
@@ -42,7 +43,10 @@ func NewHTTPMirrorDigestFetcher(timeout time.Duration) *HTTPMirrorDigestFetcher 
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
-	return &HTTPMirrorDigestFetcher{client: &http.Client{Timeout: timeout}}
+	return &HTTPMirrorDigestFetcher{client: &http.Client{
+		Timeout:   timeout,
+		Transport: upstream.WrapUserAgent(http.DefaultTransport),
+	}}
 }
 
 // Compile-time assertion that HTTPMirrorDigestFetcher satisfies the interface.
