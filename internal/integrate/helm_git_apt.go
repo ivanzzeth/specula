@@ -56,7 +56,8 @@ func integrateApt(addr, caFile string, dryRun, skipRoot bool, cfg *config.Config
 	archive := aptArchiveFromConfig(cfg)
 	// Point at the allowlisted archive prefix (protocols.apt.apt.repositories).
 	archiveURL := base + "/apt/" + archive + "/"
-	body := fmt.Sprintf("# Added by `specula integrate` — does not modify sources.list / ubuntu.sources\n"+
+	body := fmt.Sprintf("# Added by `specula integrate` — Specula is the ubuntu archive path.\n"+
+		"# Competing host ubuntu mirrors (cloud-init / regional) are commented or renamed.\n"+
 		"# Suite auto-detected from /etc/os-release (override by editing this file).\n"+
 		"# Specula protocols.apt.apt.repositories must include name=%s.\n"+
 		"deb [trusted=yes] %s %s main restricted universe multiverse\n"+
@@ -100,6 +101,13 @@ func integrateApt(addr, caFile string, dryRun, skipRoot bool, cfg *config.Config
 		}
 	}
 
+	disableDetail := ""
+	if n, note, err := disableConflictingUbuntuArchives(nil); err != nil {
+		return Result{Action: "error", Err: "disable competing ubuntu archives: " + err.Error(), Path: path}
+	} else if n > 0 {
+		disableDetail = note
+	}
+
 	action := "added"
 	detail := "wrote apt source suite=" + suite + " archive=" + archive + " (apt-get update to refresh)"
 	if listAlready {
@@ -108,6 +116,9 @@ func integrateApt(addr, caFile string, dryRun, skipRoot bool, cfg *config.Config
 	}
 	if caDetail != "" {
 		detail = detail + "; " + caDetail
+	}
+	if disableDetail != "" {
+		detail = detail + "; " + disableDetail
 	}
 	return Result{Action: action, Detail: detail, Path: path}
 }

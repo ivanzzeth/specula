@@ -26,7 +26,8 @@ import (
 
 var (
 	reConfigPathAssign = regexp.MustCompile(`(?m)^([ \t]*config_path[ \t]*=[ \t]*)(['"])([^'"]*)(['"])([ \t]*)$`)
-	reDisabledCRI      = regexp.MustCompile(`(?i)disabled_plugins\s*=\s*\[[^\]]*['"]cri['"]`)
+	reDisabledCRI      = regexp.MustCompile(`(?im)^([ \t]*disabled_plugins[ \t]*=[ \t]*)\[([^\]]*)\]([ \t]*)$`)
+	reCRIV1ImagesReg   = regexp.MustCompile(`(?m)^[ \t]*\[plugins\.(?:'io\.containerd\.cri\.v1\.images'|"io\.containerd\.cri\.v1\.images")\.registry\][ \t]*(?:\r?\n|$)`)
 	// Allow leading whitespace: containerd config dump and some drop-ins indent
 	// plugin tables ("  [plugins.'io.containerd.transfer.v1.local']"). Matching
 	// only column-0 headers caused integrate to APPEND a duplicate table →
@@ -56,28 +57,89 @@ func isColonSeparatedCertsPath(val string) bool {
 	return len(parts) > 1
 }
 
-// criConfigPathNeedsFix reports whether content has a broken colon config_path
-// or lacks an explicit single-root override (so 2.2 defaults still apply).
-func criConfigPathNeedsFix(content string) (needs bool, reason string) {
-	if reDisabledCRI.MatchString(content) {
-		return false, "cri disabled"
+// criV1ImagesRegistryBody returns the body of plugins.*.cri.v1.images.registry.
+// containerd 2.x uses THIS table for crictl/kubelet pulls — NOT the legacy
+// io.containerd.grpc.v1.cri.registry key. A single-root on the legacy key alone
+// still leaves the 2.2 default colon path active (W2 aliyun-cd-b failure).
+func criV1ImagesRegistryBody(content string) (body string, ok bool) {
+	loc := reCRIV1ImagesReg.FindStringIndex(content)
+	if loc == nil {
+		return "", false
 	}
-	found := false
-	for _, m := range reConfigPathAssign.FindAllStringSubmatch(content, -1) {
+	rest := content[loc[1]:]
+	end := len(rest)
+	off := 0
+	for i, line := range strings.SplitAfter(rest, "\n") {
+		trim := strings.TrimSpace(line)
+		if i > 0 && strings.HasPrefix(trim, "[") {
+			end = off
+			break
+		}
+		off += len(line)
+	}
+	return rest[:end], true
+}
+
+// criDisabled reports Ubuntu/docker leftovers: disabled_plugins = ["cri"].
+func criDisabled(content string) bool {
+	for _, m := range reDisabledCRI.FindAllStringSubmatch(content, -1) {
+		inner := strings.ToLower(m[2])
+		if strings.Contains(inner, `"cri"`) || strings.Contains(inner, `'cri'`) ||
+			strings.Contains(inner, "io.containerd.grpc.v1.cri") {
+			return true
+		}
+	}
+	return false
+}
+
+// enableCRI clears "cri" from disabled_plugins so ImageService comes up.
+func enableCRI(content string) (string, bool) {
+	if !criDisabled(content) {
+		return content, false
+	}
+	changed := false
+	out := reDisabledCRI.ReplaceAllStringFunc(content, func(line string) string {
+		m := reDisabledCRI.FindStringSubmatch(line)
+		if m == nil {
+			return line
+		}
+		parts := strings.Split(m[2], ",")
+		keep := make([]string, 0, len(parts))
+		for _, p := range parts {
+			t := strings.TrimSpace(p)
+			tl := strings.ToLower(strings.Trim(t, `"'`))
+			if tl == "cri" || tl == "io.containerd.grpc.v1.cri" {
+				changed = true
+				continue
+			}
+			if t != "" {
+				keep = append(keep, t)
+			}
+		}
+		return m[1] + "[" + strings.Join(keep, ", ") + "]" + m[3]
+	})
+	return out, changed
+}
+
+// criConfigPathNeedsFix reports whether content lacks an explicit single-root
+// io.containerd.cri.v1.images.registry config_path (so 2.2 defaults still apply).
+func criConfigPathNeedsFix(content string) (needs bool, reason string) {
+	body, ok := criV1ImagesRegistryBody(content)
+	if !ok {
+		// Legacy-only or bare configs inherit containerd 2.2's broken default.
+		return true, "missing io.containerd.cri.v1.images.registry config_path"
+	}
+	for _, m := range reConfigPathAssign.FindAllStringSubmatch(body, -1) {
 		val := m[3]
 		if !strings.Contains(val, "certs.d") {
 			continue
 		}
-		found = true
 		if isColonSeparatedCertsPath(val) {
 			return true, "colon-separated config_path"
 		}
+		return false, "already single-root"
 	}
-	if !found {
-		// Bare / comment-only configs inherit containerd 2.2's broken default.
-		return true, "missing explicit config_path (2.2 default is colon-separated)"
-	}
-	return false, "already single-root"
+	return true, "missing config_path in cri.v1.images.registry"
 }
 
 // transferConfigPathNeedsFix reports whether transfer.v1.local config_path is
@@ -107,8 +169,12 @@ func transferConfigPathNeedsFix(content, preferred string) (needs bool, reason s
 	return true, "missing transfer.v1.local config_path assignment"
 }
 
-// containerdHostsConfigNeedsFix is true when CRI and/or transfer hosts roots need rewrite.
+// containerdHostsConfigNeedsFix is true when CRI must be enabled and/or
+// CRI/transfer hosts roots need rewrite.
 func containerdHostsConfigNeedsFix(content, preferred string) (needs bool, reason string) {
+	if criDisabled(content) {
+		return true, "cri listed in disabled_plugins"
+	}
 	if cri, r := criConfigPathNeedsFix(content); cri {
 		return true, r
 	}
@@ -138,7 +204,7 @@ func transferSectionBody(content string) (body string, ok bool) {
 }
 
 // rewriteCRIConfigPath forces every certs.d config_path under CRI plugin tables
-// to preferred (single directory). When none exist, appends a v3 CRI images.registry stanza.
+// to preferred (single directory) and ALWAYS ensures cri.v1.images.registry exists.
 // Does not touch transfer.v1.local (see ensureTransferConfigPath).
 func rewriteCRIConfigPath(content, preferred string) (string, bool) {
 	preferred = strings.TrimRight(strings.TrimSpace(preferred), "/")
@@ -163,14 +229,11 @@ func rewriteCRIConfigPath(content, preferred string) (string, bool) {
 		changed = true
 		return m[1] + m[2] + preferred + m[4] + m[5]
 	})
-	if changed {
-		return out, true
-	}
-	needs, _ := criConfigPathNeedsFix(content)
-	if !needs {
-		return content, false
-	}
-	block := fmt.Sprintf(`
+	// Even after rewriting a legacy grpc.v1.cri colon path, containerd 2.x still
+	// needs an explicit cri.v1.images.registry stanza — otherwise the default
+	// colon list wins and crictl ignores hosts.toml.
+	if body, ok := criV1ImagesRegistryBody(out); !ok {
+		block := fmt.Sprintf(`
 
 # managed by specula integrate — single-root hosts.toml for CRI
 # (containerd 2.2 colon-separated config_path is ignored by transfer service;
@@ -178,14 +241,23 @@ func rewriteCRIConfigPath(content, preferred string) (string, bool) {
 [plugins.'io.containerd.cri.v1.images'.registry]
   config_path = %q
 `, preferred)
-	// Also set legacy v1 CRI key when the file still uses it.
-	if strings.Contains(content, "io.containerd.grpc.v1.cri") {
-		block += fmt.Sprintf(`
-[plugins."io.containerd.grpc.v1.cri".registry]
-  config_path = %q
-`, preferred)
+		out += block
+		changed = true
+	} else if needs, reason := criConfigPathNeedsFix(out); needs && strings.Contains(reason, "missing config_path in") {
+		loc := reCRIV1ImagesReg.FindStringIndex(out)
+		if loc != nil {
+			insert := fmt.Sprintf("  config_path = %q\n", preferred)
+			out = out[:loc[1]] + insert + out[loc[1]:]
+			changed = true
+			_ = body
+		}
 	}
-	return content + block, true
+	if !changed {
+		if needs, _ := criConfigPathNeedsFix(out); !needs {
+			return content, false
+		}
+	}
+	return out, true
 }
 
 // ensureTransferConfigPath sets plugins.'io.containerd.transfer.v1.local' config_path
@@ -226,11 +298,13 @@ func ensureTransferConfigPath(content, preferred string) (string, bool) {
 	return content[:bodyStart] + insert + content[bodyStart:], true
 }
 
-// rewriteContainerdHostsConfigPaths fixes CRI registry + transfer.v1.local config_path.
+// rewriteContainerdHostsConfigPaths enables CRI if disabled, then fixes CRI
+// registry + transfer.v1.local config_path.
 func rewriteContainerdHostsConfigPaths(content, preferred string) (string, bool) {
-	out, c1 := rewriteCRIConfigPath(content, preferred)
+	out, c0 := enableCRI(content)
+	out, c1 := rewriteCRIConfigPath(out, preferred)
 	out, c2 := ensureTransferConfigPath(out, preferred)
-	return out, c1 || c2
+	return out, c0 || c1 || c2
 }
 
 // integrateContainerdCRIConfigPath rewrites config.toml so CRI + transfer pulls

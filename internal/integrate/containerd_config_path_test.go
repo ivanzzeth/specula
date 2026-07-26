@@ -48,10 +48,38 @@ version = 2
 }
 
 func TestCriConfigPathNeedsFix_DisabledCRI(t *testing.T) {
+	// disabled_plugins alone does not satisfy cri.v1.images — integrate must
+	// still write the single-root stanza (and enableCRI clears the disable).
 	content := `disabled_plugins = ["cri"]
 `
-	needs, _ := criConfigPathNeedsFix(content)
-	assert.False(t, needs)
+	needs, reason := criConfigPathNeedsFix(content)
+	assert.True(t, needs)
+	assert.Contains(t, reason, "missing io.containerd.cri.v1.images")
+	assert.True(t, criDisabled(content))
+	out, changed := enableCRI(content)
+	require.True(t, changed)
+	assert.False(t, criDisabled(out))
+	assert.Contains(t, out, `disabled_plugins = []`)
+}
+
+func TestCriConfigPathNeedsFix_LegacyOnly_NeedsV1Images(t *testing.T) {
+	// Pin W2 aliyun-cd-b: Specula wrote only grpc.v1.cri.registry single-root;
+	// containerd 2.2 still used cri.v1.images default colon path → crictl dialed
+	// asia-east1-docker.pkg.dev while ctr --hosts-dir worked.
+	content := `
+[plugins."io.containerd.grpc.v1.cri".registry]
+  config_path = "/etc/containerd/certs.d"
+[plugins.'io.containerd.transfer.v1.local']
+  config_path = "/etc/containerd/certs.d"
+`
+	needs, reason := criConfigPathNeedsFix(content)
+	assert.True(t, needs)
+	assert.Contains(t, reason, "cri.v1.images")
+	out, changed := rewriteContainerdHostsConfigPaths(content, "/etc/containerd/certs.d")
+	require.True(t, changed)
+	assert.Contains(t, out, `io.containerd.cri.v1.images`)
+	needs2, _ := criConfigPathNeedsFix(out)
+	assert.False(t, needs2)
 }
 
 func TestCriConfigPathNeedsFix_AlreadySingle(t *testing.T) {
