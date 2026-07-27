@@ -127,8 +127,10 @@ func Install(opts InstallOptions) (*Result, error) {
 	if opts.Wait {
 		deploy := rel + "-specula-bootstrap"
 		fmt.Fprintf(os.Stdout, "cluster install: waiting for deploy/%s\n", deploy)
-		if _, err := kubectl(opts.Kubeconfig, opts.Context, "rollout", "status",
-			"deploy/"+deploy, "-n", ns, "--timeout="+formatDuration(waitTO)); err != nil {
+		// Fail-fast on a terminal Pod state (unpullable image, missing Secret)
+		// instead of burning the whole timeout on a rollout that cannot finish.
+		if err := waitRolloutOrFailFast(opts.Kubeconfig, opts.Context, ns,
+			"app.kubernetes.io/component=bootstrap", "deploy/"+deploy, waitTO); err != nil {
 			return res, fmt.Errorf("wait deployment: %w", err)
 		}
 		ds := rel + "-specula-bootstrap-integrate"
