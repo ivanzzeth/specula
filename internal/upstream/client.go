@@ -166,7 +166,8 @@ func (c *fallbackClient) Fetch(
 	sorted := c.chain(upstreams)
 	var (
 		lastErr            error
-		statusErr          *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
+		statusErr          *StatusError  // first DEFINITIVE upstream status (see resolveFetchError)
+		attempts           []attemptNote // one per failed upstream, for the error message
 		tried              int
 		priorTransportFail bool // any earlier transport failure (not StatusError)
 		skipNext           string
@@ -231,6 +232,7 @@ func (c *fallbackClient) Fetch(
 		c.syncBlocked(ref.Protocol, up.Name)
 		metrics.RecordUpstreamFailover(ref.Protocol, up.Name, failoverReason(err))
 		lastErr = err
+		attempts = append(attempts, attemptNote{Upstream: up.Name, Err: err})
 		rememberStatusErr(&statusErr, err)
 		if statusErr == nil {
 			priorTransportFail = true
@@ -239,7 +241,7 @@ func (c *fallbackClient) Fetch(
 	if tried == 0 {
 		return nil, artifact.UpstreamMeta{}, errors.New("upstream: all upstreams are blocked")
 	}
-	return nil, artifact.UpstreamMeta{}, resolveFetchError(statusErr, lastErr)
+	return nil, artifact.UpstreamMeta{}, resolveFetchError(statusErr, lastErr, attempts)
 }
 
 // attemptBudget returns how many HTTP attempts a not-yet-tried upstream deserves.
@@ -314,11 +316,39 @@ func rememberStatusErr(dst **StatusError, err error) {
 //
 // The StatusError is wrapped (fmt.Errorf %w) so errors.As recovers it while the
 // message stays consistent with the transport case.
-func resolveFetchError(statusErr *StatusError, lastErr error) error {
-	if statusErr != nil {
-		return fmt.Errorf("upstream: all upstreams failed: %w", statusErr)
+// attemptNote records why one upstream in the chain failed.
+type attemptNote struct {
+	Upstream string
+	Err      error
+}
+
+// summariseAttempts renders "daocloud: …; dockerhub: …" for the error message.
+//
+// "all upstreams failed … last error: <the origin timed out>" named only the LAST
+// hop, which in CN is the official upstream nothing can reach — so every failure
+// read as "the origin is down" and the mirror's actual reason (403, 404, blocked,
+// TLS) was invisible. Chasing the wrong upstream costs a debugging session; this
+// is one line of output.
+func summariseAttempts(attempts []attemptNote) string {
+	if len(attempts) == 0 {
+		return ""
 	}
-	return fmt.Errorf("upstream: all upstreams failed: %w", lastErr)
+	parts := make([]string, 0, len(attempts))
+	for _, a := range attempts {
+		msg := "nil"
+		if a.Err != nil {
+			msg = a.Err.Error()
+		}
+		parts = append(parts, a.Upstream+": "+msg)
+	}
+	return " [tried " + strings.Join(parts, "; ") + "]"
+}
+
+func resolveFetchError(statusErr *StatusError, lastErr error, attempts []attemptNote) error {
+	if statusErr != nil {
+		return fmt.Errorf("upstream: all upstreams failed:%s %w", summariseAttempts(attempts), statusErr)
+	}
+	return fmt.Errorf("upstream: all upstreams failed:%s %w", summariseAttempts(attempts), lastErr)
 }
 
 // Revalidate performs a conditional GET using prev.ETag (If-None-Match) and/or
@@ -339,7 +369,8 @@ func (c *fallbackClient) Revalidate(
 	sorted := c.chain(upstreams)
 	var (
 		lastErr            error
-		statusErr          *StatusError // first DEFINITIVE upstream status (see resolveFetchError)
+		statusErr          *StatusError  // first DEFINITIVE upstream status (see resolveFetchError)
+		attempts           []attemptNote // one per failed upstream, for the error message
 		tried              int
 		priorTransportFail bool
 	)
@@ -379,6 +410,7 @@ func (c *fallbackClient) Revalidate(
 		c.syncBlocked(ref.Protocol, up.Name)
 		metrics.RecordUpstreamFailover(ref.Protocol, up.Name, failoverReason(err))
 		lastErr = err
+		attempts = append(attempts, attemptNote{Upstream: up.Name, Err: err})
 		rememberStatusErr(&statusErr, err)
 		if statusErr == nil {
 			priorTransportFail = true
@@ -388,7 +420,7 @@ func (c *fallbackClient) Revalidate(
 		return nil, artifact.UpstreamMeta{}, false,
 			errors.New("upstream: all upstreams are blocked")
 	}
-	return nil, artifact.UpstreamMeta{}, false, resolveFetchError(statusErr, lastErr)
+	return nil, artifact.UpstreamMeta{}, false, resolveFetchError(statusErr, lastErr, attempts)
 }
 
 // tryFetch performs up to maxAttempts GET requests against a single upstream

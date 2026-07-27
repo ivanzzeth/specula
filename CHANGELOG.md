@@ -3,6 +3,22 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [Unreleased]
+
+### Changed — a failed upstream chain names every mirror, not just the last hop
+
+`upstream: all upstreams failed: … last error: dial registry-1.docker.io: i/o
+timeout` reported only the final upstream. In CN the final upstream is the official
+origin nothing can reach, so every chain failure read as "the origin is down" and the
+CN mirror's actual reason — 403, 404, circuit-broken, TLS — was invisible. Found
+while a `curlimages/curl` pull failed with a Hub timeout: DaoCloud had failed first,
+for a reason the log did not keep.
+
+The message now carries a per-upstream summary, e.g.
+`[tried daocloud: 403 Forbidden; dockerhub: dial tcp …: i/o timeout]`. Which error is
+*wrapped* is unchanged, so a definitive 404 still wins over a later transport failure
+and does not turn into a 502.
+
 ## [0.12.2] — Push works behind an Ingress with more than one replica — 2026-07-28
 
 ### Fixed
