@@ -5,6 +5,41 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+### Added — `specula cache import`: seed the cache from an image pulled elsewhere
+
+For when the upstreams a cluster needs are unreachable but *some* machine can reach
+them — and for an air-gapped install, where there is no upstream by design.
+
+```bash
+# on a machine that can reach the registry
+crane pull --format=oci docker.io/library/redis:7-alpine redis.tar
+
+# where Specula's stores are reachable
+specula cache import --config specula.yaml \
+    --from redis.tar --as docker.io/library/redis:7-alpine
+```
+
+Afterwards a pull of `redis:7-alpine` is served entirely from cache. Verified with a
+real 133 MB multi-arch image against a Specula whose only upstream pointed at the
+discard port: 17 manifests and 79 blobs imported, `crane pull` returned the identical
+index digest, and the process logged **no upstream request at all**.
+
+Being seeded has to mean all three things a pull asks for, because a partial job looks
+like success and fails at pull time: the tag→digest pointer, the manifest by digest,
+and every config and layer blob. The importer writes all three, keyed exactly as the
+read path looks them up.
+
+A legacy `docker save` archive is **refused**, with the command that produces a usable
+layout. That format re-packs layers as uncompressed tars whose digests differ from the
+registry's, so importing one would fill the cache under digests no client ever asks
+for — a silent no-op that looks like it worked.
+
+Other things the implementation is careful about: bytes already in the store (a shared
+base layer, a re-import) cost a metadata row rather than a second copy; a layout with
+tampered bytes is rejected by the same verify-on-write path an upstream fetch uses; and
+a layout holding several tagged manifests is refused rather than guessed at, since
+publishing a tag that points at the wrong image is worse than stopping.
+
 ### Fixed — the same bytes under a different name went back to upstream
 
 Blob and manifest storage is content-addressed and name-independent: one object per

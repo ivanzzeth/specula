@@ -187,6 +187,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "cache":
+			if err := runCache(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula cache: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "version", "--version", "-V":
 			fmt.Println(version.String())
 			return
