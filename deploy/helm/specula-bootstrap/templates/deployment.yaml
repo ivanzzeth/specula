@@ -19,6 +19,18 @@ spec:
   template:
     metadata:
       annotations:
+        # Roll the Pods when the config or the credentials change. Without this a
+        # `helm upgrade` that only alters the ConfigMap/Secret leaves the Pod spec
+        # byte-identical, so the ReplicaSet is never recreated and running Pods keep
+        # the old values — including a CrashLoopBackOff that keeps failing on a DSN
+        # you already fixed.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- $secretPath := print $.Template.BasePath "/secret.yaml" }}
+        {{- $secretBody := include $secretPath . }}
+        {{- if trim $secretBody }}
+        checksum/creds: {{ $secretBody | sha256sum }}
+        {{- end }}
+      annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
