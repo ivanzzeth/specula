@@ -32,6 +32,10 @@ data:
           region: {{ .Values.blob.s3.region | quote }}
           use_path_style: {{ .Values.blob.s3.usePathStyle }}
         {{- end }}
+      # Local scratch on every replica: upstream bytes are hashed here before
+      # admission to the shared CAS. Must be the data volume, not /tmp (tmpfs =
+      # RAM) and not the ephemeral container layer.
+      quarantine_dir: {{ .Values.quarantineDir | quote }}
       meta:
         driver: postgres
         # Overridden at runtime by SPECULA_STORAGE__META__DSN (password from Secret).

@@ -88,6 +88,13 @@ blob:
     accessKeySecretKey: access-key-id
     secretKeySecretKey: secret-access-key
 
+# Local per-replica scratch for verify-on-write streaming (and resumable partials).
+# Keep on a writable volume with room for the largest artifact; never /tmp.
+quarantineDir: /var/lib/specula/quarantine
+# emptyDir sizeLimit for the quarantine mount (e.g. 20Gi). Empty = node default.
+# Must exceed the largest single artifact you expect to cache.
+quarantineSizeLimit: ""
+
 cache:
   defaultMutableTTLSeconds: 300
   negativeTTLSeconds: 1800

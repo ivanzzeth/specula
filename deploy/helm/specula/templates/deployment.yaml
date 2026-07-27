@@ -130,6 +130,12 @@ spec:
             - name: blob-data
               mountPath: {{ .Values.blob.local.root }}
             {{- end }}
+            # Per-replica scratch for verify-on-write streaming. Explicit emptyDir,
+            # not the container's writable layer: cache fills stream whole artifacts
+            # (multi-GB OCI layers) through here, and unbounded writes to the overlay
+            # burn ephemeral-storage until kubelet evicts the Pod.
+            - name: quarantine
+              mountPath: {{ .Values.quarantineDir }}
           # /v2/ is auth-gated (401 unauthenticated) and fails httpGet probes.
           # /healthz is unauthenticated and served on the data listener.
           livenessProbe:
@@ -159,6 +165,11 @@ spec:
           persistentVolumeClaim:
             claimName: {{ include "specula.blob.pvcName" . }}
         {{- end }}
+        - name: quarantine
+          emptyDir:
+            {{- with .Values.quarantineSizeLimit }}
+            sizeLimit: {{ . }}
+            {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

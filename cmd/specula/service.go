@@ -276,6 +276,7 @@ func patchConfigForSystemInstall(src string) string {
 		{"~/.specula/blobs", defaultDataDir + "/blobs"},
 		{"~/.specula/meta.db", defaultDataDir + "/meta.db"},
 		{"~/.specula/git", defaultDataDir + "/git"},
+		{"~/.specula/quarantine", defaultDataDir + "/quarantine"},
 		{"./data/blobs", defaultDataDir + "/blobs"},
 		{"./data/meta.db", defaultDataDir + "/meta.db"},
 		{"./data/git", defaultDataDir + "/git"},

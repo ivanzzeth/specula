@@ -55,6 +55,9 @@ func expandConfigPaths(cfg *Config) error {
 	if err := expandPathField(&cfg.Storage.Blob.Local.Root); err != nil {
 		return err
 	}
+	if err := expandPathField(&cfg.Storage.QuarantineDir); err != nil {
+		return err
+	}
 	if cfg.Storage.Meta.Driver == "sqlite" || cfg.Storage.Meta.Driver == "" {
 		if err := expandPathField(&cfg.Storage.Meta.DSN); err != nil {
 			return err
@@ -126,6 +129,12 @@ func applyStorageDefaults(cfg *Config) error {
 	}
 	if cfg.Storage.Meta.Driver == "sqlite" && cfg.Storage.Meta.DSN == "" {
 		cfg.Storage.Meta.DSN = filepath.Join(dataDir, "meta.db")
+	}
+	// Never leave this empty: cache.Quarantine falls back to os.TempDir(), which
+	// puts multi-GB layer fills on tmpfs / the container's ephemeral layer, or
+	// fails outright in an image with no /tmp. See StorageConfig.QuarantineDir.
+	if cfg.Storage.QuarantineDir == "" {
+		cfg.Storage.QuarantineDir = filepath.Join(dataDir, "quarantine")
 	}
 	for name, pc := range cfg.Protocols {
 		if pc.Git != nil && pc.Git.MirrorDir == "" {

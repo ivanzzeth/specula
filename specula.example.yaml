@@ -89,6 +89,17 @@ storage:
     #   secret_access_key: ""
     #   use_path_style: true    # required for MinIO; false for AWS S3
 
+  # Where upstream bytes are streamed and hashed BEFORE being admitted to the
+  # CAS (verify-on-write), including the durable partial files that let an
+  # aborted multi-GB OCI layer fill resume.
+  #
+  # Keep this on the DATA VOLUME. Left empty it falls back to the system temp
+  # dir, which is the wrong filesystem everywhere: tmpfs (= RAM) on many systemd
+  # hosts, the ephemeral container layer under Kubernetes (a big pull can get the
+  # Pod evicted), and absent entirely in a scratch image — where every cache fill
+  # fails while /healthz still answers 200.
+  quarantine_dir: ~/.specula/quarantine
+
   meta:
     # Metadata store driver: "sqlite" (single-node) or "postgres" (HA).
     # SQLite: WAL mode; use only for DaemonSet / single-instance deployments.

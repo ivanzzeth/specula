@@ -23,6 +23,9 @@ data:
         driver: local
         local:
           root: /var/lib/specula/blobs
+      # Data volume, not the container's ephemeral layer: a large pull would
+      # otherwise burn ephemeral-storage and get the Pod evicted.
+      quarantine_dir: /var/lib/specula/quarantine
       meta:
         driver: sqlite
         dsn: /var/lib/specula/meta.db

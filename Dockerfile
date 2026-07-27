@@ -20,7 +20,7 @@ RUN go mod download
 COPY . .
 COPY --from=web /src/web/dist ./web/dist
 ENV CGO_ENABLED=0
-RUN mkdir -p /out/var/lib/specula/blobs \
+RUN mkdir -p /out/var/lib/specula/blobs /out/var/lib/specula/quarantine \
  && go build -trimpath \
       -ldflags "-s -w \
         -X github.com/ivanzzeth/specula/internal/version.Version=${VERSION} \

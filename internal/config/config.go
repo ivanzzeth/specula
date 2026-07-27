@@ -11,6 +11,8 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -129,6 +131,21 @@ type RedisConfig struct {
 type StorageConfig struct {
 	Blob BlobStorageConfig `koanf:"blob"`
 	Meta MetaStorageConfig `koanf:"meta"`
+
+	// QuarantineDir is where upstream bytes are streamed and hashed before they
+	// are admitted to the CAS (verify-on-write), including the durable partial
+	// files that let an aborted multi-GB OCI layer fill resume.
+	//
+	// It MUST be on the data volume, not the system temp dir. Left empty this
+	// used to fall through to os.TempDir(), which meant:
+	//   - no /tmp in the image (scratch, read-only rootfs) → every cache fill
+	//     failed while /healthz stayed 200: healthy-looking, caching nothing;
+	//   - /tmp on tmpfs (common under systemd) → multi-GB layers written to RAM,
+	//     the exact thing streaming quarantine exists to avoid;
+	//   - Kubernetes → the ephemeral container layer, not the PVC, so a large
+	//     pull can get the Pod evicted for ephemeral-storage.
+	// Defaults to <data dir>/quarantine.
+	QuarantineDir string `koanf:"quarantine_dir"`
 }
 
 // BlobStorageConfig configures the content-addressed blob store (CAS).
@@ -694,6 +711,24 @@ func (c *Config) EffectiveLockDriver() string {
 		return "local"
 	}
 	return ld
+}
+
+// EffectiveQuarantineDir is the directory handlers stream upstream bytes through
+// before admitting them to the CAS. It never returns "" — an empty dir makes
+// cache.Quarantine fall back to os.TempDir(), which is the wrong filesystem in
+// every deployment shape (see StorageConfig.QuarantineDir) and absent entirely in
+// a scratch image. Falls back to <data dir>/quarantine, then to os.TempDir() only
+// if the home directory cannot be resolved at all.
+func (c *Config) EffectiveQuarantineDir() string {
+	if c != nil {
+		if dir := strings.TrimSpace(c.Storage.QuarantineDir); dir != "" {
+			return dir
+		}
+	}
+	if dataDir, err := DefaultDataDir(); err == nil {
+		return filepath.Join(dataDir, "quarantine")
+	}
+	return os.TempDir()
 }
 
 // Load reads and parses the YAML config file at path, applies SPECULA_*

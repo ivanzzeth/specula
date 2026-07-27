@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ivanzzeth/specula/internal/config"
 )
 
 func TestRenderUnit(t *testing.T) {
@@ -72,5 +74,28 @@ func TestChownPathRecursive(t *testing.T) {
 	})
 	if seen < 3 {
 		t.Fatalf("expected nested walk ≥3 paths, got %d", seen)
+	}
+}
+
+// The systemd install rewrites ~/.specula paths in the embedded example to
+// /var/lib/specula. Quarantine was added later; if it is missed here, every
+// systemd install keeps streaming multi-GB layers through the home dir (or, for
+// a root-run daemon with no HOME, os.TempDir()).
+func TestPatchConfigForSystemInstallRewritesQuarantine(t *testing.T) {
+	out := patchConfigForSystemInstall("quarantine_dir: ~/.specula/quarantine\n")
+	if strings.Contains(out, "~/.specula") {
+		t.Fatalf("quarantine path not rewritten: %s", out)
+	}
+	if !strings.Contains(out, "/var/lib/specula/quarantine") {
+		t.Fatalf("missing rewritten quarantine path: %s", out)
+	}
+}
+
+// The embedded example is the source for /etc/specula/specula.yaml, so the key
+// must survive the install rewrite as a real, absolute, non-temp path.
+func TestInstalledExampleHasQuarantineOnDataDir(t *testing.T) {
+	patched := patchConfigForSystemInstall(string(config.ExampleYAML))
+	if !strings.Contains(patched, "quarantine_dir: /var/lib/specula/quarantine") {
+		t.Fatal("installed config does not put quarantine on the data dir")
 	}
 }

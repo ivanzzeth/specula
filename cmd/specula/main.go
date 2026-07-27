@@ -219,6 +219,17 @@ func run() error {
 		log.Warn(h.Message, "section", h.Section)
 	}
 
+	// Create the quarantine dir up front and FAIL if we cannot. Every cache fill
+	// streams through it, so an unusable directory means a daemon that answers
+	// /healthz 200 and silently caches nothing — the failure mode observed on a
+	// real cluster, where the error only showed up per-request as
+	// "quarantine create temp: no such file or directory".
+	quarantineDir := cfg.EffectiveQuarantineDir()
+	if err := os.MkdirAll(quarantineDir, 0o755); err != nil {
+		return fmt.Errorf("create quarantine dir %s (storage.quarantine_dir): %w", quarantineDir, err)
+	}
+	log.Info("specula: quarantine dir ready", "path", quarantineDir)
+
 	// Root context cancelled on SIGINT/SIGTERM.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -752,6 +763,7 @@ func buildMultiTenantStores(cfg *config.Config, metaStore metastore.MetadataStor
 func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, tokenSvc *registrytoken.Service, authz *registryauthz.Authz, repoStore *repo.SQLStore, blobs blobstore.BlobStore, registryEnabled bool, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["oci"]
 	opts := []oci.Option{
+		oci.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		oci.WithMeta(metaStore),
 		oci.WithLogger(log.With("protocol", "oci")),
 	}
@@ -884,6 +896,7 @@ const goMountPrefix = "/go"
 func mountGoModule(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols[goProtocolKey]
 	opts := []gomod.Option{
+		gomod.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		gomod.WithMeta(metaStore),
 		gomod.WithPathPrefix(goMountPrefix),
 		gomod.WithLogger(log.With("protocol", gomod.Protocol)),
@@ -988,6 +1001,7 @@ func mountPyPI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 	pc, ok := cfg.Protocols["pypi"]
 	l := log.With("protocol", pypi.Protocol)
 	opts := []pypi.Option{
+		pypi.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		pypi.WithMeta(metaStore),
 		pypi.WithPathPrefix(pypiPrefix),
 		pypi.WithLogger(l),
@@ -1021,6 +1035,7 @@ func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	pc, ok := cfg.Protocols["npm"]
 	l := log.With("protocol", npm.Protocol)
 	opts := []npm.Option{
+		npm.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		npm.WithMeta(metaStore),
 		npm.WithPathPrefix(npmPrefix),
 		npm.WithLogger(l),
@@ -1056,6 +1071,7 @@ func mountNPM(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, gpgV *verify.GPGVerifier, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["apt"]
 	opts := []apthandler.Option{
+		apthandler.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		apthandler.WithMeta(metaStore),
 		apthandler.WithPathPrefix(aptPrefix),
 		apthandler.WithLogger(log.With("protocol", apthandler.Protocol)),
@@ -1091,6 +1107,7 @@ func mountAPT(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, provV *verify.HelmProvVerifier, locker coalesce.Locker, tarballAllow *tarballhandler.HostAllowlist) {
 	pc, ok := cfg.Protocols["helm"]
 	opts := []helmhandler.Option{
+		helmhandler.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		helmhandler.WithMeta(metaStore),
 		helmhandler.WithPathPrefix(helmPrefix),
 		helmhandler.WithLogger(log.With("protocol", helmhandler.Protocol)),
@@ -1129,6 +1146,7 @@ func mountHelm(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, me
 func mountTarball(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker, allow *tarballhandler.HostAllowlist) {
 	pc, ok := cfg.Protocols["tarball"]
 	opts := []tarballhandler.Option{
+		tarballhandler.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		tarballhandler.WithMeta(metaStore),
 		tarballhandler.WithPathPrefix(tarballPrefix),
 		tarballhandler.WithLogger(log.With("protocol", tarballhandler.Protocol)),
@@ -1225,6 +1243,7 @@ func mountGit(mux *http.ServeMux, cfg *config.Config, metaStore metastore.Metada
 func mountCargo(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["cargo"]
 	opts := []cargohandler.Option{
+		cargohandler.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		cargohandler.WithMeta(metaStore),
 		cargohandler.WithPathPrefix(cargoPrefix),
 		cargohandler.WithLogger(log.With("protocol", cargohandler.Protocol)),
@@ -1258,6 +1277,7 @@ func mountCargo(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, m
 func mountConda(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["conda"]
 	opts := []condahandler.Option{
+		condahandler.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		condahandler.WithMeta(metaStore),
 		condahandler.WithPathPrefix(condaPrefix),
 		condahandler.WithLogger(log.With("protocol", condahandler.Protocol)),
@@ -1286,6 +1306,7 @@ func mountConda(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, m
 func mountHF(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, metaStore metastore.MetadataStore, log *slog.Logger, ups *upstream.Registry, locker coalesce.Locker) {
 	pc, ok := cfg.Protocols["hf"]
 	opts := []hfhandler.Option{
+		hfhandler.WithQuarantineDir(cfg.EffectiveQuarantineDir()),
 		hfhandler.WithMeta(metaStore),
 		hfhandler.WithPathPrefix(hfPrefix),
 		hfhandler.WithLogger(log.With("protocol", hfhandler.Protocol)),

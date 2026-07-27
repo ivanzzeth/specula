@@ -12,6 +12,10 @@ storage:
     driver: local
     local:
       root: /var/lib/specula/blobs
+  # On the data VOLUME, never the container's ephemeral layer: cache fills stream
+  # multi-GB layers through here (and keep resumable partials).
+  quarantine_dir: /var/lib/specula/quarantine
+
   meta:
     driver: sqlite
     dsn: /var/lib/specula/meta.db

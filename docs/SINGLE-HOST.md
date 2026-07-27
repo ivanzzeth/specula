@@ -128,9 +128,23 @@ Blobs only grow. Put `/var/lib/specula` on its own disk and set a cap — a full
 disk here means every client in the VPC stops pulling.
 
 ```yaml
+storage:
+  # Verify-on-write streams every artifact through here before admission, and
+  # keeps resumable partials for interrupted multi-GB layer fills. It MUST be on
+  # the same (sized) volume — the default falls back to the data dir, but if you
+  # move blobs elsewhere, move this too. Never leave it on /tmp: that is tmpfs
+  # (RAM) on many systemd hosts, and `PrivateTmp=true` in the unit does not
+  # change which filesystem backs it.
+  quarantine_dir: /var/lib/specula/quarantine
+
 cache:
   max_bytes: 200_000_000_000   # evicts oldest unpinned entries; 0 = unbounded
 ```
+
+Size the volume for `max_bytes` **plus** the largest single artifact twice over
+(quarantine copy + CAS copy). The daemon refuses to start if the quarantine dir
+cannot be created, which is deliberate: the alternative is a daemon answering
+`/healthz` 200 while every cache fill fails.
 
 ## 7. Security group
 
