@@ -52,14 +52,49 @@ func helmAndGPG() (string, string) {
 	return helm, gpg
 }
 
+// shortGNUPGHome returns an isolated GNUPGHOME with a SHORT path.
+//
+// gpg-agent listens on a UNIX socket at $GNUPGHOME/S.gpg-agent, and sun_path is
+// capped at ~104 bytes (darwin) / 108 (linux). macOS t.TempDir() sits under
+// /var/folders/<hash>/T/<TestName><random>/001, so any test with a long name
+// blows that budget and gpg fails key generation with
+//
+//	gpg: can't connect to the gpg-agent: File name too long
+//	gpg: key generation failed: No agent running
+//
+// — an environment artefact that reads as a signing bug. Anchoring at /tmp keeps
+// the socket path short and independent of the test's name.
+func shortGNUPGHome(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "sgpg")
+	if err != nil {
+		// No /tmp (unusual): fall back and accept the risk rather than fail here.
+		t.Logf("short GNUPGHOME unavailable (%v) — falling back to t.TempDir()", err)
+		dir = filepath.Join(t.TempDir(), "gnupg")
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		return dir
+	}
+	require.NoError(t, os.Chmod(dir, 0o700))
+	t.Cleanup(func() {
+		// Stop the agent this GNUPGHOME spawned, or it lingers holding the socket
+		// after the directory is gone.
+		if gpgconf, err := exec.LookPath("gpgconf"); err == nil {
+			cmd := exec.Command(gpgconf, "--kill", "gpg-agent")
+			cmd.Env = append(os.Environ(), "GNUPGHOME="+dir)
+			_ = cmd.Run()
+		}
+		_ = os.RemoveAll(dir)
+	})
+	return dir
+}
+
 // realHelmProv generates a passphraseless GPG key in an isolated GNUPGHOME, uses
 // the real `helm` CLI to package + sign a fresh chart, and returns the armored
 // public key path, the .prov bytes, the chart .tgz filename and its sha256 hex.
 func realHelmProv(t *testing.T, helm, gpg string) (pubKeyPath string, provBytes []byte, chartFile, chartSHA256 string) {
 	t.Helper()
 	dir := t.TempDir()
-	gnupg := filepath.Join(dir, "gnupg")
-	require.NoError(t, os.MkdirAll(gnupg, 0o700))
+	gnupg := shortGNUPGHome(t)
 	env := append(os.Environ(), "GNUPGHOME="+gnupg)
 
 	run := func(bin string, args ...string) {

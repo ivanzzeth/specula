@@ -65,6 +65,15 @@ const simpleSigningMediaType = "application/vnd.dev.cosign.simplesigning.v1+json
 // bare host (127.0.0.1:PORT). It is torn down at test end.
 func startInProcessRegistry(t *testing.T) string {
 	t.Helper()
+	// The fetcher resolves credentials through authn.DefaultKeychain — correct in
+	// production, where private registries need the ambient docker config, but it
+	// makes these hermetic 127.0.0.1 tests read ~/.docker/config.json. A developer
+	// whose config names a credential helper (credsStore, or a per-registry
+	// credHelper) then fails every one of them with
+	//   exec: "docker-credential-<x>": executable file not found in $PATH
+	// which looks like a verifier bug and is not one. Point DOCKER_CONFIG at an
+	// empty dir so the keychain resolves anonymous — what this registry wants.
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
 	srv := httptest.NewServer(registry.New())
 	t.Cleanup(srv.Close)
 	u, err := url.Parse(srv.URL)
