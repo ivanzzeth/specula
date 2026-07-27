@@ -50,6 +50,9 @@ data:
 
     # Git is omitted in HA: bare mirrors are node-local and not shared across replicas.
     protocols:
+      {{- with .Values.protocolOverrides }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
 {{- if eq .Values.regionProfile "cn" }}
       oci:
         mutable_ttl_seconds: 300
@@ -124,169 +127,13 @@ data:
                   base_url: https://mcr.1ms.run
                   priority: 2
             - host: codeberg.org
-      go:
-        mutable_ttl_seconds: 300
-        upstreams:
-          - name: goproxy-cn
-            base_url: https://goproxy.cn
-            priority: 1
-            official: false
-          - name: goproxy-io
-            base_url: https://goproxy.io
-            priority: 2
-            official: false
-          - name: golang-proxy
-            base_url: https://proxy.golang.org
-            priority: 3
-            official: true
-        verification:
-          tiers: [signed, tofu, checksum]
-          quorum: 1
-        sumdb:
-          url: https://sum.golang.google.cn
-          policy: enforce
-      pypi:
-        mutable_ttl_seconds: 1800
-        upstreams:
-          - name: tuna
-            base_url: https://pypi.tuna.tsinghua.edu.cn
-            priority: 1
-            official: false
-          - name: aliyun
-            base_url: https://mirrors.aliyun.com/pypi
-            priority: 2
-            official: false
-          - name: pypi-org
-            base_url: https://pypi.org
-            priority: 3
-            official: true
-        verification:
-          tiers: [consensus, tofu, checksum]
-          quorum: 2
-          tofu: enforce
-      npm:
-        mutable_ttl_seconds: 120
-        upstreams:
-          - name: npmmirror
-            base_url: https://registry.npmmirror.com
-            priority: 1
-            official: false
-          - name: npm-registry
-            base_url: https://registry.npmjs.org
-            priority: 2
-            official: true
-        verification:
-          tiers: [consensus, tofu, checksum]
-          quorum: 2
-          tofu: enforce
-      helm:
-        mutable_ttl_seconds: 1800
-        upstreams:
-          - name: bitnami
-            base_url: https://charts.bitnami.com/bitnami
-            priority: 1
-            official: true
-        helm:
-          repositories:
-            - name: bitnami
-              base_url: https://charts.bitnami.com/bitnami
-            - name: prometheus-community
-              base_url: https://prometheus-community.github.io/helm-charts
-        verification:
-          tiers: [tofu, checksum]
-          quorum: 1
-          tofu: enforce
-      apt:
-        mutable_ttl_seconds: 0
-        upstreams:
-          - name: tuna
-            base_url: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
-            priority: 1
-            official: false
-          - name: aliyun
-            base_url: https://mirrors.aliyun.com/ubuntu
-            priority: 2
-            official: false
-          - name: ubuntu-archive
-            base_url: https://archive.ubuntu.com/ubuntu
-            priority: 3
-            official: true
-        apt:
-          repositories:
-            - name: ubuntu
-              base_url: https://mirrors.tuna.tsinghua.edu.cn/ubuntu
-            - name: debian
-              base_url: https://mirrors.tuna.tsinghua.edu.cn/debian
-        verification:
-          tiers: [signed, tofu, checksum]
-          quorum: 1
-          tofu: enforce
-      cargo:
-        mutable_ttl_seconds: 300
-        upstreams:
-          - name: rsproxy-index
-            base_url: https://rsproxy.cn/index
-            priority: 1
-            official: false
-          - name: index-crates-io
-            base_url: https://index.crates.io
-            priority: 2
-            official: true
-        cargo:
-          dl_upstreams:
-            - name: ustc-crates
-              base_url: https://mirrors.ustc.edu.cn/crates.io
-              priority: 1
-              official: false
-            - name: static-crates-io
-              base_url: https://static.crates.io
-              priority: 2
-              official: true
-          registries:
-            - name: crates-io
-              base_url: https://index.crates.io
-            - name: rsproxy
-              base_url: https://rsproxy.cn/index
-        verification:
-          tiers: [tofu, checksum]
-          quorum: 1
-          tofu: enforce
-      conda:
-        mutable_ttl_seconds: 300
-        upstreams:
-          - name: tuna-cloud
-            base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud
-            priority: 1
-            official: false
-          - name: anaconda-cloud
-            base_url: https://conda.anaconda.org
-            priority: 2
-            official: true
-        conda:
-          channels:
-            - name: conda-forge
-              base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
-            - name: bioconda
-              base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/bioconda
-        verification:
-          tiers: [checksum, tofu]
-          quorum: 1
-          tofu: enforce
-      hf:
-        mutable_ttl_seconds: 120
-        upstreams:
-          - name: hf-mirror
-            base_url: https://hf-mirror.com
-            priority: 1
-            official: false
-          - name: huggingface
-            base_url: https://huggingface.co
-            priority: 2
-            official: true
-        verification:
-          tiers: [tofu, checksum]
-          quorum: 1
-          tofu: enforce
+      # npm, pypi, go, apt, cargo, conda and hf are NOT listed here on purpose.
+      # Specula serves every protocol it implements from a built-in China-first
+      # upstream chain (parsed from internal/config/example.yaml), so restating that
+      # table in the chart only gave it a second copy to drift from — this one was
+      # already missing the USTC/Tencent/Huawei mirrors the binary now defaults to.
+      # Override or disable one via protocolOverrides; `enabled: false` switches a
+      # protocol off. Only OCI stays spelled out, for its remote_registries allowlist.
 {{- else }}
       oci:
         mutable_ttl_seconds: 300

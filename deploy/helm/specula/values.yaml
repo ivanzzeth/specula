@@ -61,9 +61,25 @@ auth:
   jwtSecret: ""
   cookieSecure: false
 
-# When "cn", ConfigMap uses China-reachable upstreams (DaoCloud / goproxy.cn /
-# npmmirror / tuna / aliyun). Empty keeps the default global upstreams.
+# When "cn", the ConfigMap pins China-reachable OCI upstreams (DaoCloud / 1ms /
+# aliyun) and the remote_registries allowlist. Empty keeps the global ones.
+#
+# It no longer decides npm/pypi/go/apt/cargo/conda/hf: Specula serves those from a
+# built-in China-first chain whether or not the chart mentions them.
 regionProfile: ""
+
+# Per-protocol overrides, merged verbatim into the config's `protocols:` block.
+# Not needed to ENABLE a protocol — every protocol Specula implements is served.
+# Use it to retune or switch one off:
+#
+#   protocolOverrides:
+#     hf:
+#       enabled: false
+#     npm:
+#       mutable_ttl_seconds: 60
+#
+# `upstreams: []` is a validation error, not a way to disable: use enabled: false.
+protocolOverrides: {}
 
 # Blob storage: "s3" (MinIO subchart or external S3-compatible) OR "local" with shared PVC.
 blob:
