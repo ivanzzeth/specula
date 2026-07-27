@@ -85,9 +85,9 @@ type ProtoTraffic struct {
 	Protocol string `json:"protocol"`
 
 	// Lifetime (since process start).
-	BytesTotal            uint64  `json:"bytes_total"`
-	RequestsTotal         uint64  `json:"requests_total"`
-	DurationSecondsTotal  float64 `json:"duration_seconds_total"`
+	BytesTotal           uint64  `json:"bytes_total"`
+	RequestsTotal        uint64  `json:"requests_total"`
+	DurationSecondsTotal float64 `json:"duration_seconds_total"`
 	TransferMBpsLifetime float64 `json:"transfer_mbps_lifetime"` // bytes / active request time
 
 	// Sliding wall-clock window (default 60s).

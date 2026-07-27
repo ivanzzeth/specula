@@ -199,17 +199,13 @@ func localHealthzURL(addr string, tlsOn bool) (string, error) {
 }
 
 // upgradeHealthURL derives the post-restart probe target from the live config.
-// Control plane first (always on, cheap), data plane as fallback.
+// One listener now, so there is one address to probe.
 func upgradeHealthURL(configPath string) (string, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return "", err
 	}
-	addr := strings.TrimSpace(cfg.Server.ControlPlaneAddr)
-	if addr == "" {
-		addr = strings.TrimSpace(cfg.Server.DataPlaneAddr)
-	}
-	return localHealthzURL(addr, cfg.Server.TLS.Enabled())
+	return localHealthzURL(cfg.EffectiveListenAddr(), cfg.Server.TLS.Enabled())
 }
 
 // waitLocalHealthz polls url until it answers 2xx or the deadline passes.

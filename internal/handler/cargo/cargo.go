@@ -6,7 +6,7 @@
 //	GET/HEAD /index/<crate-path>             — mutable: sparse index JSON for a crate
 //	GET/HEAD /crates/<name>/<version>/download — immutable: .crate tarball
 //
-// Clients point Cargo at sparse+http://host:7732/cargo/index/ via source
+// Clients point Cargo at sparse+http://host:7733/cargo/index/ via source
 // replacement. config.json rewrites "dl" so crate downloads also hit Specula.
 package cargo
 
@@ -25,7 +25,7 @@ import (
 const Protocol = "cargo"
 
 const (
-	indexVersion        = "index"
+	indexVersion              = "index"
 	ttlNeverRevalidate  int64 = -1
 	ttlAlwaysRevalidate int64 = 0
 	defaultDLBase             = "https://static.crates.io"

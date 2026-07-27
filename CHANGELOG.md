@@ -5,6 +5,50 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+### ⚠️ BREAKING — one port, 7732 removed
+
+Specula listened on two ports: 7732 for artifact protocols, 7733 for the WebUI and
+Admin API. It now listens on **7733 only**. Paths keep their separate meanings —
+`/v2/`, `/helm/`, `/pypi/`, `/npm/`, `/go/`, `/apt/`, `/tarball/`, `/git/`, `/cargo/`,
+`/conda/`, `/hf/`, `/token`, `/api/v1/**`, `/healthz`, `/readyz`, `/metrics`, and the
+SPA at `/`. Nothing moved under `/api/v1`; there is simply no second TCP port to
+publish, firewall or explain, and an Ingress in front of it is now ordinary
+Kubernetes.
+
+There is deliberately **no dual-listen compatibility period**.
+
+**Config.** `server.listen_addr` (default `0.0.0.0:7733`) replaces the pair.
+`server.control_plane_addr` still works as an alias, because every existing config and
+ConfigMap sets it and it already named the surviving port.
+`server.data_plane_addr` is a **startup error**, not a warning:
+
+```
+server.data_plane_addr: removed — Specula serves every protocol, the Admin API,
+probes and the WebUI on ONE port. Delete this key and set server.listen_addr instead
+```
+
+Silently ignoring it would leave an operator believing 7732 is still served.
+
+**Charts.** Both charts render exactly one Service port and one containerPort
+(`service.port`, `service.nodePort`, default 7733/30733); probes moved to it.
+
+**Clients.** `integrate` / `doctor` / `bootstrap-prefetch` default to 7733 (or an
+Ingress URL). `integrate` also prunes stale `:7732` registry mirrors it finds, so a
+node configured by an older Specula is repaired rather than left pointing at a dead
+port.
+
+`server.registry_public_host` is now **required behind an Ingress**: with one port a
+direct deployment can derive it from the request, but an ingress hostname and :443
+appear nowhere in the listen address.
+
+Merging the muxes has one hazard worth naming: the SPA's `/` catch-all must not
+swallow `GET /v2/`. When that happened on the old control-plane port, `docker login`
+read the 200-with-HTML as "registry reachable, no auth required" and printed **Login
+Succeeded** for an entirely bogus password. Four tests pin it (`/v2/` is not HTML,
+carries a challenge, everything answers on one mux, no duplicate registration), and
+the cluster gate asserts both the single Service port and a real `/v2/` challenge.
+
+
 ### Added
 
 - **OCI `remote_registries[].upstreams`**: multi-mirror chain per host (e.g.

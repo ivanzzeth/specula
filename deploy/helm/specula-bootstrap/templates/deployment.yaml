@@ -94,25 +94,22 @@ spec:
             {{- end }}
           {{- end }}
           ports:
-            - name: data
-              containerPort: {{ .Values.service.dataPort }}
+            - name: http
+              containerPort: {{ .Values.service.port }}
               protocol: TCP
-            - name: control
-              containerPort: {{ .Values.service.controlPort }}
-              protocol: TCP
-          # /v2/ is the auth-handshake endpoint (401 by protocol); /healthz is the
-          # unauthenticated liveness signal served on the data listener.
+          # /v2/ is the auth-handshake endpoint (401 by protocol), so probes use
+          # /healthz — unauthenticated, and on the same port as everything else.
           livenessProbe:
             httpGet:
               path: /healthz
-              port: data
+              port: http
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /healthz
-              port: data
+              port: http
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3

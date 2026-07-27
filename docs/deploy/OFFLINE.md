@@ -31,11 +31,11 @@ Warm the artifacts you will need offline:
 
 ```bash
 # OCI (docker / nerdctl / crane through Specula)
-docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
+docker pull 127.0.0.1:7733/registry.k8s.io/pause:3.9
 
 # Or bulk-warm manifests via the prefetch helper (token + manifest GET):
 ./bin/specula bootstrap-prefetch \
-  --addr http://127.0.0.1:7732 \
+  --addr http://127.0.0.1:7733 \
   --images docker.io/library/hello-world:latest,registry.k8s.io/pause:3.9
 ```
 
@@ -73,7 +73,7 @@ containerd `certs.d` host.toml files:
 
 ```bash
 ./bin/specula bootstrap-mirror write \
-  --endpoint http://127.0.0.1:7732 \
+  --endpoint http://127.0.0.1:7733 \
   --certs-dir /etc/containerd/certs.d \
   --registries docker.io,registry.k8s.io,ghcr.io
 ```
@@ -89,7 +89,7 @@ offline cutover:
 
 ```bash
 ./bin/specula bootstrap-prefetch \
-  --addr http://specula.example:7732 \
+  --addr http://specula.example:7733 \
   --images registry.k8s.io/kube-apiserver:v1.29.0,... \
   --timeout 10m
 ```

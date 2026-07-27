@@ -1,13 +1,13 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
 	"os"
-	"bytes"
 	"testing"
 	"time"
 
@@ -18,9 +18,9 @@ import (
 )
 
 type restartReader struct {
-	prefix   []byte
-	full     []byte
-	phase    int // 0=prefix, 1=signal restart, 2=full
+	prefix    []byte
+	full      []byte
+	phase     int // 0=prefix, 1=signal restart, 2=full
 	prefixOff int
 	fullOff   int
 }

@@ -10,10 +10,13 @@ import (
 	"time"
 )
 
-// DefaultAddr is the Specula data-plane URL used when --addr is omitted.
-// Production installs typically terminate TLS on :7732; plain http:// hosts.toml
-// against a TLS-only listener yields HTTP 400 / handshake failures on pull.
-const DefaultAddr = "https://127.0.0.1:7732"
+// DefaultAddr is the Specula base URL used when --addr is omitted.
+//
+// Specula serves every protocol, the Admin API and the WebUI on ONE port (7733), so
+// there is a single address to point clients at — an Ingress URL in a cluster, this
+// loopback default on a node. https because plain http:// in hosts.toml against a
+// TLS listener yields HTTP 400 / handshake failures on pull.
+const DefaultAddr = "https://127.0.0.1:7733"
 
 // normalizeAddr validates and canonicalizes a Specula base URL.
 // Empty addr becomes DefaultAddr (https).

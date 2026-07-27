@@ -17,7 +17,7 @@ import (
 type DoctorOptions struct {
 	// Home overrides the user home (tests / non-interactive).
 	Home string
-	// Addr is Specula's data-plane base URL (default https://127.0.0.1:7732).
+	// Addr is Specula's base URL (default https://127.0.0.1:7733).
 	Addr string
 	// SkipProbe skips HTTP reachability of Addr/v2/.
 	SkipProbe bool

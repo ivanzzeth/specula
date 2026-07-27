@@ -28,6 +28,6 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - bootstrap-prefetch
-            - --addr=http://{{ include "specula-bootstrap.fullname" . }}:{{ .Values.service.dataPort }}
+            - --addr=http://{{ include "specula-bootstrap.fullname" . }}:{{ .Values.service.port }}
             - --images={{ .Values.prefetch.images | join "," }}
 {{- end }}

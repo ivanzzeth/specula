@@ -26,9 +26,9 @@ Defaults use DaoCloud (https://docker.m.daocloud.io). Override if needed:
 
 Verify pull-through
 ───────────────────
-  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "specula-bootstrap.fullname" . }} 7732:{{ .Values.service.dataPort }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "specula-bootstrap.fullname" . }} 7733:{{ .Values.service.port }}
   # /v2/ returns 401 (Docker token handshake) — correct.
-  # Or: specula bootstrap-prefetch --addr http://127.0.0.1:7732 --images docker.io/library/hello-world:latest
+  # Or: specula bootstrap-prefetch --addr http://127.0.0.1:7733 --images docker.io/library/hello-world:latest
 
 SECURITY
 ────────

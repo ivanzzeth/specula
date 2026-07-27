@@ -85,7 +85,7 @@ func integrateDocker(home, addr, caFile string, dryRun, skipRoot bool) Result {
 			detailParts = append(detailParts, "insecure-registries ← "+insecureHost)
 		}
 		if prunedInsec {
-			detailParts = append(detailParts, "pruned stale :7732 insecure-registries")
+			detailParts = append(detailParts, "pruned stale Specula insecure-registries")
 		}
 		detail := strings.Join(detailParts, "; ") + " (restart docker to apply)"
 
@@ -178,10 +178,13 @@ func dockerInsecureHost(addr string) string {
 	return u.Host // already host:port when port present
 }
 
-const speculaDataPortSuffix = ":7732"
+// speculaPortSuffixes are ports a Specula mirror may have been written on. 7732 is
+// the retired data-plane port: entries still pointing there are stale by definition
+// now that everything is served on 7733, so pruning them is part of the migration.
+var speculaPortSuffixes = []string{":7733", ":7732"}
 
-// pruneStaleSpeculaMirrors drops registry-mirror URLs whose dial host ends with
-// :7732 except the current Specula https addr (stale HTTP cluster-IP leftovers).
+// pruneStaleSpeculaMirrors drops registry-mirror URLs on a Specula port other than
+// the current addr — stale HTTP cluster-IP leftovers, and every :7732 entry.
 func pruneStaleSpeculaMirrors(mirrors []string, current string) ([]string, bool) {
 	var changed bool
 	out := make([]string, 0, len(mirrors))
@@ -190,7 +193,7 @@ func pruneStaleSpeculaMirrors(mirrors []string, current string) ([]string, bool)
 			out = append(out, m)
 			continue
 		}
-		if strings.HasSuffix(endpointDialHost(m), speculaDataPortSuffix) {
+		if hasSpeculaPort(endpointDialHost(m)) {
 			changed = true
 			continue
 		}
@@ -203,7 +206,7 @@ func pruneSpeculaInsecureRegistries(insecs []string) ([]string, bool) {
 	var changed bool
 	out := make([]string, 0, len(insecs))
 	for _, e := range insecs {
-		if strings.HasSuffix(e, speculaDataPortSuffix) {
+		if hasSpeculaPort(e) {
 			changed = true
 			continue
 		}
@@ -321,4 +324,14 @@ func dockerStringList(cfg map[string]any, key string) []string {
 	default:
 		return nil
 	}
+}
+
+// hasSpeculaPort reports whether a host:port sits on a port Specula uses or used.
+func hasSpeculaPort(hostPort string) bool {
+	for _, suffix := range speculaPortSuffixes {
+		if strings.HasSuffix(hostPort, suffix) {
+			return true
+		}
+	}
+	return false
 }

@@ -61,7 +61,7 @@ type caseSpec struct {
 func Run(ctx context.Context, opts Options) (Report, error) {
 	addr := strings.TrimRight(strings.TrimSpace(opts.Addr), "/")
 	if addr == "" {
-		addr = "http://127.0.0.1:7732"
+		addr = "http://127.0.0.1:7733"
 	}
 	protos := opts.Protocols
 	if len(protos) == 0 {

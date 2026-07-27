@@ -130,7 +130,7 @@ reschedulable. The bootstrap chart does not template that today.
 ## What gets installed
 
 1. Helm release of the **local** bootstrap chart (never a remote OCI chart).
-2. Specula Deployment (NodePort `30732` / `30733`), pinned + optional PVC.
+2. Specula Deployment (NodePort `30733` / `30733`), pinned + optional PVC.
 3. `bootstrap-mirror` DaemonSet — writes `certs.d/<registry>/hosts.toml`.
 4. `bootstrap-node` integrate DaemonSet — hosts.toml, `integrate --protocols oci`,
    CRI `config_path`, `restart-containerd=once` (stamp + `/healthz` gate), hold +
@@ -153,7 +153,7 @@ containerd 2.1.9, 2 ECS worker nodes:
   the steady state but not that first window. A node-pool startup script is the
   real fix (not implemented).
 - `cluster doctor` probes through the API server, so it works from a laptop
-  outside the VPC. Node-side `127.0.0.1:30732` reachability is checked by the
+  outside the VPC. Node-side `127.0.0.1:30733` reachability is checked by the
   integrate DaemonSet instead — read its logs, or `kubectl logs ds/...-integrate`.
 
 ## Acceptance
@@ -164,7 +164,7 @@ make test-cluster-install
 ```
 
 Asserts: install + doctor OK, reload stamp present, Pod delete recovers, hosts.toml
-→ `127.0.0.1:30732`, ConfigMap has `huawei-ddn`, `crictl pull registry.k8s.io/pause:3.9`.
+→ `127.0.0.1:30733`, ConfigMap has `huawei-ddn`, `crictl pull registry.k8s.io/pause:3.9`.
 
 ## Chorei migration
 

@@ -18,8 +18,7 @@ import (
 func validCfg() *config.Config {
 	return &config.Config{
 		Server: config.ServerConfig{
-			DataPlaneAddr:    ":5000",
-			ControlPlaneAddr: ":8080",
+			ListenAddr: ":8080",
 		},
 		Storage: config.StorageConfig{
 			Blob: config.BlobStorageConfig{

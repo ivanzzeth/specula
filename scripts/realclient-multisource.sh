@@ -12,7 +12,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${WORK:-$(mktemp -d /tmp/specula-multisource.XXXXXX)}"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
 DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
-CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
+# One listener now: everything answers on DATA_PORT. CTRL_PORT is kept as an
+# alias so the probes below need no changes.
+CTRL_PORT="${DATA_PORT}"
 UP_PORT="${UP_PORT:-$(pick_free_port)}"
 
 mkdir -p "${WORK}/blobs" "${WORK}/up"
@@ -50,8 +52,7 @@ go -C "$REPO" build -o "${WORK}/specula" ./cmd/specula
 
 cat > "${WORK}/cfg.yaml" <<YAML
 server:
-  data_plane_addr: ":${DATA_PORT}"
-  control_plane_addr: ":${CTRL_PORT}"
+  listen_addr: ":${DATA_PORT}"
 storage:
   blob: {driver: local, local: {root: ${WORK}/blobs}}
   meta: {driver: sqlite, dsn: ${WORK}/meta.db}

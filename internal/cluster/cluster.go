@@ -16,10 +16,12 @@ import (
 const (
 	DefaultRelease   = "boot"
 	DefaultNamespace = "specula-boot"
-	DefaultNodePort  = 30732
-	// DefaultDataPort is the Service (not node) port of the data plane — what the
-	// API-server Service proxy addresses when doctor probes from outside the VPC.
-	DefaultDataPort = 7732
+	// DefaultNodePort is the single NodePort: protocols, Admin API, probes and the
+	// WebUI all answer on it.
+	DefaultNodePort = 30733
+	// DefaultServicePort is the Service (not node) port — what the API-server Service
+	// proxy addresses when doctor probes from outside the VPC.
+	DefaultServicePort = 7733
 )
 
 // InstallOptions configures cluster install.
@@ -83,7 +85,7 @@ type InstallOptions struct {
 type Result struct {
 	Namespace string
 	Release   string
-	Endpoint  string // node-local data-plane URL
+	Endpoint  string // node-local Specula URL
 	Notes     []string
 }
 

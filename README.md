@@ -36,7 +36,7 @@ make run                               # or: ./bin/specula  (writes specula.yaml
 A release binary is the same: drop it anywhere and run — missing `specula.yaml`
 is created from the embedded example (data under `~/.specula`).
 
-- Data plane (protocols): `http://127.0.0.1:7732`
+- Data plane (protocols): `http://127.0.0.1:7733`
 - Control plane (WebUI): `http://127.0.0.1:7733`
 
 **One-click client wiring** — a single command wires **all** supported protocols
@@ -45,7 +45,7 @@ existing mirrors.
 
 ```bash
 make build-go
-./bin/specula integrate --addr https://127.0.0.1:7732
+./bin/specula integrate --addr https://127.0.0.1:7733
 # preview only:     ./bin/specula integrate --dry-run
 # check state:      ./bin/specula integrate status
 # OCI/CRI preflight: ./bin/specula doctor   # exit 1 on colon config_path / server= / unreachable
@@ -124,7 +124,7 @@ Pull the image over the **VPC** endpoint from inside the cluster
 
 ```bash
 docker pull ivanzz/specula:v0.4.0          # or :latest on stable tags
-docker run --rm -p 7732:7732 -p 7733:7733 \
+docker run --rm -p 7733:7733 -p 7733:7733 \
   -v specula-data:/var/lib/specula \
   ivanzz/specula:v0.4.0
 ```
@@ -198,14 +198,14 @@ includes `X-Specula-Protocol` and `Via: 1.1 specula`. `integrate` also writes
 so clients connect to Specula directly instead of via Clash/corporate proxy.
 
 ```bash
-curl -sI http://127.0.0.1:7732/go/ | grep -iE 'x-specula|via:'
+curl -sI http://127.0.0.1:7733/go/ | grep -iE 'x-specula|via:'
 source ~/.config/specula/env.sh
 ```
 
 ### One-shot pull probe
 
 ```bash
-./bin/specula bench --addr http://127.0.0.1:7732   # cold/warm probe only — not live stats
+./bin/specula bench --addr http://127.0.0.1:7733   # cold/warm probe only — not live stats
 ```
 
 ### Go library (SDK)
@@ -263,7 +263,7 @@ import (
 s, _ := specula.New(ctx, specula.Options{DataDir: "./data", Upstreams: ups})
 mux := http.NewServeMux()
 embed.Mount(mux, s, embed.Options{Protocols: []string{"gomod", "oci"}})
-http.ListenAndServe(":7732", mux)
+http.ListenAndServe(":7733", mux)
 ```
 
 Examples: [`examples/sdk-get-module`](examples/sdk-get-module), [`examples/embed-mux`](examples/embed-mux).
@@ -332,7 +332,7 @@ Full reference: [`specula.example.yaml`](specula.example.yaml). Env overrides: `
 **Local/dev: one command for every protocol** (see Quick start):
 
 ```bash
-./bin/specula integrate --addr http://127.0.0.1:7732
+./bin/specula integrate --addr http://127.0.0.1:7733
 ```
 
 It only **adds** Specula: prepends to lists, uses drop-in files
@@ -340,25 +340,25 @@ It only **adds** Specula: prepends to lists, uses drop-in files
 requires running the sections below one-by-one. Use those snippets for CI images,
 Kubernetes, or when you want full manual control.
 
-Assume data plane `http://127.0.0.1:7732` (DaemonSet / localhost). Replace with your Specula host in real deployments. Data plane has **no consumer auth** — put it on a trusted network / mTLS perimeter.
+Assume data plane `http://127.0.0.1:7733` (DaemonSet / localhost). Replace with your Specula host in real deployments. Data plane has **no consumer auth** — put it on a trusted network / mTLS perimeter.
 
 ### OCI (Docker / containerd / nerdctl)
 
 One-click (same as other protocols — additive; needs **sudo** so live dockerd picks it up):
 
 ```bash
-sudo ./bin/specula integrate --protocols oci --addr http://127.0.0.1:7732
+sudo ./bin/specula integrate --protocols oci --addr http://127.0.0.1:7733
 sudo systemctl restart docker   # apply daemon.json
 # verify:
 docker info | grep -A5 'Registry Mirrors'
-curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
+curl -sI http://127.0.0.1:7733/v2/ | grep -i x-specula
 ```
 
 This updates:
 - `/etc/docker/daemon.json`: `registry-mirrors` (**docker.io only**) and `insecure-registries`
 - `/etc/containerd/certs.d/<registry>/hosts.toml`: non-Hub registries get `override_path` so pulls reach Specula with the host in the path
 - `/etc/containerd/config.toml`: forces CRI **and** `transfer.v1.local` `config_path` to the same **single** certs.d directory (containerd 2.2’s default colon CRI path is ignored by transfer; empty transfer `config_path` also skips hosts.toml). Restart containerd after integrate.
-- Default `--addr` is `https://127.0.0.1:7732`. If you pass `http://` but the port only speaks TLS, integrate auto-upgrades to `https://` (avoids HTTP 400 in hosts.toml).
+- Default `--addr` is `https://127.0.0.1:7733`. If you pass `http://` but the port only speaks TLS, integrate auto-upgrades to `https://` (avoids HTTP 400 in hosts.toml).
 - Preflight: `./bin/specula doctor` (alias `integrate doctor`) flags colon/empty CRI+transfer `config_path`, stale effective dump (forgot restart), residual `server=`, k3s wrong certs.d root, missing `registry.k8s.io` hosts, and Specula `/v2/` down — before kubeadm hangs.
 
 Without sudo, Specula still writes user-dir daemon.json / `~/.config/specula/certs.d/`, but
@@ -369,8 +369,8 @@ Manual equivalent:
 ```jsonc
 // /etc/docker/daemon.json — pull-through for docker.io ONLY
 {
-  "registry-mirrors": ["http://127.0.0.1:7732"],
-  "insecure-registries": ["127.0.0.1:7732"]
+  "registry-mirrors": ["http://127.0.0.1:7733"],
+  "insecure-registries": ["127.0.0.1:7733"]
 }
 ```
 
@@ -381,25 +381,25 @@ containerd hosts.toml.
 
 ```bash
 # Path-style — works with plain dockerd (image name includes the registry host)
-docker pull 127.0.0.1:7732/codeberg.org/forgejo/forgejo:12
-docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
-docker pull 127.0.0.1:7732/ghcr.io/OWNER/IMAGE:tag
+docker pull 127.0.0.1:7733/codeberg.org/forgejo/forgejo:12
+docker pull 127.0.0.1:7733/registry.k8s.io/pause:3.9
+docker pull 127.0.0.1:7733/ghcr.io/OWNER/IMAGE:tag
 ```
 
 ```toml
 # containerd hosts.toml — transparent pull (override_path for non-docker.io)
 # Written by: sudo specula integrate --protocols oci
-#   or: specula bootstrap-mirror write --endpoint http://127.0.0.1:7732
+#   or: specula bootstrap-mirror write --endpoint http://127.0.0.1:7733
 #
 # /etc/containerd/certs.d/docker.io/hosts.toml  (Hub-relative paths)
 server = "https://registry-1.docker.io"
-[host."http://127.0.0.1:7732"]
+[host."http://127.0.0.1:7733"]
   capabilities = ["pull", "resolve"]
   skip_verify = true
 
 # /etc/containerd/certs.d/codeberg.org/hosts.toml
 server = "https://codeberg.org"
-[host."http://127.0.0.1:7732/v2/codeberg.org"]
+[host."http://127.0.0.1:7733/v2/codeberg.org"]
   capabilities = ["pull", "resolve"]
   override_path = true
   skip_verify = true
@@ -410,7 +410,7 @@ Allowlisted hosts are configured under `protocols.oci.oci.remote_registries`
 
 ```bash
 # Hub one-off via Specula as a named registry
-docker pull 127.0.0.1:7732/library/nginx:latest
+docker pull 127.0.0.1:7733/library/nginx:latest
 ```
 
 Specula serves the OCI Distribution API at `/v2/`.
@@ -418,7 +418,7 @@ Specula serves the OCI Distribution API at `/v2/`.
 ### Go modules
 
 ```bash
-export GOPROXY=http://127.0.0.1:7732/go,direct
+export GOPROXY=http://127.0.0.1:7733/go,direct
 export GOSUMDB=sum.golang.google.cn
 # Private modules: keep them off the public sumdb (also configure sumdb.private_patterns)
 # export GONOSUMDB=git.internal.corp/*
@@ -434,12 +434,12 @@ go mod download
 
 ```bash
 # env (pip / uv)
-export PIP_INDEX_URL=http://127.0.0.1:7732/pypi/simple
+export PIP_INDEX_URL=http://127.0.0.1:7733/pypi/simple
 export PIP_TRUSTED_HOST=127.0.0.1
 
 # or pip.conf / ~/.config/pip/pip.conf
 # [global]
-# index-url = http://127.0.0.1:7732/pypi/simple
+# index-url = http://127.0.0.1:7733/pypi/simple
 # trusted-host = 127.0.0.1
 ```
 
@@ -448,16 +448,16 @@ Use Specula as the **sole** index (`--index-url` only — avoid `--extra-index-u
 ### npm / yarn / pnpm
 
 ```bash
-npm config set registry http://127.0.0.1:7732/npm/
+npm config set registry http://127.0.0.1:7733/npm/
 # yarn
-yarn config set registry http://127.0.0.1:7732/npm/
+yarn config set registry http://127.0.0.1:7733/npm/
 # pnpm
-pnpm config set registry http://127.0.0.1:7732/npm/
+pnpm config set registry http://127.0.0.1:7733/npm/
 ```
 
 ```ini
 # .npmrc
-registry=http://127.0.0.1:7732/npm/
+registry=http://127.0.0.1:7733/npm/
 ```
 
 ### apt (Debian / Ubuntu)
@@ -465,8 +465,8 @@ registry=http://127.0.0.1:7732/npm/
 Point `sources.list` at Specula’s apt mount (archive prefix must match `apt.repositories`, e.g. `ubuntu`; paths after that mirror a normal archive root: `dists/`, `pool/`):
 
 ```text
-deb http://127.0.0.1:7732/apt/ubuntu/ jammy main restricted universe multiverse
-deb http://127.0.0.1:7732/apt/ubuntu/ jammy-updates main restricted universe multiverse
+deb http://127.0.0.1:7733/apt/ubuntu/ jammy main restricted universe multiverse
+deb http://127.0.0.1:7733/apt/ubuntu/ jammy-updates main restricted universe multiverse
 ```
 
 ```bash
@@ -479,12 +479,12 @@ Ensure Specula’s `protocols.apt.apt.repositories` includes the archive name yo
 
 ```bash
 # classic HTTP chart repo (index.yaml + .tgz)
-helm repo add bitnami http://127.0.0.1:7732/helm/bitnami
+helm repo add bitnami http://127.0.0.1:7733/helm/bitnami
 helm repo update
 helm pull bitnami/nginx
 
 # flat repo (index at mount root)
-# helm repo add charts http://127.0.0.1:7732/helm/
+# helm repo add charts http://127.0.0.1:7733/helm/
 ```
 
 OCI Helm charts use the **OCI** path (`/v2/`), not `/helm/`.
@@ -493,19 +493,19 @@ OCI Helm charts use the **OCI** path (`/v2/`), not `/helm/`.
 
 ```bash
 # Path encodes host + remote path; host must be allowlisted on Specula
-curl -fL 'http://127.0.0.1:7732/tarball/github.com/example/proj/releases/download/v1.0.0/app.tar.gz'
+curl -fL 'http://127.0.0.1:7733/tarball/github.com/example/proj/releases/download/v1.0.0/app.tar.gz'
 # optional digest pin
-curl -fL 'http://127.0.0.1:7732/tarball/…/app.tar.gz?digest=sha256:…'
+curl -fL 'http://127.0.0.1:7733/tarball/…/app.tar.gz?digest=sha256:…'
 ```
 
 ### git
 
 ```bash
 # clone via Specula (Smart HTTP)
-git clone http://127.0.0.1:7732/git/github.com/golang/go.git
+git clone http://127.0.0.1:7733/git/github.com/golang/go.git
 
 # rewrite all github.com HTTPS clones through Specula
-git config --global url."http://127.0.0.1:7732/git/github.com/".insteadOf "https://github.com/"
+git config --global url."http://127.0.0.1:7733/git/github.com/".insteadOf "https://github.com/"
 ```
 
 Host must be in `protocols.git.git.allowed_upstreams`. Private / push traffic is passed through and not cached. With `public_only: true`, hosts that lack a visibility probe (anything outside github.com, gitlab.com, gitee.com, codeberg.org, bitbucket.org, git.sr.ht) are treated as non-public and fail closed — not mirrored.
@@ -513,24 +513,24 @@ Host must be in `protocols.git.git.allowed_upstreams`. Private / push traffic is
 ### Cargo (sparse registry)
 
 ```bash
-./bin/specula integrate --protocols cargo --addr http://127.0.0.1:7732
-# writes ~/.cargo/config.toml source replace → sparse+http://127.0.0.1:7732/cargo/index/
+./bin/specula integrate --protocols cargo --addr http://127.0.0.1:7733
+# writes ~/.cargo/config.toml source replace → sparse+http://127.0.0.1:7733/cargo/index/
 cargo fetch
 ```
 
 ### conda
 
 ```bash
-./bin/specula integrate --protocols conda --addr http://127.0.0.1:7732
-# prepends channel http://127.0.0.1:7732/conda/conda-forge in ~/.condarc
-micromamba create -y -n demo -c http://127.0.0.1:7732/conda/conda-forge --override-channels ca-certificates
+./bin/specula integrate --protocols conda --addr http://127.0.0.1:7733
+# prepends channel http://127.0.0.1:7733/conda/conda-forge in ~/.condarc
+micromamba create -y -n demo -c http://127.0.0.1:7733/conda/conda-forge --override-channels ca-certificates
 ```
 
 ### Hugging Face Hub
 
 ```bash
-./bin/specula integrate --protocols hf --addr http://127.0.0.1:7732
-# exports HF_ENDPOINT=http://127.0.0.1:7732/hf via ~/.config/specula/env.sh
+./bin/specula integrate --protocols hf --addr http://127.0.0.1:7733
+# exports HF_ENDPOINT=http://127.0.0.1:7733/hf via ~/.config/specula/env.sh
 source ~/.config/specula/env.sh
 huggingface-cli download hf-internal-testing/tiny-random-bert --local-dir /tmp/hf-tiny
 ```
@@ -551,7 +551,7 @@ server:
 
 ```bash
 # 1) online: warm
-docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
+docker pull 127.0.0.1:7733/registry.k8s.io/pause:3.9
 # 2) set mode: offline, restart daemon
 # 3) hit works; uncached tag fails fast
 ./scripts/realclient-offline.sh

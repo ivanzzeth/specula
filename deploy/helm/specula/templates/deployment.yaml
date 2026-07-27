@@ -51,11 +51,8 @@ spec:
             - --config
             - /etc/specula/specula.yaml
           ports:
-            - name: data
-              containerPort: {{ .Values.service.dataPort }}
-              protocol: TCP
-            - name: control
-              containerPort: {{ .Values.service.controlPort }}
+            - name: http
+              containerPort: {{ .Values.service.port }}
               protocol: TCP
           env:
             - name: SPECULA_AUTH__CONFIG_SECRET
@@ -148,14 +145,14 @@ spec:
           livenessProbe:
             httpGet:
               path: /healthz
-              port: data
+              port: http
             initialDelaySeconds: 15
             periodSeconds: 20
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
               path: /healthz
-              port: data
+              port: http
             initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 3

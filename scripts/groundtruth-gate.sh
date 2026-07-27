@@ -229,8 +229,7 @@ DB="${WORK}/meta.db"
 # claim `ttl_zero_sentinel_reaches_handler` rather than quietly working around it.
 cat > "$CFG" <<EOF
 server:
-  data_plane_addr: "127.0.0.1:${DP}"
-  control_plane_addr: "127.0.0.1:${CP}"
+  listen_addr: "127.0.0.1:${DP}"
 storage:
   blob:
     driver: local
@@ -622,8 +621,7 @@ if want ttl_zero_per_protocol_sentinel; then
   CFG2="${WORK}/specula-ttl.yaml"
   cat > "$CFG2" <<EOF
 server:
-  data_plane_addr: "127.0.0.1:${DP2}"
-  control_plane_addr: "127.0.0.1:${CP2}"
+  listen_addr: "127.0.0.1:${DP2}"
 storage:
   blob:
     driver: local

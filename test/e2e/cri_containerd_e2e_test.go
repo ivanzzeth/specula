@@ -168,7 +168,7 @@ func TestCRI_HostsToml_NoServerFallback(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, bootstrap.WriteContainerdHosts(bootstrap.MirrorOptions{
 		CertsDir:   dir,
-		Endpoint:   "http://10.43.0.1:7732",
+		Endpoint:   "http://10.43.0.1:7733",
 		Registries: bootstrap.DefaultOCIRegistries,
 	}))
 	for _, reg := range bootstrap.DefaultOCIRegistries {

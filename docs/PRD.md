@@ -516,10 +516,10 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 
 | 平面 | 端口 | 内容 |
 |---|---|---|
-| **数据面** | **7732** | 11 协议:`/v2/`(OCI+registry) `/pypi/` `/npm/` `/go/` `/apt/` `/helm/` `/tarball/` `/git/` `/cargo/` `/conda/` `/hf/` + `/token` |
+| **数据面** | **7733** | 11 协议:`/v2/`(OCI+registry) `/pypi/` `/npm/` `/go/` `/apt/` `/helm/` `/tarball/` `/git/` `/cargo/` `/conda/` `/hf/` + `/token` |
 | **控制面** | **7733** | 内嵌 WebUI + Admin API + `/healthz` `/readyz` `/metrics` + `/token` |
 
-**为什么是 7732/7733**：电话键盘上 `S-P-E-C` = `7-7-3-2` —— 既是 **Spec**ula，也是这个代理
+**为什么是 7733**：电话键盘上 `S-P-E-C` = `7-7-3-2` —— 既是 **Spec**ula，也是这个代理
 赖以立身的那些 **spec**（OCI Distribution / PEP 503 / Debian Repository Format …）。
 
 刻意**不用** 5000/8080：`5000` 是 Docker registry 与 zot 的默认端口，也就是"想装 OCI 缓存的

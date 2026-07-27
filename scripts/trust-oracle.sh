@@ -72,7 +72,9 @@ RESULTS="$(dirname "$OUT_JSON")"
 # see scripts/lib/daemon.sh for why liveness+health checks alone cannot detect it.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
 DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
-CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
+# One listener now: everything answers on DATA_PORT. CTRL_PORT is kept as an
+# alias so the probes below need no changes.
+CTRL_PORT="${DATA_PORT}"
 
 KEYRING="/usr/share/keyrings/ubuntu-archive-keyring.gpg"
 
@@ -98,7 +100,7 @@ die() { echo "FAIL: $*" >&2; exit 1; }
 # the pattern matches too — INCLUDING THIS SCRIPT — so `pkill -f` self-kills.
 # Six agents have hit this. Holding the PID from $! is exact and cannot select a
 # bystander. We also never touch foreign specula processes (e.g. the demo on
-# 7732/7733), which is why nothing here greps for them.
+# 7733), which is why nothing here greps for them.
 SPID=""
 
 stop_specula() {
@@ -199,8 +201,7 @@ mkdir -p "$WORK/blobs" "$WORK/lists/partial" "$WORK/cache/archives/partial" \
 # mirrors") — a good guard, and the reason aliyun is here alongside tuna.
 cat > "$WORK/cfg.yaml" << EOF
 server:
-  data_plane_addr: ":${DATA_PORT}"
-  control_plane_addr: ":${CTRL_PORT}"
+  listen_addr: ":${DATA_PORT}"
 storage:
   blob:
     driver: local

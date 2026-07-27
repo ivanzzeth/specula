@@ -8,7 +8,7 @@
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY specula /specula
 COPY specula.yaml /etc/specula/specula.yaml
-EXPOSE 7732 7733
+EXPOSE 7733
 VOLUME ["/var/lib/specula"]
 USER nonroot:nonroot
 ENTRYPOINT ["/specula"]

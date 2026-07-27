@@ -33,7 +33,7 @@ Flags:
 `)
 		fs := flag.NewFlagSet("bootstrap-mirror write", flag.ContinueOnError)
 		fs.SetOutput(os.Stderr)
-		_ = fs.String("endpoint", "http://127.0.0.1:30732", "mirror URL the node dials")
+		_ = fs.String("endpoint", "http://127.0.0.1:30733", "mirror URL the node dials")
 		_ = fs.String("certs-dir", "/etc/containerd/certs.d", "containerd certs.d root")
 		_ = fs.String("registries", strings.Join(bootstrap.DefaultOCIRegistries, ","), "comma-separated registries")
 		_ = fs.Bool("skip-verify", true, "set skip_verify on the mirror host entry")
@@ -50,7 +50,7 @@ Flags:
 
 	fs := flag.NewFlagSet("bootstrap-mirror write", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	endpoint := fs.String("endpoint", "http://127.0.0.1:30732", "mirror URL the node dials")
+	endpoint := fs.String("endpoint", "http://127.0.0.1:30733", "mirror URL the node dials")
 	certsDir := fs.String("certs-dir", "/etc/containerd/certs.d", "containerd certs.d root")
 	registries := fs.String("registries", strings.Join(bootstrap.DefaultOCIRegistries, ","), "comma-separated registries")
 	skipVerify := fs.Bool("skip-verify", true, "set skip_verify on the mirror host entry")
@@ -95,7 +95,7 @@ Flags:
 func runBootstrapMirrorRemove(args []string) error {
 	fs := flag.NewFlagSet("bootstrap-mirror remove", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	endpoint := fs.String("endpoint", "http://127.0.0.1:30732", "endpoint whose drop-ins to remove")
+	endpoint := fs.String("endpoint", "http://127.0.0.1:30733", "endpoint whose drop-ins to remove")
 	certsDir := fs.String("certs-dir", "/etc/containerd/certs.d", "containerd certs.d root")
 	k3sCertsDir := fs.String("k3s-certs-dir", "", "additional certs.d root to clean when present (k3s)")
 	hold := fs.Bool("hold", false, "sleep forever after removing (DaemonSet)")
@@ -134,12 +134,12 @@ func runBootstrapMirrorRemove(args []string) error {
 func runBootstrapPrefetch(args []string) error {
 	fs := flag.NewFlagSet("bootstrap-prefetch", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	addr := fs.String("addr", "http://127.0.0.1:7732", "Specula data-plane base URL")
+	addr := fs.String("addr", "http://127.0.0.1:7733", "Specula base URL")
 	images := fs.String("images", "", "comma-separated image refs to warm")
 	timeout := fs.Duration("timeout", 2*time.Minute, "overall timeout")
 	fs.Usage = func() {
 		fmt.Fprint(os.Stderr, `Usage:
-  specula bootstrap-prefetch --addr http://specula:7732 --images docker.io/library/hello-world:latest,...
+  specula bootstrap-prefetch --addr http://specula:7733 --images docker.io/library/hello-world:latest,...
 
 Warm OCI manifests through a bootstrap Specula (token + manifest GET) so HA
 dependency metadata is cached before kubelet pulls.

@@ -8,8 +8,10 @@ metadata:
 data:
   specula.yaml: |
     server:
-      data_plane_addr: ":{{ .Values.service.dataPort }}"
-      control_plane_addr: ":{{ .Values.service.controlPort }}"
+      listen_addr: ":{{ .Values.service.port }}"
+      {{- with .Values.registryPublicHost }}
+      registry_public_host: {{ . | quote }}
+      {{- end }}
       ha: {{ .Values.ha }}
       {{- if .Values.tls.enabled }}
       tls:

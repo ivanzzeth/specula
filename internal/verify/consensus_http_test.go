@@ -396,4 +396,3 @@ func TestHTTPMirrorDigestFetcher_PyPI_ServerError(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Covered in consensus_npm_cargo_http_test.go (npm/cargo now supported; tarball
 // and others still error).
-

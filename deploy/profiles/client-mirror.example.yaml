@@ -31,7 +31,7 @@ deployment:
 # (the DaemonSet does that automatically, but pulls fail in between).
 mirror:
   enabled: true
-  endpoint: http://<hosted-specula-intranet-ip>:7732
+  endpoint: http://<hosted-specula-intranet-ip>:7733
   certsDir: /etc/containerd/certs.d
   # k3s keeps its own certs.d; harmless when the path does not exist.
   k3sCertsDir: /var/lib/rancher/k3s/agent/etc/containerd/certs.d

@@ -99,12 +99,9 @@ func Validate(cfg *Config) error {
 	}
 
 	// ── Server ────────────────────────────────────────────────────────────
-	if strings.TrimSpace(cfg.Server.DataPlaneAddr) == "" {
-		add("server.data_plane_addr: must not be empty")
-	}
-	if strings.TrimSpace(cfg.Server.ControlPlaneAddr) == "" {
-		add("server.control_plane_addr: must not be empty")
-	}
+	// An empty listen address is fine: EffectiveListenAddr falls back to the default,
+	// which is safer than refusing to start. What is NOT fine is the removed key —
+	// see below.
 	switch m := strings.ToLower(strings.TrimSpace(cfg.Server.Mode)); m {
 	case "", "online", "offline":
 		// ok — empty means online
@@ -124,6 +121,15 @@ func Validate(cfg *Config) error {
 		}
 	default:
 		add("storage.blob.driver: must be \"local\" or \"s3\", got %q", cfg.Storage.Blob.Driver)
+	}
+
+	// ── Server — single listen address ────────────────────────────────────
+	// data_plane_addr is removed, not ignored: a config that still sets it expects a
+	// second port to be served, and silently not serving it is the worst outcome.
+	if strings.TrimSpace(cfg.Server.DataPlaneAddr) != "" {
+		add("server.data_plane_addr: removed — Specula serves every protocol, the Admin " +
+			"API, probes and the WebUI on ONE port. Delete this key and set " +
+			"server.listen_addr (default " + DefaultListenAddr + ") instead")
 	}
 
 	// ── Storage — Meta ────────────────────────────────────────────────────

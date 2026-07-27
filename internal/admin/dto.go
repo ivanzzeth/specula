@@ -40,16 +40,16 @@ type ProtocolStat struct {
 // StatsResponse is the cache-capacity dashboard payload: per-protocol rows plus
 // grand totals and the backend disk footprint (statfs / S3 UsageBytes).
 type StatsResponse struct {
-	PerProtocol     []ProtocolStat `json:"per_protocol"`
-	TotalBytes      int64          `json:"total_bytes"`
-	TotalObjects    int64          `json:"total_objects"`
+	PerProtocol  []ProtocolStat `json:"per_protocol"`
+	TotalBytes   int64          `json:"total_bytes"`
+	TotalObjects int64          `json:"total_objects"`
 	// HostedBytes/Objects are authoritative org-owned content (never GC'd).
 	HostedBytes   int64 `json:"hosted_bytes"`
 	HostedObjects int64 `json:"hosted_objects"`
 	// CachedBytes/Objects are pull-through cache (evictable under max_bytes).
 	// CachedBytes/Objects are pull-through cache (evictable under max_bytes).
-	CachedBytes   int64 `json:"cached_bytes"`
-	CachedObjects int64 `json:"cached_objects"`
+	CachedBytes     int64 `json:"cached_bytes"`
+	CachedObjects   int64 `json:"cached_objects"`
 	BackendDiskFree int64 `json:"backend_disk_free"`
 	BackendDiskUsed int64 `json:"backend_disk_used"`
 	// MaxBytes is the effective cache.max_bytes ceiling (0 = unlimited).
@@ -314,7 +314,7 @@ type EventsSeriesPoint struct {
 // EventsSeriesResponse is GET /api/v1/admin/events/series.
 type EventsSeriesResponse struct {
 	// BucketSeconds is the bucket width used (default 3600).
-	BucketSeconds int64               `json:"bucket_seconds"`
+	BucketSeconds int64 `json:"bucket_seconds"`
 	// WindowSeconds is how far back from now was considered.
 	WindowSeconds int64               `json:"window_seconds"`
 	Points        []EventsSeriesPoint `json:"points"`
@@ -393,7 +393,7 @@ type ConfigResponse struct {
 	// Mode is "online" or "offline" (empty from YAML → "online").
 	Mode string `json:"mode"`
 	// LockDriver is the effective coalesce lock backend: local | redis | postgres.
-	LockDriver string `json:"lock_driver"`
+	LockDriver string               `json:"lock_driver"`
 	Protocols  []ProtocolConfigView `json:"protocols"`
 }
 

@@ -127,7 +127,7 @@ func serviceProxyPath(ns, svc string, port int, subPath string) string {
 
 func probeHealthzViaAPIServer(kubeconfig, context, ns, svc string) error {
 	out, err := kubectl(kubeconfig, context, "get", "--raw",
-		serviceProxyPath(ns, svc, DefaultDataPort, "healthz"))
+		serviceProxyPath(ns, svc, DefaultServicePort, "healthz"))
 	if err != nil {
 		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -136,7 +136,7 @@ func probeHealthzViaAPIServer(kubeconfig, context, ns, svc string) error {
 
 func probeV2ViaAPIServer(kubeconfig, context, ns, svc string) (string, error) {
 	out, err := kubectl(kubeconfig, context, "get", "--raw",
-		serviceProxyPath(ns, svc, DefaultDataPort, "v2/"))
+		serviceProxyPath(ns, svc, DefaultServicePort, "v2/"))
 	return classifyV2Probe(string(out), err)
 }
 

@@ -20,7 +20,7 @@ var DefaultProtocols = []string{"go", "npm", "pypi", "oci", "helm", "git", "apt"
 
 // Options configures an integrate run.
 type Options struct {
-	// Addr is the Specula data-plane base URL, e.g. https://127.0.0.1:7732
+	// Addr is the Specula base URL, e.g. https://127.0.0.1:7733
 	Addr string
 	// Protocols is the list of protocol names to wire (go, npm, pypi, oci, helm, git, apt).
 	Protocols []string
@@ -222,7 +222,7 @@ func writeEnvFile(home, addr string, rep Report) error {
 	b.WriteString("# Additive helpers; tool-native configs (go env, npmrc, …) are authoritative.\n")
 	b.WriteString("export SPECULA_ADDR=" + shellQuote(addr) + "\n")
 	// Ensure clients reach Specula DIRECTLY. Ambient HTTP_PROXY/HTTPS_PROXY
-	// (Clash, corporate MITM, …) would otherwise intercept 127.0.0.1:7732 or a
+	// (Clash, corporate MITM, …) would otherwise intercept 127.0.0.1:7733 or a
 	// remote Specula host and you cannot tell whether bytes came from Specula.
 	host := hostOfAddr(addr)
 	if host != "" {

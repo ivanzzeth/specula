@@ -15,7 +15,7 @@ import (
 
 // PrefetchOptions configures WarmImages.
 type PrefetchOptions struct {
-	// Addr is the Specula data-plane base URL, e.g. http://specula-bootstrap:7732
+	// Addr is the Specula base URL, e.g. http://specula-bootstrap:7733
 	Addr string
 	// Images are refs like docker.io/bitnami/postgresql:latest or library/hello-world:latest
 	Images []string

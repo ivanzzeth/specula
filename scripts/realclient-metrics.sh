@@ -10,7 +10,7 @@
 # actually persisted in cache_entries for that same traffic. If they disagree,
 # one of them is lying.
 #
-# Ports are picked free (never 7732/7733, which belong to the demo).
+# Ports are picked free (never 7733, which belong to the demo).
 # The binary is built to this script's OWN temp dir.
 set -uo pipefail
 
@@ -19,7 +19,9 @@ WORK="$(mktemp -d /tmp/specula-metrics-accept.XXXXXX)"
 . "${REPO}/scripts/lib/daemon.sh"
 
 DATA_PORT="$(pick_free_port)"
-CTRL_PORT="$(pick_free_port)"
+# One listener now: everything answers on DATA_PORT. CTRL_PORT is kept as an
+# alias so the probes below need no changes.
+CTRL_PORT="${DATA_PORT}"
 # A port with nothing listening: the genuinely-unreachable upstream used to prove
 # specula_upstream_blocked actually moves. Picked free, then never bound.
 DEAD_PORT="$(pick_free_port)"
@@ -40,8 +42,7 @@ go -C "${REPO}" build -o "${WORK}/specula" ./cmd/specula || { echo "build failed
 step "Writing config (data :${DATA_PORT}, ctrl :${CTRL_PORT}, dead upstream :${DEAD_PORT})"
 cat > "${WORK}/cfg.yaml" <<EOF
 server:
-  data_plane_addr: ":${DATA_PORT}"
-  control_plane_addr: ":${CTRL_PORT}"
+  listen_addr: ":${DATA_PORT}"
 auth:
   registry_token_key_path: ${WORK}/regkey.pem
 storage:
@@ -288,8 +289,7 @@ B_DATA="$(pick_free_port)"; B_CTRL="$(pick_free_port)"; B_DEAD="$(pick_free_port
 mkdir -p "${WORK}/b/blobs"
 cat > "${WORK}/b/cfg.yaml" <<EOF
 server:
-  data_plane_addr: ":${B_DATA}"
-  control_plane_addr: ":${B_CTRL}"
+  listen_addr: ":${B_DATA}"
 auth:
   registry_token_key_path: ${WORK}/b/regkey.pem
 storage:

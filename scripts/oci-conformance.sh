@@ -30,7 +30,9 @@ CONF_BIN="${OCI_CONFORMANCE_BIN:-$WORK/conformance.test}"
 # different server answered) and why socket ownership is asserted instead.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
 DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
-CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
+# One listener now: everything answers on DATA_PORT. CTRL_PORT is kept as an
+# alias so the probes below need no changes.
+CTRL_PORT="${DATA_PORT}"
 export GOPROXY="${GOPROXY:-https://goproxy.cn,direct}" GOSUMDB="${GOSUMDB:-sum.golang.google.cn}"
 
 mkdir -p "$WORK/blobs"
@@ -50,8 +52,7 @@ echo "==> building specula"
 go -C "$REPO" build -o "$WORK/specula" ./cmd/specula
 cat > "$WORK/cfg.yaml" <<EOF
 server:
-  data_plane_addr: ":$DATA_PORT"
-  control_plane_addr: ":$CTRL_PORT"
+  listen_addr: ":$DATA_PORT"
 auth:
   registry_token_key_path: $WORK/regkey.pem
 storage:

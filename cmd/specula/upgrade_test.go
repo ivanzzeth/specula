@@ -277,7 +277,7 @@ func TestUpgradeHealthURLFromConfig(t *testing.T) {
 	path := filepath.Join(dir, "specula.yaml")
 	if _, err := config.WriteExampleIfMissing(path, func(src string) string {
 		return patchConfigForSystemInstall(strings.ReplaceAll(src,
-			`control_plane_addr: "0.0.0.0:7733"`, `control_plane_addr: "0.0.0.0:19733"`))
+			`listen_addr: "0.0.0.0:7733"`, `listen_addr: "0.0.0.0:19733"`))
 	}); err != nil {
 		t.Fatal(err)
 	}

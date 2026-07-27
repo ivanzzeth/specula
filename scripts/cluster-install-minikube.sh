@@ -115,7 +115,7 @@ FROM scratch
 COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY specula /specula
 COPY specula.yaml /etc/specula/specula.yaml
-EXPOSE 7732 7733
+EXPOSE 7733 7733
 VOLUME ["/var/lib/specula"]
 ENTRYPOINT ["/specula"]
 CMD ["--config", "/etc/specula/specula.yaml"]
@@ -211,7 +211,7 @@ minikube ssh -p "${MINIKUBE_PROFILE}" -- \
 
 HOSTS="$(minikube ssh -p "${MINIKUBE_PROFILE}" -- \
   'sudo cat /etc/containerd/certs.d/registry.k8s.io/hosts.toml' 2>/dev/null || true)"
-if ! echo "${HOSTS}" | grep -q '127.0.0.1:30732'; then
+if ! echo "${HOSTS}" | grep -q '127.0.0.1:30733'; then
   echo "cluster-install-minikube: registry.k8s.io hosts.toml missing NodePort mirror:" >&2
   echo "${HOSTS}" >&2
   exit 1
@@ -249,6 +249,36 @@ echo "    CN remote_registries (huawei-ddn) OK"
 # "mkdir /var/lib/specula/quarantine: permission denied" — through a fully green
 # run of this script. So assert the fix is PRESENT, which at least stops a silent
 # removal, and keep the real check in the release checklist (docs/RELEASE.md).
+# ── Single-port guard ─────────────────────────────────────────────────────────
+# Specula serves protocols, the Admin API, probes and the WebUI on ONE port. A second
+# Service port creeping back means something re-introduced the retired data plane.
+echo "==> asserting the Service exposes exactly one port"
+PORT_COUNT="$(kubectl --context "${MINIKUBE_PROFILE}" -n "${NAMESPACE}" get svc \
+  "${RELEASE}-specula-bootstrap" -o jsonpath='{.spec.ports[*].name}' 2>/dev/null | wc -w | tr -d ' ')"
+if [[ "${PORT_COUNT}" != "1" ]]; then
+  echo "cluster-install-minikube: Service has ${PORT_COUNT} ports, want exactly 1" >&2
+  kubectl --context "${MINIKUBE_PROFILE}" -n "${NAMESPACE}" get svc \
+    "${RELEASE}-specula-bootstrap" -o yaml >&2
+  exit 1
+fi
+echo "    Service ports = 1 OK"
+
+# /v2/ and the WebUI now share a port, so the SPA must not answer the registry
+# handshake — that is what once made `docker login` succeed with a bogus password.
+echo "==> asserting GET /v2/ is the registry, not the SPA"
+V2_BODY="$(minikube ssh -p "${MINIKUBE_PROFILE}" -- \
+  "curl -s -D- -o /tmp/v2body http://127.0.0.1:${NODE_PORT:-30733}/v2/ ; head -c 200 /tmp/v2body" 2>/dev/null || true)"
+if echo "${V2_BODY}" | grep -qi '<!doctype html'; then
+  echo "cluster-install-minikube: GET /v2/ returned HTML — the SPA swallowed the registry" >&2
+  exit 1
+fi
+if ! echo "${V2_BODY}" | grep -qiE 'www-authenticate|401|"errors"'; then
+  echo "cluster-install-minikube: GET /v2/ carried no auth challenge:" >&2
+  echo "${V2_BODY}" >&2
+  exit 1
+fi
+echo "    /v2/ answers a registry challenge OK"
+
 echo "==> asserting fsGroup on the live Deployment (cloud-CSI regression guard)"
 FSG="$(kubectl --context "${MINIKUBE_PROFILE}" -n "${NAMESPACE}" get deploy \
   "${RELEASE}-specula-bootstrap" -o jsonpath='{.spec.template.spec.securityContext.fsGroup}' 2>/dev/null || true)"

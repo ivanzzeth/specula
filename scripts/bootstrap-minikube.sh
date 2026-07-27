@@ -110,7 +110,7 @@ echo "==> building Specula binary on host, packaging image, loading into minikub
   cp bin/specula "${STAGE}/specula"
   cp contrib/docker/specula.yaml "${STAGE}/specula.yaml"
   # Prefer rebuilding on top of an existing local tag so we do not need a
-  # reachable base registry (host docker often mirrors via Specula :7732).
+  # reachable base registry (host docker often mirrors via Specula :7733).
   if docker image inspect "${IMAGE_REPO}:${IMAGE_TAG}" >/dev/null 2>&1; then
     BASE="${IMAGE_REPO}:${IMAGE_TAG}"
   elif docker image inspect gcr.io/distroless/static-debian12:nonroot >/dev/null 2>&1; then
@@ -126,7 +126,7 @@ FROM scratch
 COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY specula /specula
 COPY specula.yaml /etc/specula/specula.yaml
-EXPOSE 7732 7733
+EXPOSE 7733
 VOLUME ["/var/lib/specula"]
 ENTRYPOINT ["/specula"]
 CMD ["--config", "/etc/specula/specula.yaml"]
@@ -142,7 +142,7 @@ EOF
 FROM ${BASE}
 COPY specula /specula
 COPY specula.yaml /etc/specula/specula.yaml
-EXPOSE 7732 7733
+EXPOSE 7733
 VOLUME ["/var/lib/specula"]
 USER nonroot:nonroot
 ENTRYPOINT ["/specula"]
@@ -174,21 +174,21 @@ kubectl -n "${NAMESPACE}" rollout status "ds/${RELEASE}-specula-bootstrap-mirror
 echo "==> verifying containerd hosts.toml on the node"
 HOSTS_TOML="$(minikube ssh -p "${MINIKUBE_PROFILE}" -- \
   'sudo cat /etc/containerd/certs.d/docker.io/hosts.toml' 2>/dev/null || true)"
-if ! echo "${HOSTS_TOML}" | grep -q '127.0.0.1:30732'; then
+if ! echo "${HOSTS_TOML}" | grep -q '127.0.0.1:30733'; then
   echo "bootstrap-minikube: hosts.toml missing mirror endpoint:" >&2
   echo "${HOSTS_TOML}" >&2
   exit 1
 fi
-echo "    hosts.toml OK (points at 127.0.0.1:30732)"
+echo "    hosts.toml OK (points at 127.0.0.1:30733)"
 
 echo "==> Phase 0/1 smoke: /healthz + /v2/ via NodePort"
 NODE_IP="$(minikube ip -p "${MINIKUBE_PROFILE}")"
-if ! curl -sfS "http://${NODE_IP}:30732/healthz" >/dev/null; then
+if ! curl -sfS "http://${NODE_IP}:30733/healthz" >/dev/null; then
   echo "bootstrap-minikube: /healthz failed on NodePort" >&2
   exit 1
 fi
 # Docker registry handshake returns 401 without a Bearer token — expected.
-CODE="$(curl -sS -o /dev/null -w '%{http_code}' "http://${NODE_IP}:30732/v2/" || true)"
+CODE="$(curl -sS -o /dev/null -w '%{http_code}' "http://${NODE_IP}:30733/v2/" || true)"
 if [[ "${CODE}" != "401" && "${CODE}" != "200" ]]; then
   echo "bootstrap-minikube: unexpected /v2/ status ${CODE}" >&2
   exit 1
@@ -241,7 +241,7 @@ kubectl -n "${NAMESPACE}" run boot-prefetch-check --rm -i --restart=Never \
   --overrides='{"spec":{"enableServiceLinks":false}}' \
   -- \
   bootstrap-prefetch \
-  --addr="http://${RELEASE}-specula-bootstrap:7732" \
+  --addr="http://${RELEASE}-specula-bootstrap:7733" \
   --images="${PREFETCH_IMAGE}" >/tmp/boot-prefetch-check.log 2>&1 || {
   cat /tmp/boot-prefetch-check.log >&2
   exit 1

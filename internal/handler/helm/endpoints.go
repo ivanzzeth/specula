@@ -573,9 +573,9 @@ func allowHostsFromRewrittenIndex(data []byte, allow interface{ Allow(host strin
 //     charts/cert-manager-….tgz) are left unchanged; Specula fetches them
 //     as {base_url}/{relative}.
 //
-// From repo URL https://specula:7732/helm/<repo>, the relative
+// From repo URL https://specula:7733/helm/<repo>, the relative
 // ../../tarball/github.com/…/file.tgz resolves to
-// https://specula:7732/tarball/github.com/…/file.tgz.
+// https://specula:7733/tarball/github.com/…/file.tgz.
 //
 // allow (optional) receives each absolute URL's host so the tarball SSRF
 // allowlist permits the subsequent helm pull without requiring the operator to

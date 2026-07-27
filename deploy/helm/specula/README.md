@@ -100,7 +100,7 @@ All replicas mount the same PVC at `blob.local.root` (default `/var/lib/specula/
 
 | Plane | Port |
 |-------|------|
-| Data (OCI, npm, pypi, …) | 7732 |
+| Data (OCI, npm, pypi, …) | 7733 |
 | Control (WebUI + Admin API) | 7733 |
 
 ## Bitnami dependencies

@@ -35,7 +35,9 @@ WORK="${WORK:-$(mktemp -d /tmp/specula-apt-conf.XXXXXX)}"
 # both are required and why liveness/health checks alone are not enough.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
 DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
-CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
+# One listener now: everything answers on DATA_PORT. CTRL_PORT is kept as an
+# alias so the probes below need no changes.
+CTRL_PORT="${DATA_PORT}"
 
 # The out-of-band distro keyring — ships with ubuntu-keyring and is managed
 # independently of any mirror.  apt verifies InRelease against this key.
@@ -88,8 +90,7 @@ go -C "$REPO" build -o "$WORK/specula" ./cmd/specula
 # ── Step 2: write config on our assigned ports ────────────────────────────────
 cat > "$WORK/cfg.yaml" << EOF
 server:
-  data_plane_addr: ":${DATA_PORT}"
-  control_plane_addr: ":${CTRL_PORT}"
+  listen_addr: ":${DATA_PORT}"
 storage:
   blob:
     driver: local

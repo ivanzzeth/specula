@@ -6,7 +6,7 @@
 // Environment override convention:
 //
 //	SPECULA_ prefix, double-underscore (__) as level separator.
-//	Example: SPECULA_SERVER__DATA_PLANE_ADDR overrides server.data_plane_addr.
+//	Example: SPECULA_SERVER__LISTEN_ADDR overrides server.listen_addr.
 package config
 
 import (
@@ -44,31 +44,39 @@ type Config struct {
 	Protocols map[string]ProtocolConfig `koanf:"protocols"`
 }
 
-// ServerConfig holds the two-plane listen addresses (ARCHITECTURE §1).
+// ServerConfig holds the single listen address and public identity.
+//
+// Specula serves everything on ONE port: artifact protocols (/v2/, /helm/, /pypi/,
+// …), the registry /token endpoint, the Admin API (/api/v1), probes and /metrics, and
+// the WebUI at /. Paths keep their separate meanings; only the second TCP port is
+// gone. Operators publish one port and put an Ingress in front of it.
 type ServerConfig struct {
-	// DataPlaneAddr is the listen address for the 8-protocol data plane.
-	// Consumers hit this address; no authentication is applied here.
-	// Example: "0.0.0.0:7732" (see the port rationale in specula.example.yaml)
-	DataPlaneAddr string `koanf:"data_plane_addr"`
+	// ListenAddr is the one address Specula listens on. Default 0.0.0.0:7733.
+	ListenAddr string `koanf:"listen_addr"`
 
-	// ControlPlaneAddr is the listen address for the embedded WebUI +
-	// Admin API (email-authenticated management plane). Example: "0.0.0.0:7733"
+	// ControlPlaneAddr is a deprecated alias for ListenAddr, kept because every
+	// existing config, chart and ConfigMap sets it — and it already named the port
+	// that survived. Use ListenAddr in new configs.
 	ControlPlaneAddr string `koanf:"control_plane_addr"`
 
-	// RegistryPublicHost is the host:port clients use to reach the OCI registry
-	// (the data plane) — the value that belongs in `docker login <host>`.
+	// DataPlaneAddr is REMOVED. The field exists only so a config that still sets it
+	// fails validation with an actionable message instead of the loader's generic
+	// "unused key", or worse, silently not serving the port the operator expects.
+	DataPlaneAddr string `koanf:"data_plane_addr"`
+
+	// RegistryPublicHost is the host[:port] clients use to reach the OCI registry —
+	// the value that belongs in `docker login <host>`.
 	//
-	// The WebUI cannot infer this: the browser is talking to the CONTROL plane,
-	// and the registry answers on the data plane, which is a different port and,
-	// behind an Ingress, usually a different hostname entirely. Left empty, the
-	// server derives "<host the browser used>:<data plane port>", which is right
-	// for a local single-binary run and wrong the moment a proxy is involved.
-	// Set it explicitly for any real deployment. Example: "registry.example.com"
+	// Now that everything shares one port, a direct-access deployment can derive it
+	// from the request. Behind an Ingress it cannot: the browser's Host is the
+	// ingress hostname and the port is 443, neither of which appears in the listen
+	// address. REQUIRED for any Ingress/public deployment.
+	// Example: "specula.example.com"
 	RegistryPublicHost string `koanf:"registry_public_host"`
 
-	// TLS, when CertFile+KeyFile are set, serves BOTH planes with
-	// ListenAndServeTLS. Empty = plain HTTP (dev only). Cluster installs must
-	// set this so nodes dial https://… without the http+skip_verify footgun.
+	// TLS, when CertFile+KeyFile are set, serves the listener with
+	// ListenAndServeTLS. Empty = plain HTTP, which is correct behind an Ingress that
+	// terminates TLS, and dev-only otherwise.
 	TLS ServerTLSConfig `koanf:"tls"`
 
 	// HA enables multi-replica mode checks: meta must be postgres, coalesce
@@ -683,7 +691,6 @@ type DependencyConfusionConfig struct {
 	OnPrivateDown string `koanf:"on_private_down"`
 }
 
-
 // EffectiveMode returns "online" or "offline". Empty Mode is treated as online.
 func (c *Config) EffectiveMode() string {
 	if c == nil {
@@ -711,6 +718,21 @@ func (c *Config) EffectiveLockDriver() string {
 		return "local"
 	}
 	return ld
+}
+
+// EffectiveListenAddr is the address to listen on: listen_addr, else the deprecated
+// control_plane_addr alias, else the default. Never empty — an empty http.Server.Addr
+// means ":80", which would be a silent and very confusing bind.
+func (c *Config) EffectiveListenAddr() string {
+	if c != nil {
+		if a := strings.TrimSpace(c.Server.ListenAddr); a != "" {
+			return a
+		}
+		if a := strings.TrimSpace(c.Server.ControlPlaneAddr); a != "" {
+			return a
+		}
+	}
+	return DefaultListenAddr
 }
 
 // EffectiveQuarantineDir is the directory handlers stream upstream bytes through
@@ -744,7 +766,7 @@ func (c *Config) EffectiveQuarantineDir() string {
 //
 // Examples:
 //
-//	SPECULA_SERVER__DATA_PLANE_ADDR=0.0.0.0:7732
+//	SPECULA_SERVER__LISTEN_ADDR=0.0.0.0:7733
 //	SPECULA_STORAGE__BLOB__DRIVER=s3
 //	SPECULA_PROTOCOLS__OCI__MUTABLE_TTL_SECONDS=300
 func Load(path string) (*Config, error) {
@@ -810,7 +832,7 @@ func Load(path string) (*Config, error) {
 // Default listen addresses. These are Specula's ports, baked into the binary —
 // a config that omits them starts here rather than failing to boot.
 //
-// 7732/7733 spell "SPEC" on a phone keypad (S=7 P=7 E=3 C=2): Specula, and the
+// 7733 spells "SPEC" on a phone keypad (S=7 P=7 E=3 C=2): Specula, and the
 // specs it exists to conform to. They are deliberately not 5000/8080. Port 5000
 // is the Docker registry / zot default — the single most likely thing to already
 // be listening on a host that wants an OCI cache — and 8080 needs no
@@ -818,8 +840,8 @@ func Load(path string) (*Config, error) {
 // A collision here is not a cosmetic problem: it has already caused a
 // conformance run to silently grade a different server.
 const (
-	DefaultDataPlaneAddr    = "0.0.0.0:7732"
-	DefaultControlPlaneAddr = "0.0.0.0:7733"
+	// DefaultListenAddr is the single port Specula serves everything on.
+	DefaultListenAddr = "0.0.0.0:7733"
 )
 
 // TTLPtr returns a pointer to v, for building ProtocolConfig literals in code
@@ -853,7 +875,6 @@ func (c *Config) EffectiveMutableTTL(pc ProtocolConfig) int64 {
 // environment overrides.
 func defaults() map[string]any {
 	return map[string]any{
-		"server.data_plane_addr":    DefaultDataPlaneAddr,
-		"server.control_plane_addr": DefaultControlPlaneAddr,
+		"server.listen_addr": DefaultListenAddr,
 	}
 }

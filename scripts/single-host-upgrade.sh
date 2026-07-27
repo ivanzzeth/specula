@@ -8,7 +8,7 @@
 # daemon whose executable is being replaced underneath it. So it runs here.
 #
 # Asserts:
-#   1. install    → unit active, /healthz 200, data plane answering
+#   1. install    → unit active, /healthz 200 and /v2/ answering on ONE port
 #   2. ETXTBSY    → cp onto the running binary FAILS (why upgrade exists at all)
 #   3. upgrade    → version swapped, .prev holds the old one, no .new residue, healthy
 #   4. rollback   → a failed health gate restores the previous binary and restarts
@@ -27,8 +27,7 @@ CONTAINER="${SPECULA_SH_CONTAINER:-specula-single-host-gate}"
 IMAGE="${SPECULA_SYSTEMD_IMAGE:-specula-systemd-gate:local}"
 BASE_IMAGE="${SPECULA_SYSTEMD_BASE:-debian:12}"
 WORK="$(mktemp -d)"
-CTRL_PORT=7733
-DATA_PORT=7732
+PORT=7733 # protocols, Admin API, probes and the WebUI all share it
 
 need() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -131,16 +130,17 @@ wait_healthy() {
   # -s not -fsS: a restart in progress makes curl shout "Failed to connect" on
   # stderr every second, which reads like a failure in the middle of a passing run.
   for _ in $(seq 1 30); do
-    if dexec "curl -fs -o /dev/null http://127.0.0.1:${CTRL_PORT}/healthz 2>/dev/null"; then return 0; fi
+    if dexec "curl -fs -o /dev/null http://127.0.0.1:${PORT}/healthz 2>/dev/null"; then return 0; fi
     sleep 1
   done
   return 1
 }
 wait_healthy || fail "/healthz never turned 200 after install"
 dexec 'test "$(systemctl is-active specula.service)" = active' || fail "unit not active"
-# The data plane must answer too: a 401 registry challenge means it is alive.
-dexec "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${DATA_PORT}/v2/ | grep -qE '^(200|401)$'" \
-  || fail "data plane /v2/ not answering"
+# /v2/ must answer on the SAME port: a 401 registry challenge means it is alive,
+# and it proves the SPA did not swallow the registry endpoint.
+dexec "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${PORT}/v2/ | grep -qE '^(200|401)$'" \
+  || fail "/v2/ not answering on the shared port"
 dexec 'test "$(systemctl show -p NRestarts --value specula.service)" = 0' \
   || fail "daemon restarted after install — it should have come up clean"
 echo "    OK: active, /healthz 200, /v2/ answering, NRestarts=0"
@@ -169,7 +169,7 @@ step "4. failed health gate must auto-rollback"
 # The daemon is fine; the probe is pointed at a dead port to force the gate to
 # fail deterministically. What is under test is the rollback machinery — restore
 # .prev, restart, exit non-zero — not the daemon's own health.
-dexec "sed 's/control_plane_addr: \"0.0.0.0:${CTRL_PORT}\"/control_plane_addr: \"0.0.0.0:19999\"/' \
+dexec "sed 's/listen_addr: \"0.0.0.0:${PORT}\"/listen_addr: \"0.0.0.0:19999\"/' \
         /etc/specula/specula.yaml > /tmp/deadhealth.yaml" || fail "could not write probe-only config"
 dexec 'grep -q "0.0.0.0:19999" /tmp/deadhealth.yaml' || fail "probe config not rewritten"
 
@@ -200,7 +200,7 @@ dexec '/tmp/specula-old upgrade --no-restart' || fail "--no-restart exited non-z
 PID_AFTER="$(dexec 'systemctl show -p MainPID --value specula.service')"
 [ "${PID_BEFORE}" = "${PID_AFTER}" ] || fail "MainPID changed (${PID_BEFORE} → ${PID_AFTER}) despite --no-restart"
 dexec '/usr/local/bin/specula version | grep -q sh-old' || fail "binary on disk was not swapped"
-dexec "curl -fsS -o /dev/null http://127.0.0.1:${CTRL_PORT}/healthz" \
+dexec "curl -fsS -o /dev/null http://127.0.0.1:${PORT}/healthz" \
   || fail "the still-running old process stopped serving"
 echo "    OK: disk binary swapped, MainPID ${PID_AFTER} unchanged, still serving"
 
@@ -212,9 +212,9 @@ step "7. a binary built without web/dist must boot and serve the placeholder"
 dexec 'cp /mnt/specula-nodist /tmp/specula-nodist && chmod +x /tmp/specula-nodist && /tmp/specula-nodist upgrade' \
   || fail "upgrade to the no-dist binary failed — it should boot and pass the health gate"
 dexec '/usr/local/bin/specula version | grep -q sh-nodist' || fail "no-dist binary not installed"
-dexec "curl -fsS http://127.0.0.1:${CTRL_PORT}/ | grep -q 'WebUI not built'" \
+dexec "curl -fsS http://127.0.0.1:${PORT}/ | grep -q 'WebUI not built'" \
   || fail "control plane did not serve the placeholder page"
-dexec "curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:${CTRL_PORT}/cache/oci | grep -q 200" \
+dexec "curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:${PORT}/cache/oci | grep -q 200" \
   || fail "SPA deep link did not fall back to the placeholder"
 dexec 'journalctl -u specula.service --no-pager | grep -q "WebUI bundle is NOT embedded"' \
   || fail "startup WARN about the missing bundle is absent from the journal"

@@ -143,7 +143,7 @@ upstream chain with an actual pull rather than assuming:
 
 ```bash
 kubectl -n specula-boot run ossprobe --restart=Never --image=<same image> --command -- \
-  /specula bootstrap-prefetch --addr http://boot-specula-bootstrap:7732 \
+  /specula bootstrap-prefetch --addr http://boot-specula-bootstrap:7733 \
   --images registry.k8s.io/pause:3.10
 kubectl -n specula-boot logs ossprobe
 ```

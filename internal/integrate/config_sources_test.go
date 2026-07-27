@@ -163,8 +163,7 @@ func TestRunWithConfigPath(t *testing.T) {
 	path := filepath.Join(dir, "specula.yaml")
 	yaml := `
 server:
-  data_plane_addr: ":7732"
-  control_plane_addr: ":7733"
+  listen_addr: "0.0.0.0:7733"
 storage:
   blob:
     driver: local

@@ -1,0 +1,46 @@
+{{- if and .Values.deployment.enabled .Values.ingress.enabled }}
+{{- /*
+Public access is ordinary Kubernetes: one Service port, one Ingress, TLS terminated
+by the controller. Specula does not invent a second mechanism.
+
+Set server.registry_public_host (values: registryPublicHost) whenever this is on —
+behind an Ingress the request carries the ingress hostname and :443, neither of which
+appears in the listen address, so Specula cannot derive what belongs in
+`docker login <host>`.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ include "specula-bootstrap.fullname" $ }}
+                port:
+                  # The one port. Protocols, Admin API, probes and the WebUI all
+                  # answer here, so a single "/" rule is the whole config.
+                  name: http
+          {{- end }}
+    {{- end }}
+{{- end }}

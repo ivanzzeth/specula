@@ -31,7 +31,7 @@ func runIntegrate(args []string) error {
 
 	fs := flag.NewFlagSet("integrate", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	addr := fs.String("addr", integrate.DefaultAddr, "Specula data-plane base URL (default https://127.0.0.1:7732)")
+	addr := fs.String("addr", integrate.DefaultAddr, "Specula base URL (default https://127.0.0.1:7733)")
 	protocols := fs.String("protocols", strings.Join(integrate.DefaultProtocols, ","),
 		"comma-separated protocols: go,npm,pypi,oci,helm,git,apt,cargo,conda,hf")
 	dryRun := fs.Bool("dry-run", false, "print planned changes without writing")
@@ -59,12 +59,12 @@ Add Specula as a client-side mirror without destroying existing config:
   apt    write /etc/apt/sources.list.d/specula.list (never edit sources.list)
 
 Examples:
-  specula integrate --addr https://127.0.0.1:7732
-  sudo specula integrate --protocols oci --addr https://127.0.0.1:7732
-  sudo specula integrate --protocols oci --addr https://specula.example.test:7732 --ca-file /etc/specula/ca.crt
+  specula integrate --addr https://127.0.0.1:7733
+  sudo specula integrate --protocols oci --addr https://127.0.0.1:7733
+  sudo specula integrate --protocols oci --addr https://specula.example.test:7733 --ca-file /etc/specula/ca.crt
   specula integrate --protocols docker   # alias of oci
   # plain http only when the data plane is truly cleartext:
-  specula integrate --addr http://127.0.0.1:7732   # auto-upgrades to https if port is TLS-only
+  specula integrate --addr http://127.0.0.1:7733   # auto-upgrades to https if port is TLS-only
 
 Flags:
 `)

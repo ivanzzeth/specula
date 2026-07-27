@@ -35,12 +35,12 @@ type Options struct {
 
 // Document is a CycloneDX 1.5 BOM (JSON-serialisable).
 type Document struct {
-	BOMFormat    string       `json:"bomFormat"`
-	SpecVersion  string       `json:"specVersion"`
-	SerialNumber string       `json:"serialNumber"`
-	Version      int          `json:"version"`
-	Metadata     Metadata     `json:"metadata"`
-	Components   []Component  `json:"components"`
+	BOMFormat    string      `json:"bomFormat"`
+	SpecVersion  string      `json:"specVersion"`
+	SerialNumber string      `json:"serialNumber"`
+	Version      int         `json:"version"`
+	Metadata     Metadata    `json:"metadata"`
+	Components   []Component `json:"components"`
 	// Truncated is a Specula extension: true when MaxComponents capped the list.
 	// Honest: operators must know the BOM may be incomplete.
 	Truncated bool `json:"x-specula-truncated,omitempty"`
@@ -48,8 +48,8 @@ type Document struct {
 
 // Metadata is the CycloneDX metadata block.
 type Metadata struct {
-	Timestamp string            `json:"timestamp"`
-	Tools     []Tool            `json:"tools,omitempty"`
+	Timestamp string             `json:"timestamp"`
+	Tools     []Tool             `json:"tools,omitempty"`
 	Component *MetadataComponent `json:"component,omitempty"`
 	// Properties carry honest scope notes.
 	Properties []Property `json:"properties,omitempty"`

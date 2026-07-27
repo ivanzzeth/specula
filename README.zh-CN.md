@@ -34,7 +34,7 @@ make run                               # 或: ./bin/specula  （无配置时从�
 
 发版二进制同样：放到任意目录直接跑——缺少 `specula.yaml` 时从内嵌示例自动创建（数据在 `~/.specula`）。
 
-- 数据面（协议）：`http://127.0.0.1:7732`
+- 数据面（协议）：`http://127.0.0.1:7733`
 - 管理面（WebUI）：`http://127.0.0.1:7733`
 
 **一键接入客户端** — **一条命令接齐全部协议**（`go` / `npm` / `pypi` / `oci` /
@@ -42,7 +42,7 @@ make run                               # 或: ./bin/specula  （无配置时从�
 
 ```bash
 make build-go
-./bin/specula integrate --addr https://127.0.0.1:7732
+./bin/specula integrate --addr https://127.0.0.1:7733
 # 仅预览：          ./bin/specula integrate --dry-run
 # 查看状态：        ./bin/specula integrate status
 # OCI/CRI 预检：    ./bin/specula doctor   # 冒号 config_path / server= / 不可达则 exit 1
@@ -115,7 +115,7 @@ git tag v0.4.0 && git push origin v0.4.0    # 触发 .github/workflows/release.y
 
 ```bash
 docker pull ivanzz/specula:v0.4.0          # 稳定 tag 另有 :latest
-docker run --rm -p 7732:7732 -p 7733:7733 \
+docker run --rm -p 7733:7733 -p 7733:7733 \
   -v specula-data:/var/lib/specula \
   ivanzz/specula:v0.4.0
 ```
@@ -189,14 +189,14 @@ curl -s -H "Authorization: Bearer $SPECULA_TOKEN" \
 不经 Clash/公司代理。
 
 ```bash
-curl -sI http://127.0.0.1:7732/go/ | grep -iE 'x-specula|via:'
+curl -sI http://127.0.0.1:7733/go/ | grep -iE 'x-specula|via:'
 source ~/.config/specula/env.sh
 ```
 
 ### 一次性拉取探针
 
 ```bash
-./bin/specula bench --addr http://127.0.0.1:7732   # 仅冷/热探针，不是实时统计
+./bin/specula bench --addr http://127.0.0.1:7733   # 仅冷/热探针，不是实时统计
 ```
 
 ### Go 库（SDK）
@@ -254,7 +254,7 @@ import (
 s, _ := specula.New(ctx, specula.Options{DataDir: "./data", Upstreams: ups})
 mux := http.NewServeMux()
 embed.Mount(mux, s, embed.Options{Protocols: []string{"gomod", "oci"}})
-http.ListenAndServe(":7732", mux)
+http.ListenAndServe(":7733", mux)
 ```
 
 示例：[`examples/sdk-get-module`](examples/sdk-get-module)、[`examples/embed-mux`](examples/embed-mux)。
@@ -323,31 +323,31 @@ cache:
 **本机 / 开发机：一条命令接齐全部协议**（见快速开始）：
 
 ```bash
-./bin/specula integrate --addr http://127.0.0.1:7732
+./bin/specula integrate --addr http://127.0.0.1:7733
 ```
 
 只**新增** Specula（列表前置、apt drop-in、保留无关配置键），不必再按协议
 逐段配置。下面的片段留给 CI 镜像、Kubernetes 或完全手控。
 
-以下默认数据面为 `http://127.0.0.1:7732`（本机 / DaemonSet）。生产请换成实际 Specula 地址。数据面**无消费者认证**——放在可信网段或用 mTLS/网络策略挡边界。
+以下默认数据面为 `http://127.0.0.1:7733`（本机 / DaemonSet）。生产请换成实际 Specula 地址。数据面**无消费者认证**——放在可信网段或用 mTLS/网络策略挡边界。
 
 ### OCI（Docker / containerd / nerdctl）
 
 一键接入（与其它协议相同，增量写入；**需要 sudo**，dockerd 才读得到）：
 
 ```bash
-sudo ./bin/specula integrate --protocols oci --addr http://127.0.0.1:7732
+sudo ./bin/specula integrate --protocols oci --addr http://127.0.0.1:7733
 sudo systemctl restart docker   # 让 daemon.json 生效
 # 验证：
 docker info | grep -A5 'Registry Mirrors'
-curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
+curl -sI http://127.0.0.1:7733/v2/ | grep -i x-specula
 ```
 
 会更新：
 - `/etc/docker/daemon.json`：`registry-mirrors`（**仅 docker.io**）与 `insecure-registries`
 - `/etc/containerd/certs.d/<registry>/hosts.toml`：非 Hub 仓库带 `override_path`，透明重定向到 Specula 路径式回源
 - `/etc/containerd/config.toml`：把 CRI **和** `transfer.v1.local` 的 `config_path` 都写成同一个**单一** certs.d 目录（containerd 2.2 冒号 CRI 路径会被 transfer 忽略；transfer 默认 `''` 同样不读 hosts.toml）。integrate 后需 `systemctl restart containerd`。
-- 默认 `--addr` 为 `https://127.0.0.1:7732`。若传 `http://` 但端口只讲 TLS，会自动升级为 `https://`（避免 hosts.toml 写成 http 后拉镜像 HTTP 400）。
+- 默认 `--addr` 为 `https://127.0.0.1:7733`。若传 `http://` 但端口只讲 TLS，会自动升级为 `https://`（避免 hosts.toml 写成 http 后拉镜像 HTTP 400）。
 - 预检：`./bin/specula doctor`（或 `integrate doctor`）在 kubeadm 卡住前标出冒号/空的 CRI+transfer `config_path`、未重启的 effective dump、残留 `server=`、k3s 写错 certs.d、缺 `registry.k8s.io` hosts、Specula `/v2/` 不可达。
 
 无 sudo 时仍会写用户目录下的 daemon.json / `~/.config/specula/certs.d/`，但 **dockerd/containerd 默认不读用户路径** — 真正一键请加 sudo。
@@ -357,8 +357,8 @@ curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
 ```jsonc
 // /etc/docker/daemon.json — 仅 docker.io 走 Specula
 {
-  "registry-mirrors": ["http://127.0.0.1:7732"],
-  "insecure-registries": ["127.0.0.1:7732"]
+  "registry-mirrors": ["http://127.0.0.1:7733"],
+  "insecure-registries": ["127.0.0.1:7733"]
 }
 ```
 
@@ -366,15 +366,15 @@ curl -sI http://127.0.0.1:7732/v2/ | grep -i x-specula
 
 ```bash
 # 路径式 — 普通 dockerd 可用（镜像名含 registry host）
-docker pull 127.0.0.1:7732/codeberg.org/forgejo/forgejo:12
-docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
+docker pull 127.0.0.1:7733/codeberg.org/forgejo/forgejo:12
+docker pull 127.0.0.1:7733/registry.k8s.io/pause:3.9
 ```
 
 ```toml
 # containerd：docker.io 不用 override_path；其它 registry 要用
 # /etc/containerd/certs.d/codeberg.org/hosts.toml
 server = "https://codeberg.org"
-[host."http://127.0.0.1:7732/v2/codeberg.org"]
+[host."http://127.0.0.1:7733/v2/codeberg.org"]
   capabilities = ["pull", "resolve"]
   override_path = true
   skip_verify = true
@@ -384,7 +384,7 @@ server = "https://codeberg.org"
 
 ```bash
 # Hub 一次性按「具名 registry」拉取
-docker pull 127.0.0.1:7732/library/nginx:latest
+docker pull 127.0.0.1:7733/library/nginx:latest
 ```
 
 Specula 在 `/v2/` 提供 OCI Distribution API。
@@ -392,7 +392,7 @@ Specula 在 `/v2/` 提供 OCI Distribution API。
 ### Go modules
 
 ```bash
-export GOPROXY=http://127.0.0.1:7732/go,direct
+export GOPROXY=http://127.0.0.1:7733/go,direct
 export GOSUMDB=sum.golang.google.cn
 # 私有模块不要走公网 sumdb（并在 Specula sumdb.private_patterns 中配置）
 # export GONOSUMDB=git.internal.corp/*
@@ -407,12 +407,12 @@ go mod download
 
 ```bash
 # 环境变量（pip / uv）
-export PIP_INDEX_URL=http://127.0.0.1:7732/pypi/simple
+export PIP_INDEX_URL=http://127.0.0.1:7733/pypi/simple
 export PIP_TRUSTED_HOST=127.0.0.1
 
 # 或 pip.conf / ~/.config/pip/pip.conf
 # [global]
-# index-url = http://127.0.0.1:7732/pypi/simple
+# index-url = http://127.0.0.1:7733/pypi/simple
 # trusted-host = 127.0.0.1
 ```
 
@@ -421,14 +421,14 @@ export PIP_TRUSTED_HOST=127.0.0.1
 ### npm / yarn / pnpm
 
 ```bash
-npm config set registry http://127.0.0.1:7732/npm/
-yarn config set registry http://127.0.0.1:7732/npm/
-pnpm config set registry http://127.0.0.1:7732/npm/
+npm config set registry http://127.0.0.1:7733/npm/
+yarn config set registry http://127.0.0.1:7733/npm/
+pnpm config set registry http://127.0.0.1:7733/npm/
 ```
 
 ```ini
 # .npmrc
-registry=http://127.0.0.1:7732/npm/
+registry=http://127.0.0.1:7733/npm/
 ```
 
 ### apt（Debian / Ubuntu）
@@ -436,8 +436,8 @@ registry=http://127.0.0.1:7732/npm/
 `sources.list` 指向 Specula 的 apt 挂载点（归档前缀须匹配 `apt.repositories`，例如 `ubuntu`；其后与普通源布局一致：`dists/`、`pool/`）：
 
 ```text
-deb http://127.0.0.1:7732/apt/ubuntu/ jammy main restricted universe multiverse
-deb http://127.0.0.1:7732/apt/ubuntu/ jammy-updates main restricted universe multiverse
+deb http://127.0.0.1:7733/apt/ubuntu/ jammy main restricted universe multiverse
+deb http://127.0.0.1:7733/apt/ubuntu/ jammy-updates main restricted universe multiverse
 ```
 
 ```bash
@@ -450,12 +450,12 @@ sudo apt-get update && sudo apt-get install <pkg>
 
 ```bash
 # 经典 HTTP chart 仓库（index.yaml + .tgz）
-helm repo add bitnami http://127.0.0.1:7732/helm/bitnami
+helm repo add bitnami http://127.0.0.1:7733/helm/bitnami
 helm repo update
 helm pull bitnami/nginx
 
 # 扁平仓库（index 在挂载根）
-# helm repo add charts http://127.0.0.1:7732/helm/
+# helm repo add charts http://127.0.0.1:7733/helm/
 ```
 
 OCI 形态的 Helm chart 走 **OCI** 路径（`/v2/`），不是 `/helm/`。
@@ -464,19 +464,19 @@ OCI 形态的 Helm chart 走 **OCI** 路径（`/v2/`），不是 `/helm/`。
 
 ```bash
 # 路径编码 host + 远端路径；host 须在 Specula 白名单内
-curl -fL 'http://127.0.0.1:7732/tarball/github.com/example/proj/releases/download/v1.0.0/app.tar.gz'
+curl -fL 'http://127.0.0.1:7733/tarball/github.com/example/proj/releases/download/v1.0.0/app.tar.gz'
 # 可选 digest pin
-curl -fL 'http://127.0.0.1:7732/tarball/…/app.tar.gz?digest=sha256:…'
+curl -fL 'http://127.0.0.1:7733/tarball/…/app.tar.gz?digest=sha256:…'
 ```
 
 ### git
 
 ```bash
 # 经 Specula 克隆（Smart HTTP）
-git clone http://127.0.0.1:7732/git/github.com/golang/go.git
+git clone http://127.0.0.1:7733/git/github.com/golang/go.git
 
 # 把所有 github.com HTTPS 克隆改写到 Specula
-git config --global url."http://127.0.0.1:7732/git/github.com/".insteadOf "https://github.com/"
+git config --global url."http://127.0.0.1:7733/git/github.com/".insteadOf "https://github.com/"
 ```
 
 主机须在 `protocols.git.git.allowed_upstreams` 中。私有仓 / push 会透传、不缓存。
@@ -484,24 +484,24 @@ git config --global url."http://127.0.0.1:7732/git/github.com/".insteadOf "https
 ### Cargo（sparse registry）
 
 ```bash
-./bin/specula integrate --protocols cargo --addr http://127.0.0.1:7732
-# 写入 ~/.cargo/config.toml source replace → sparse+http://127.0.0.1:7732/cargo/index/
+./bin/specula integrate --protocols cargo --addr http://127.0.0.1:7733
+# 写入 ~/.cargo/config.toml source replace → sparse+http://127.0.0.1:7733/cargo/index/
 cargo fetch
 ```
 
 ### conda
 
 ```bash
-./bin/specula integrate --protocols conda --addr http://127.0.0.1:7732
-# 在 ~/.condarc 前置 channel http://127.0.0.1:7732/conda/conda-forge
-micromamba create -y -n demo -c http://127.0.0.1:7732/conda/conda-forge --override-channels ca-certificates
+./bin/specula integrate --protocols conda --addr http://127.0.0.1:7733
+# 在 ~/.condarc 前置 channel http://127.0.0.1:7733/conda/conda-forge
+micromamba create -y -n demo -c http://127.0.0.1:7733/conda/conda-forge --override-channels ca-certificates
 ```
 
 ### Hugging Face Hub
 
 ```bash
-./bin/specula integrate --protocols hf --addr http://127.0.0.1:7732
-# 经 ~/.config/specula/env.sh 导出 HF_ENDPOINT=http://127.0.0.1:7732/hf
+./bin/specula integrate --protocols hf --addr http://127.0.0.1:7733
+# 经 ~/.config/specula/env.sh 导出 HF_ENDPOINT=http://127.0.0.1:7733/hf
 source ~/.config/specula/env.sh
 huggingface-cli download hf-internal-testing/tiny-random-bert --local-dir /tmp/hf-tiny
 ```
@@ -518,7 +518,7 @@ server:
 
 ```bash
 # 1) online 暖缓存
-docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
+docker pull 127.0.0.1:7733/registry.k8s.io/pause:3.9
 # 2) mode: offline 后重启
 # 3) 命中成功；未缓存 tag 快速失败
 ./scripts/realclient-offline.sh

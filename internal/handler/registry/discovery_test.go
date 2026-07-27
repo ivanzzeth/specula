@@ -253,7 +253,6 @@ func TestListTagsUnknownRepo404(t *testing.T) {
 // subjectDigest is a syntactically valid sha256 digest used as a referrers subject.
 const subjectDigest = "sha256:" + "cafe" + "0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"
 
-
 // seedBlob puts body (default "{}") under digest so putManifest's CAS ref check passes.
 func seedBlob(t *testing.T, blobs *memBlobStore, digest string, body []byte) {
 	t.Helper()

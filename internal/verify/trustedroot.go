@@ -41,10 +41,10 @@ type TimeRange struct {
 
 // trustedRootFile is the JSON shape of application/vnd.dev.sigstore.trustedroot*.
 type trustedRootFile struct {
-	MediaType             string             `json:"mediaType"`
+	MediaType              string            `json:"mediaType"`
 	CertificateAuthorities []caJSON          `json:"certificateAuthorities"`
-	TLogs                 []json.RawMessage  `json:"tlogs"`
-	CTLogs                []json.RawMessage  `json:"ctlogs"`
+	TLogs                  []json.RawMessage `json:"tlogs"`
+	CTLogs                 []json.RawMessage `json:"ctlogs"`
 }
 
 type caJSON struct {
@@ -166,7 +166,7 @@ func (tr *TrustedRoot) VerifyCertificateChain(leaf *x509.Certificate, chainPEM [
 		Roots:         tr.Roots,
 		Intermediates: intermediates,
 		CurrentTime:   now,
-		KeyUsages:    []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning, x509.ExtKeyUsageAny},
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning, x509.ExtKeyUsageAny},
 	}
 	if _, err := leaf.Verify(opts); err != nil {
 		return fmt.Errorf("trusted_root: certificate chain verification failed: %w", err)

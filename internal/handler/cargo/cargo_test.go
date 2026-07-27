@@ -168,4 +168,3 @@ func (c *cargoTestCache) ServeEntry(_ context.Context, entry *artifact.CacheEntr
 func (c *cargoTestCache) LookupStale(ctx context.Context, ref artifact.ArtifactRef) (*artifact.CacheEntry, error) {
 	return c.Lookup(ctx, ref)
 }
-

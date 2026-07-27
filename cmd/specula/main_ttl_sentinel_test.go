@@ -49,8 +49,7 @@ func writeCfg(t *testing.T, body string) *config.Config {
 
 const ttlCfgHeader = `
 server:
-  data_plane_addr: "127.0.0.1:0"
-  control_plane_addr: "127.0.0.1:0"
+  listen_addr: "127.0.0.1:0"
 storage:
   blob:
     driver: local

@@ -54,8 +54,8 @@ func (r *seriesRing) snapshot() []SeriesPoint {
 
 // seriesStore holds per-protocol rings plus the "" key for the grand total.
 type seriesStore struct {
-	mu   sync.Mutex
-	cap  int
+	mu    sync.Mutex
+	cap   int
 	byKey map[string]*seriesRing
 }
 

@@ -45,8 +45,7 @@ func TestLoad_TildeStoragePaths(t *testing.T) {
 
 	path := writeYAML(t, `
 server:
-  data_plane_addr: "0.0.0.0:7732"
-  control_plane_addr: "0.0.0.0:7733"
+  listen_addr: "0.0.0.0:7733"
 storage:
   blob:
     driver: local
@@ -86,8 +85,7 @@ func TestLoad_EmptyStorageDefaultsToHome(t *testing.T) {
 
 	path := writeYAML(t, `
 server:
-  data_plane_addr: "0.0.0.0:7732"
-  control_plane_addr: "0.0.0.0:7733"
+  listen_addr: "0.0.0.0:7733"
 cache:
   default_mutable_ttl_seconds: 300
   negative_ttl_seconds: 1800

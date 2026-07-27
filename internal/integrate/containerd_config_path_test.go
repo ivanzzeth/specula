@@ -175,7 +175,6 @@ func TestRewriteContainerdHostsConfigPaths_IndentedTransfer_NoDuplicate(t *testi
 	assert.NotContains(t, out, `config_path = ''`)
 }
 
-
 func TestRewriteContainerdHostsConfigPaths_InjectsBoth(t *testing.T) {
 	out, changed := rewriteContainerdHostsConfigPaths("version = 3\n", "/etc/containerd/certs.d")
 	require.True(t, changed)

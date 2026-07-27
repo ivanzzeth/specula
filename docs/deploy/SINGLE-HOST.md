@@ -45,7 +45,7 @@ cron/timer plus `systemctl reload-or-restart specula`.
 
 ```yaml
 server:
-  data_plane_addr: "0.0.0.0:7732"
+  data_plane_addr: "0.0.0.0:7733"
   control_plane_addr: "0.0.0.0:7733"
   tls:
     cert_file: /etc/specula/tls/fullchain.pem
@@ -100,7 +100,7 @@ added later — private DNS is the maintainable choice.
 ## 4. Wire clients
 
 ```bash
-sudo specula integrate --addr https://specula.internal.example.com:7732 \
+sudo specula integrate --addr https://specula.internal.example.com:7733 \
                        --protocols oci,helm,go,npm,pypi,apt,git
 sudo systemctl restart containerd     # only when the CRI config changed
 specula doctor                        # exits 1 on RISK — run this every time
@@ -181,7 +181,7 @@ cannot be created, which is deliberate: the alternative is a daemon answering
 
 ## 7. Security group
 
-Allow `7732`/`7733` **from the VPC CIDR only**. No public inbound. An
+Allow `7733`/`7733` **from the VPC CIDR only**. No public inbound. An
 internet-exposed data plane is an open proxy, and `7733` is the admin plane.
 
 ## Fallback mirror

@@ -54,7 +54,7 @@ func TestLoadOrCreate(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, created)
 	require.NotNil(t, cfg)
-	assert.Equal(t, "0.0.0.0:7732", cfg.Server.DataPlaneAddr)
+	assert.Equal(t, "0.0.0.0:7733", cfg.EffectiveListenAddr())
 
 	cfg2, created2, err := config.LoadOrCreate(path)
 	require.NoError(t, err)

@@ -212,8 +212,7 @@ func run() error {
 		"version", version.Version,
 		"commit", version.Commit,
 		"config", configPath,
-		"data_plane", cfg.Server.DataPlaneAddr,
-		"control_plane", cfg.Server.ControlPlaneAddr)
+		"listen", cfg.EffectiveListenAddr())
 
 	for _, h := range config.UpgradeHints(cfg) {
 		log.Warn(h.Message, "section", h.Section)
@@ -466,32 +465,38 @@ func run() error {
 		log.Info("specula: offline mode — cache hits only; misses return 404; no outbound fetch")
 	}
 
-	dataMux := http.NewServeMux()
-	mountOCI(dataMux, cfg, cm, metaStore, log, upstreams, regTokenSvc, regAuthz, repoStore, blobs, registryEnabled, stampedeLocker)
-	mountGoModule(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
-	mountPyPI(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
-	mountNPM(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
-	mountAPT(dataMux, cfg, cm, metaStore, log, upstreams, gpgV, stampedeLocker)
+	// ── One listener, one mux ────────────────────────────────────────────────
+	// Artifact protocols, /token, the Admin API, probes, /metrics and the WebUI all
+	// share a single port. Paths keep their separate meanings; there is simply no
+	// second TCP port to publish, firewall or explain. Registration order below is
+	// protocols → Admin → /token → probes → SPA last: ServeMux picks the longest
+	// matching pattern, but keeping "/" last also keeps the intent obvious, and the
+	// SPA swallowing GET /v2/ is exactly how `docker login` once printed
+	// "Login Succeeded" for a bogus password.
+	mux := http.NewServeMux()
+	mountOCI(mux, cfg, cm, metaStore, log, upstreams, regTokenSvc, regAuthz, repoStore, blobs, registryEnabled, stampedeLocker)
+	mountGoModule(mux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountPyPI(mux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountNPM(mux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountAPT(mux, cfg, cm, metaStore, log, upstreams, gpgV, stampedeLocker)
 	// Shared SSRF allowlist: seeded from tarball+helm config; helm index rewrite
 	// Allow()s cross-host chart origins (e.g. github.com) at serve time.
 	tarballAllow := tarballhandler.NewHostAllowlist(tarballAllowlistHosts(cfg))
-	mountHelm(dataMux, cfg, cm, metaStore, log, upstreams, helmProvV, stampedeLocker, tarballAllow)
-	mountTarball(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker, tarballAllow)
-	mountGit(dataMux, cfg, metaStore, log, gitSignedV)
-	mountCargo(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
-	mountConda(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
-	mountHF(dataMux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
-	// Liveness on the data plane too, so a bare data-plane LB can probe it.
-	dataMux.HandleFunc("/healthz", healthz)
-
-	// ── Control plane: health + readiness + metrics + Admin API ──────────────
-	ctrlMux := http.NewServeMux()
-	ctrlMux.HandleFunc("/healthz", healthz)
-	ctrlMux.HandleFunc("/readyz", readyz(ctx, blobs, metaStore))
-	ctrlMux.Handle("/metrics", promhttp.Handler())
+	mountHelm(mux, cfg, cm, metaStore, log, upstreams, helmProvV, stampedeLocker, tarballAllow)
+	mountTarball(mux, cfg, cm, metaStore, log, upstreams, stampedeLocker, tarballAllow)
+	mountGit(mux, cfg, metaStore, log, gitSignedV)
+	mountCargo(mux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountConda(mux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	mountHF(mux, cfg, cm, metaStore, log, upstreams, stampedeLocker)
+	// ── Probes + metrics + Admin API ─────────────────────────────────────────
+	// Registered ONCE now: the two-plane build mounted /healthz and /token on both
+	// muxes, and a duplicate pattern on a single mux is a panic, not a warning.
+	mux.HandleFunc("/healthz", healthz)
+	mux.HandleFunc("/readyz", readyz(ctx, blobs, metaStore))
+	mux.Handle("/metrics", promhttp.Handler())
 	// Live per-protocol throughput (bytes + duration). No auth — same trust
-	// posture as /metrics scrapes on the control plane.
-	ctrlMux.HandleFunc("/api/v1/traffic", func(w http.ResponseWriter, _ *http.Request) {
+	// posture as a /metrics scrape.
+	mux.HandleFunc("/api/v1/traffic", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(metrics.SnapshotTraffic())
 	})
@@ -531,7 +536,7 @@ func run() error {
 		Capacity:   capacity,
 		Settings:   resolver,
 	})
-	adminSrv.RegisterRoutes(ctrlMux)
+	adminSrv.RegisterRoutes(mux)
 	log.Info("specula: mounted Admin API", "base", "/api/v1")
 
 	// ── Registry /token endpoint (Docker v2 Bearer flow) ─────────────────────
@@ -546,9 +551,8 @@ func run() error {
 			Passwords: &registryauthz.PasswordAuth{Svc: authSvc},
 		}
 		tokenHandler := registrytoken.NewTokenHandler(regTokenSvc, authn, regAuthz)
-		ctrlMux.Handle("/token", tokenHandler)
-		dataMux.Handle("/token", tokenHandler)
-		log.Info("specula: mounted registry token endpoint", "path", "/token", "planes", "control+data")
+		mux.Handle("/token", tokenHandler)
+		log.Info("specula: mounted registry token endpoint", "path", "/token")
 	}
 
 	// Machine-facing prefixes must never fall through to the SPA catch-all below.
@@ -570,9 +574,9 @@ func run() error {
 			_, _ = io.WriteString(w, `{"error":`+strconv.Quote(msg)+"}\n")
 		}
 	}
-	ctrlMux.HandleFunc("/api/", jsonNotFound("no such API endpoint"))
-	ctrlMux.HandleFunc("/v2/", jsonNotFound(
-		"the OCI registry is served on the data plane, not the control plane"))
+	// No /v2/ stub any more: /v2/ IS the registry on this port. The stub existed only
+	// because the control plane used to answer /v2/ with the SPA.
+	mux.HandleFunc("/api/", jsonNotFound("no such API endpoint"))
 
 	// Embedded WebUI SPA (ARCHITECTURE §11): the "/" catch-all serves the Vite
 	// build output; hashed assets get an immutable long cache, index.html is
@@ -580,7 +584,7 @@ func run() error {
 	// APP_ENV==dev. Registered last so the more-specific /api, /healthz, /readyz,
 	// /metrics patterns win under ServeMux longest-prefix matching.
 	devMode := os.Getenv("APP_ENV") == "dev"
-	ctrlMux.Handle("/", webui.Handler(devMode))
+	mux.Handle("/", webui.Handler(devMode))
 	if webui.Built() {
 		log.Info("specula: mounted embedded WebUI", "path", "/", "dev_mode", devMode)
 	} else {
@@ -591,8 +595,11 @@ func run() error {
 			"Rebuild with `make ui && make build-go` (or `make build`). API and protocol handlers are unaffected.")
 	}
 
-	dataSrv := &http.Server{Addr: cfg.Server.DataPlaneAddr, Handler: dataMux, ReadHeaderTimeout: 15 * time.Second}
-	ctrlSrv := &http.Server{Addr: cfg.Server.ControlPlaneAddr, Handler: ctrlMux, ReadHeaderTimeout: 15 * time.Second}
+	srv := &http.Server{
+		Addr:              cfg.EffectiveListenAddr(),
+		Handler:           mux,
+		ReadHeaderTimeout: 15 * time.Second,
+	}
 
 	// Take the FIRST stats measurement SYNCHRONOUSLY, before /metrics is
 	// reachable. metrics package init pre-initialises specula_cache_bytes{protocol}
@@ -607,10 +614,10 @@ func run() error {
 	var tls *planeTLS
 	if cfg.Server.TLS.Enabled() {
 		tls = &planeTLS{certFile: cfg.Server.TLS.CertFile, keyFile: cfg.Server.TLS.KeyFile}
-		log.Info("specula: TLS enabled on both planes",
+		log.Info("specula: TLS enabled",
 			"cert_file", cfg.Server.TLS.CertFile, "key_file", cfg.Server.TLS.KeyFile)
 	}
-	return serve(ctx, log, tls, dataSrv, ctrlSrv)
+	return serve(ctx, log, tls, srv)
 }
 
 // parseAndLoad parses the --config flag and loads+validates the config.

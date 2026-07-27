@@ -83,7 +83,7 @@ echo "==> building Specula binary on host, packaging ha-local image, loading int
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY specula /specula
 COPY specula.yaml /etc/specula/specula.yaml
-EXPOSE 7732 7733
+EXPOSE 7733
 VOLUME ["/var/lib/specula"]
 USER nonroot:nonroot
 ENTRYPOINT ["/specula"]
@@ -138,20 +138,20 @@ kubectl -n "${NAMESPACE}" get pods,hpa,deploy -l "app.kubernetes.io/instance=${R
 
 echo "==> acceptance: data-plane /v2/ via port-forward"
 PF_LOG="$(mktemp)"
-kubectl -n "${NAMESPACE}" port-forward "svc/${RELEASE}" 17732:7732 17733:7733 >"${PF_LOG}" 2>&1 &
+kubectl -n "${NAMESPACE}" port-forward "svc/${RELEASE}" 17733:7733 >"${PF_LOG}" 2>&1 &
 PF_PID=$!
 cleanup() { kill "${PF_PID}" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 # Wait for port-forward to accept connections.
 for _ in $(seq 1 30); do
-  if curl -sf -o /dev/null "http://127.0.0.1:17732/v2/" 2>/dev/null; then
+  if curl -sf -o /dev/null "http://127.0.0.1:17733/v2/" 2>/dev/null; then
     break
   fi
   sleep 1
 done
 
-HTTP="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:17732/v2/" || true)"
+HTTP="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:17733/v2/" || true)"
 if [[ "${HTTP}" != "200" && "${HTTP}" != "401" ]]; then
   echo "ha-minikube: unexpected /v2/ status ${HTTP}" >&2
   cat "${PF_LOG}" >&2 || true
@@ -172,7 +172,7 @@ ACCEPT='Accept: application/vnd.docker.distribution.manifest.v2+json,application
 WARM_CODE=""
 for _ in $(seq 1 40); do
   WARM_CODE="$(curl -sS -o "${ROOT}/.ha-warm-body" -w '%{http_code}' --max-time 60 \
-    -H "${ACCEPT}" "http://127.0.0.1:17732${WARM_PATH}" || true)"
+    -H "${ACCEPT}" "http://127.0.0.1:17733${WARM_PATH}" || true)"
   if [[ "${WARM_CODE}" == "200" ]]; then
     break
   fi
@@ -193,7 +193,7 @@ kubectl -n "${NAMESPACE}" delete pod "${VICTIM}" --wait=false
 sleep 2
 HTTP2=""
 for _ in $(seq 1 20); do
-  HTTP2="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:17732/v2/" || true)"
+  HTTP2="$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:17733/v2/" || true)"
   if [[ "${HTTP2}" == "200" || "${HTTP2}" == "401" ]]; then
     break
   fi
@@ -210,7 +210,7 @@ if [[ "${WARM_OK}" -eq 1 ]]; then
   HIT_CODE=""
   for _ in $(seq 1 20); do
     HIT_CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
-      -H "${ACCEPT}" "http://127.0.0.1:17732${WARM_PATH}" || true)"
+      -H "${ACCEPT}" "http://127.0.0.1:17733${WARM_PATH}" || true)"
     if [[ "${HIT_CODE}" == "200" ]]; then
       break
     fi
@@ -262,5 +262,5 @@ kubectl -n "${NAMESPACE}" get pods,hpa,deploy -l "app.kubernetes.io/instance=${R
 
 echo ""
 echo "Done. HA + HPA smoke passed."
-echo "  Data plane:    kubectl -n ${NAMESPACE} port-forward svc/${RELEASE} 7732:7732"
+echo "  Data plane:    kubectl -n ${NAMESPACE} port-forward svc/${RELEASE} 7733:7733"
 echo "  Control plane: kubectl -n ${NAMESPACE} port-forward svc/${RELEASE} 7733:7733"

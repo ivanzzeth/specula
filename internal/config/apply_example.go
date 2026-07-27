@@ -40,15 +40,15 @@ type ApplyExampleOptions struct {
 
 // ApplyExampleResult summarizes a merge of the embedded example into path.
 type ApplyExampleResult struct {
-	Path            string
-	BackupPath      string
-	Created         bool // true when path did not exist and was written from example alone
-	DryRun          bool
-	Added           []string // dotted paths newly present after merge
-	Changed         []string // dotted paths whose value changed
-	Wrote           bool
-	IntegrateHints  []string // suggested `specula integrate` commands after write
-	PreservedComments bool   // true when the write path used Node merge
+	Path              string
+	BackupPath        string
+	Created           bool // true when path did not exist and was written from example alone
+	DryRun            bool
+	Added             []string // dotted paths newly present after merge
+	Changed           []string // dotted paths whose value changed
+	Wrote             bool
+	IntegrateHints    []string // suggested `specula integrate` commands after write
+	PreservedComments bool     // true when the write path used Node merge
 }
 
 // ApplyExample merges the embedded ExampleYAML into the YAML file at path.

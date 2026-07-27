@@ -38,8 +38,8 @@ affinity: {}
 
 service:
   type: ClusterIP
-  dataPort: 7732
-  controlPort: 7733
+  # ONE port for protocols + Admin API + WebUI + probes.
+  port: 7733
   annotations: {}
 
 ingress:
@@ -51,7 +51,7 @@ ingress:
       paths:
         - path: /
           pathType: Prefix
-          port: control
+          port: http
   tls: []
 
 # auth.configSecret must be base64 of exactly 32 raw bytes (openssl rand -base64 32).

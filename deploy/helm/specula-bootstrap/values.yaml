@@ -46,6 +46,28 @@ resources:
 deployment:
   enabled: true
 
+# Public access via an Ingress. One Service port means one "/" rule covers protocols,
+# the Admin API, probes and the WebUI. Set registryPublicHost alongside it: behind an
+# Ingress the request carries the ingress host and :443, so Specula cannot infer what
+# belongs in `docker login <host>`.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: specula.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  # e.g.
+  # tls:
+  #   - hosts: [specula.example.com]
+  #     secretName: specula-tls
+
+# Host clients use for `docker login` / hosts.toml. REQUIRED when ingress.enabled.
+registryPublicHost: ""
+
 service:
   # NodePort (default) keeps node→Specula traffic on localhost.
   # LoadBalancer + an internal annotation exposes a stable VPC address for OTHER
@@ -54,12 +76,11 @@ service:
   #     service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: intranet
   type: NodePort
   annotations: {}
-  dataPort: 7732
-  controlPort: 7733
+  # ONE port for protocols + Admin API + WebUI + probes.
+  port: 7733
   # NodePort so the node's container runtime (containerd/docker) can reach the
   # mirror at 127.0.0.1:<nodePort> — cluster DNS is NOT resolvable by the runtime.
-  dataNodePort: 30732
-  controlNodePort: 30733
+  nodePort: 30733
 
 # Data volume for Specula blob/SQLite cache. Modes (priority):
 #   existingClaim > hostPath > created PVC (enabled=true) > emptyDir
@@ -205,7 +226,7 @@ mirror:
     - gcr.io
     - codeberg.org
   # The mirror endpoint the node dials. Defaults to the host's own NodePort.
-  endpoint: "http://127.0.0.1:30732"
+  endpoint: "http://127.0.0.1:30733"
   skipVerify: true
 
 # ── Phase 1b: full-protocol integrate DaemonSet ───────────────────────────────

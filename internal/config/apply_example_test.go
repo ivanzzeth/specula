@@ -19,7 +19,7 @@ func TestApplyExample_FillsMissingMultiSourceBlocks(t *testing.T) {
 	// Minimal legacy apt/git config — no nested allowlists.
 	require.NoError(t, os.WriteFile(path, []byte(`
 server:
-  data_plane_addr: "127.0.0.1:9"
+  listen_addr: "127.0.0.1:9"
 protocols:
   apt:
     upstreams:
@@ -63,7 +63,7 @@ protocols:
 func TestApplyExample_DryRunDoesNotWrite(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "specula.yaml")
-	orig := []byte("server:\n  data_plane_addr: \"127.0.0.1:9\"\n")
+	orig := []byte("server:\n  listen_addr: \"127.0.0.1:9\"\n")
 	require.NoError(t, os.WriteFile(path, orig, 0o644))
 
 	res, err := config.ApplyExample(path, config.ApplyExampleOptions{DryRun: true})
@@ -80,7 +80,7 @@ func TestApplyExample_OverwriteReplacesLeaf(t *testing.T) {
 	path := filepath.Join(dir, "specula.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(`
 server:
-  data_plane_addr: "127.0.0.1:9"
+  listen_addr: "127.0.0.1:9"
 cache:
   default_mutable_ttl_seconds: 999
 `), 0o644))
@@ -97,7 +97,7 @@ func TestDeepMerge_NamedRepos(t *testing.T) {
 	path := filepath.Join(dir, "specula.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(`
 server:
-  data_plane_addr: "127.0.0.1:9"
+  listen_addr: "127.0.0.1:9"
 protocols:
   helm:
     upstreams:
@@ -151,7 +151,7 @@ func TestApplyExample_PreservesComments(t *testing.T) {
 # keep-me-operator-comment
 server:
   # listen note
-  data_plane_addr: "127.0.0.1:9"
+  listen_addr: "127.0.0.1:9"
 protocols:
   git:
     upstreams:
@@ -188,7 +188,7 @@ func TestApplyExample_SectionLimitsOverlay(t *testing.T) {
 	path := filepath.Join(dir, "specula.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(`
 server:
-  data_plane_addr: "127.0.0.1:9"
+  listen_addr: "127.0.0.1:9"
 protocols:
   apt:
     upstreams:
@@ -228,13 +228,12 @@ func TestIntegrateHintsForChanges(t *testing.T) {
 	assert.Contains(t, joined, "--config /etc/specula/specula.yaml")
 }
 
-
 func TestApplyExample_FillEmptyReplacesEmptySlice(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "specula.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(`
 server:
-  data_plane_addr: "127.0.0.1:9"
+  listen_addr: "127.0.0.1:9"
 protocols:
   apt:
     upstreams:

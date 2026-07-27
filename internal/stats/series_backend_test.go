@@ -66,8 +66,8 @@ func TestCollector_SeriesBackendGrandTotal(t *testing.T) {
 	backend := &fakeSeriesBackend{}
 	store := &fakeStore{
 		stats: map[string]artifact.SizeStat{
-			"oci":  {Bytes: 100, Objects: 1},
-			"npm":  {Bytes: 200, Objects: 1},
+			"oci": {Bytes: 100, Objects: 1},
+			"npm": {Bytes: 200, Objects: 1},
 		},
 	}
 	c := NewCollectorWithStoreAndSeries(store, backend)

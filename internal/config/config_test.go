@@ -16,8 +16,7 @@ import (
 func minimalYAML() string {
 	return `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -81,8 +80,8 @@ func TestLoad_ExampleFile(t *testing.T) {
 	require.NoError(t, err, "example file must load and validate cleanly")
 
 	// Server
-	assert.Equal(t, "0.0.0.0:7732", cfg.Server.DataPlaneAddr)
-	assert.Equal(t, "0.0.0.0:7733", cfg.Server.ControlPlaneAddr)
+	assert.Equal(t, "0.0.0.0:7733", cfg.EffectiveListenAddr())
+	assert.Empty(t, cfg.Server.DataPlaneAddr, "the example must not set the removed key")
 
 	// Storage — example uses ~/.specula; Load expands ~ to $HOME.
 	home, err := os.UserHomeDir()
@@ -220,8 +219,7 @@ protocols:
 	// Build base YAML (server + storage) and merge with each test fragment.
 	base := `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -256,16 +254,15 @@ func TestLoad_EnvOverride(t *testing.T) {
 	path := writeYAML(t, minimalYAML())
 
 	// Override the data plane address and the OCI mutable TTL via env.
-	setenv(t, "SPECULA_SERVER__DATA_PLANE_ADDR", ":9000")
+	setenv(t, "SPECULA_SERVER__LISTEN_ADDR", ":9000")
 	setenv(t, "SPECULA_PROTOCOLS__OCI__MUTABLE_TTL_SECONDS", "999")
 
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
 
-	assert.Equal(t, ":9000", cfg.Server.DataPlaneAddr,
-		"env override SPECULA_SERVER__DATA_PLANE_ADDR must win")
-	assert.Equal(t, ":8080", cfg.Server.ControlPlaneAddr,
-		"unoveridden field must retain YAML value")
+	assert.Equal(t, ":9000", cfg.Server.ListenAddr,
+		"env override SPECULA_SERVER__LISTEN_ADDR must win")
+	assert.Equal(t, ":9000", cfg.EffectiveListenAddr())
 	require.NotNil(t, cfg.Protocols["oci"].MutableTTLSeconds)
 	assert.Equal(t, int64(999), *cfg.Protocols["oci"].MutableTTLSeconds,
 		"env override SPECULA_PROTOCOLS__OCI__MUTABLE_TTL_SECONDS must win")
@@ -275,8 +272,7 @@ func TestLoad_EnvOverride_StorageDriver(t *testing.T) {
 	// Start with local blob driver, override to s3 + provide required bucket.
 	yaml := `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -356,23 +352,24 @@ protocols:
 		wantErrMsgs []string // substrings that must appear in the error
 	}{
 		{
-			name: "missing_server_addrs",
+			// The removed key is a hard error: a config that still sets it expects a
+			// second port to be served, and silently not serving it is the worst
+			// outcome. An EMPTY listen address, by contrast, just takes the default.
+			name: "removed_data_plane_addr",
 			yaml: `
 server:
-  data_plane_addr: ""
-  control_plane_addr: ""
+  data_plane_addr: "0.0.0.0:7732"
 ` + base,
 			wantErrMsgs: []string{
 				"server.data_plane_addr",
-				"server.control_plane_addr",
+				"listen_addr",
 			},
 		},
 		{
 			name: "unknown_blob_driver",
 			yaml: `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: gcs
@@ -402,8 +399,7 @@ protocols:
 			name: "s3_missing_bucket",
 			yaml: `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: s3
@@ -433,8 +429,7 @@ protocols:
 			name: "unknown_meta_driver",
 			yaml: `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -464,8 +459,7 @@ protocols:
 			name: "negative_negative_ttl",
 			yaml: `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -495,8 +489,7 @@ protocols:
 			name: "protocol_no_upstreams",
 			yaml: `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -522,8 +515,7 @@ protocols:
 			name: "upstream_missing_base_url",
 			yaml: `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -553,8 +545,7 @@ protocols:
 			name: "unknown_tier",
 			yaml: `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -584,8 +575,7 @@ protocols:
 			name: "consensus_without_quorum",
 			yaml: `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -637,8 +627,6 @@ protocols:
       quorum: 0
 `,
 			wantErrMsgs: []string{
-				"server.data_plane_addr",
-				"server.control_plane_addr",
 				"storage.blob.driver",
 				"storage.meta.driver",
 				"cache.negative_ttl_seconds",
@@ -667,8 +655,7 @@ protocols:
 func TestValidate_ValidConfig(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{
-			DataPlaneAddr:    ":5000",
-			ControlPlaneAddr: ":8080",
+			ListenAddr: ":8080",
 		},
 		Storage: config.StorageConfig{
 			Blob: config.BlobStorageConfig{
@@ -715,8 +702,7 @@ func TestValidate_ValidConfig(t *testing.T) {
 func TestValidate_S3Driver(t *testing.T) {
 	cfg := &config.Config{
 		Server: config.ServerConfig{
-			DataPlaneAddr:    ":5000",
-			ControlPlaneAddr: ":8080",
+			ListenAddr: ":8080",
 		},
 		Storage: config.StorageConfig{
 			Blob: config.BlobStorageConfig{
@@ -770,7 +756,7 @@ func TestValidate_ConsensusRequiresQuorum(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &config.Config{
 				Server: config.ServerConfig{
-					DataPlaneAddr: ":5000", ControlPlaneAddr: ":8080",
+					ListenAddr: ":8080",
 				},
 				Storage: config.StorageConfig{
 					Blob: config.BlobStorageConfig{
@@ -851,10 +837,8 @@ storage:
 
 	cfg, err := config.Load(path)
 	require.NoError(t, err, "a config without a server block must start on the built-in ports")
-	assert.Equal(t, config.DefaultDataPlaneAddr, cfg.Server.DataPlaneAddr)
-	assert.Equal(t, config.DefaultControlPlaneAddr, cfg.Server.ControlPlaneAddr)
-	assert.Equal(t, "0.0.0.0:7732", cfg.Server.DataPlaneAddr, "SPEC on a phone keypad; not 5000")
-	assert.Equal(t, "0.0.0.0:7733", cfg.Server.ControlPlaneAddr, "not 8080")
+	assert.Equal(t, config.DefaultListenAddr, cfg.EffectiveListenAddr())
+	assert.Equal(t, "0.0.0.0:7733", cfg.EffectiveListenAddr(), "SPEC on a phone keypad; not 5000/8080")
 }
 
 // TestLoad_ExplicitPortsOverrideDefaults keeps the defaults from becoming a floor
@@ -864,8 +848,7 @@ func TestLoad_ExplicitPortsOverrideDefaults(t *testing.T) {
 	path := filepath.Join(dir, "custom.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(`
 server:
-  data_plane_addr: ":19999"
-  control_plane_addr: ":19998"
+  listen_addr: ":19999"
 storage:
   blob: {driver: local, local: {root: /tmp/b}}
   meta: {driver: sqlite, dsn: /tmp/m.db}
@@ -873,8 +856,7 @@ storage:
 
 	cfg, err := config.Load(path)
 	require.NoError(t, err)
-	assert.Equal(t, ":19999", cfg.Server.DataPlaneAddr)
-	assert.Equal(t, ":19998", cfg.Server.ControlPlaneAddr)
+	assert.Equal(t, ":19999", cfg.EffectiveListenAddr())
 }
 
 // ── BUG A: unknown config key silently ignored ─────────────────────────────
@@ -894,8 +876,7 @@ storage:
 func TestLoad_UnknownKey_SumDBMisplacedUnderVerification(t *testing.T) {
 	yaml := `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local
@@ -954,8 +935,7 @@ bogus_key: this-should-not-exist
 // validate the full config.
 const prdSection6Header = `
 server:
-  data_plane_addr: ":5000"
-  control_plane_addr: ":8080"
+  listen_addr: ":8080"
 storage:
   blob:
     driver: local

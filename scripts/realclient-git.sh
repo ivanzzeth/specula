@@ -24,7 +24,7 @@ WORK="${WORK:-$(mktemp -d /tmp/specula-git-realclient.XXXXXX)}"
 # both are required and why liveness/health checks alone are not enough.
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/daemon.sh"
 DATA_PORT="${DATA_PORT:-$(pick_free_port)}"
-CTRL_PORT="${CTRL_PORT:-$(pick_free_port)}"
+CTRL_PORT="${DATA_PORT}" # single listener
 # Fake upstream git HTTP server (plain CGI wrapper around git-http-backend).
 GIT_SRV_PORT="${GIT_SRV_PORT:-$(pick_free_port)}"
 
@@ -313,8 +313,7 @@ write_cfg() {
     local stale="$1" out="$2"
     cat > "$out" << EOF
 server:
-  data_plane_addr: ":$DATA_PORT"
-  control_plane_addr: ":$CTRL_PORT"
+  listen_addr: ":$DATA_PORT"
 auth:
   registry_token_key_path: $WORK/regkey.pem
 storage:

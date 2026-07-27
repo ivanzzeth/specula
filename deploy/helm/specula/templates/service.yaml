@@ -13,11 +13,8 @@ spec:
   selector:
     {{- include "specula.selectorLabels" . | nindent 4 }}
   ports:
-    - name: data
-      port: {{ .Values.service.dataPort }}
-      targetPort: data
-      protocol: TCP
-    - name: control
-      port: {{ .Values.service.controlPort }}
-      targetPort: control
+    # Exactly one port: protocols, Admin API, probes and the WebUI share it.
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
       protocol: TCP

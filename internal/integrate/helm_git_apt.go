@@ -125,7 +125,7 @@ func integrateApt(addr, caFile string, dryRun, skipRoot bool, cfg *config.Config
 
 // installAptCATrust makes apt trust Specula's HTTPS dial cert.
 //
-// ``deb [trusted=yes]`` only skips Release GPG checks — apt still verifies TLS.
+// “deb [trusted=yes]“ only skips Release GPG checks — apt still verifies TLS.
 // Without the Specula CA in the system trust store, apt-get update fails with
 // "certificate issuer is unknown" and kubeadm-prep cannot install packages when
 // the host's default mirrors are unreachable (e.g. Aliyun cloud mirror off-VPC).

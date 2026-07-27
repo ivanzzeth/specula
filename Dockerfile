@@ -42,7 +42,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/specula /specula
 COPY --from=build --chown=65532:65532 /out/var/lib/specula /var/lib/specula
 COPY contrib/docker/specula.yaml /etc/specula/specula.yaml
-EXPOSE 7732 7733
+EXPOSE 7733
 VOLUME ["/var/lib/specula"]
 USER nonroot:nonroot
 ENTRYPOINT ["/specula"]

@@ -15,7 +15,7 @@ import (
 func runBench(args []string) error {
 	fs := flag.NewFlagSet("bench", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	addr := fs.String("addr", "http://127.0.0.1:7732", "Specula data-plane base URL")
+	addr := fs.String("addr", "http://127.0.0.1:7733", "Specula base URL")
 	protocols := fs.String("protocols", strings.Join(bench.DefaultProtocols, ","),
 		"comma-separated: go,npm,pypi,oci,helm,tarball,apt,git")
 	warm := fs.Int("warm-rounds", 1, "warm passes after the cold fetch (0 = cold only)")

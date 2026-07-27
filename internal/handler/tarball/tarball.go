@@ -101,7 +101,6 @@ var pkgHTTPClient = &http.Client{Timeout: defaultHTTPTimeout}
 // tarballUserAgent identifies Specula to upstreams that reject empty/default Go UAs.
 const tarballUserAgent = "specula-tarball/1 (+https://github.com/ivanzzeth/specula)"
 
-
 // Handler serves the generic tarball data-plane API. All bytes served are
 // guaranteed to have passed the verify-on-write chain inside the CacheManager
 // (fix C2).
