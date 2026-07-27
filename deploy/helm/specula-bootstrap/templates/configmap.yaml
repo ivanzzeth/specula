@@ -74,7 +74,18 @@ data:
       config_secret: {{ .Values.auth.configSecret | quote }}
       cookie_secure: {{ .Values.auth.cookieSecure | default .Values.tls.enabled }}
 
+    # Only OCI is spelled out, because only OCI has knobs this chart exposes
+    # (upstreams.oci, remoteRegistries). Every other protocol Specula implements —
+    # npm, pypi, go, apt, helm, cargo, conda, hf — is served from the binary's
+    # built-in China-first upstream chain without appearing here. Re-listing that
+    # table in the chart is how it drifts from the one in internal/config/example.yaml.
+    #
+    # To retune or switch one off, set protocolOverrides in values (a raw passthrough
+    # merged below), e.g. protocolOverrides.hf.enabled: false.
     protocols:
+      {{- with .Values.protocolOverrides }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
       oci:
         mutable_ttl_seconds: 300
         upstreams:

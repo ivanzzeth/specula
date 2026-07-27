@@ -181,6 +181,47 @@ Not applicable to the stateless shape, but for the record: the image runs as non
 could not create its data directories. Both charts now set `fsGroup: 65532`.
 minikube's hostpath provisioner hands out 0777 and hides this entirely.
 
+## Which protocols does it serve?
+
+All of them, without being told: `oci`, `npm`, `pypi`, `go`, `apt`, `helm`, `cargo`,
+`conda`, `hf`. The profile spells out only OCI because only OCI has knobs the chart
+exposes (`upstreams.oci`, `remoteRegistries`); the rest start from the binary's built-in
+China-first chains (DaoCloud, npmmirror, goproxy.cn, tuna, rsproxy, hf-mirror) with the
+official upstream last as fallback.
+
+```
+curl http://<endpoint>/npm/lodash
+curl http://<endpoint>/pypi/simple/requests/
+curl http://<endpoint>/go/github.com/pkg/errors/@v/list
+curl http://<endpoint>/apt/ubuntu/dists/jammy/Release
+curl http://<endpoint>/helm/bitnami/index.yaml
+curl http://<endpoint>/conda/conda-forge/noarch/repodata.json
+```
+
+`apt`, `helm`, `cargo` and `conda` are catalogue-shaped: the path carries the repository
+or channel name (`/apt/ubuntu/...`, `/helm/bitnami/...`), because their configs list
+several. The flat form (`/apt/dists/...`) applies only when the catalogue is empty.
+
+To retune or switch one off, use `protocolOverrides` — a raw passthrough into the
+config's `protocols:` block:
+
+```yaml
+protocolOverrides:
+  hf:
+    enabled: false             # stop serving HuggingFace
+  npm:
+    mutable_ttl_seconds: 60    # keeps the built-in mirror list
+```
+
+Nothing needs to be set to *enable* a protocol. `upstreams: []` is a validation error
+rather than a way to disable one — use `enabled: false`. The single exception to
+enabled-by-default is `git` under `ha: true`: it keeps bare mirrors on local disk, so
+each replica would answer from its own clone. Name it in the config to opt in.
+
+Note the node-side `integrate --protocols oci` below is a different setting: it decides
+which *client* configs get rewritten on the node (containerd, and optionally apt/helm),
+not which protocols the server answers.
+
 ## Node integration is not optional
 
 **Never deploy with `integrate.enabled=false` or `mirror.enabled=false` in a CN

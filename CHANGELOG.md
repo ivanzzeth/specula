@@ -3,6 +3,45 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [Unreleased]
+
+### Every protocol is served unless you switch it off
+
+A config that named only `protocols.oci` served OCI and answered `/npm`, `/pypi`,
+`/go`, `/apt`, `/helm`, `/cargo`, `/conda` and `/hf` with **404**. Handler
+registration tested for the protocol's key in the config, so a protocol the binary
+fully implemented stayed dark unless the deployment happened to enumerate it — and
+every chart and ConfigMap we ship enumerates OCI only. A CN mirror that mirrors one
+protocol out of nine is the wrong default for a product whose thesis is that the
+upstreams you need are unreachable.
+
+Absence now means **enabled**. The built-in table is parsed from the embedded
+`internal/config/example.yaml`, so the defaults are the same maintained China-first
+chains (DaoCloud, npmmirror, goproxy.cn, tuna, rsproxy, hf-mirror) with the official
+upstream last as fallback — one table, in one place, rather than a copy per chart.
+
+Precedence:
+
+| config says | result |
+|---|---|
+| nothing about a protocol | served, built-in chain |
+| a block with no `upstreams` key | served, built-in chain, your other settings kept |
+| `upstreams: [...]` | served, exactly your chain |
+| `upstreams: []` | **validation error** — the message names both ways out |
+| `enabled: false` | not served, no handler registered |
+
+`git` is the one protocol not switched on implicitly under `server.ha: true`: it keeps
+bare mirrors on local disk, so with several replicas each would answer from its own
+clone. Name it in the config to opt in.
+
+Charts gained `protocolOverrides`, a raw passthrough into `protocols:`, for retuning
+or disabling one — not for enabling, which needs no configuration.
+
+Verified against a real config that names only OCI: all nine handlers mount, and
+`/npm`, `/pypi`, `/go`, `/hf`, `/apt/ubuntu/dists/jammy/Release`,
+`/helm/bitnami/index.yaml` and `/conda/conda-forge/noarch/repodata.json` all return
+200 with real payloads through the CN mirrors.
+
 ## [0.12.0] — One port: 7732 removed — 2026-07-28
 
 ### ⚠️ BREAKING — one port, 7732 removed

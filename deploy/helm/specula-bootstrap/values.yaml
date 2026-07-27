@@ -113,6 +113,27 @@ upstreams:
 # CN overlay (values-cn / regionProfile=cn via CLI --cn) fills these.
 remoteRegistries: []
 
+# Per-protocol overrides, merged verbatim into the config's `protocols:` block.
+#
+# You do not need this to SERVE a protocol: Specula serves every protocol it
+# implements (oci, npm, pypi, go, apt, helm, cargo, conda, hf) from a built-in
+# China-first upstream chain, whether or not it is named here. Use this only to
+# retune one or to switch one off:
+#
+#   protocolOverrides:
+#     hf:
+#       enabled: false            # stop serving HuggingFace entirely
+#     npm:
+#       mutable_ttl_seconds: 60   # keeps the built-in mirror list
+#     pypi:
+#       upstreams:                # replaces the built-in chain
+#         - name: house
+#           base_url: https://pypi.internal.example.com
+#           priority: 1
+#
+# `upstreams: []` written here is an error, not a way to disable: use enabled: false.
+protocolOverrides: {}
+
 # When true (or regionProfile=cn), ConfigMap embeds the CN k8s mirror chain
 # (Huawei SWR layout:huawei-ddn → DaoCloud → 1ms) for registry.k8s.io / k8s.gcr.io.
 regionProfile: ""

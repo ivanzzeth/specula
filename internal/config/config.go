@@ -268,8 +268,22 @@ type AuthConfig struct {
 // Keys in Config.Protocols correspond to protocol names: "oci", "pypi",
 // "npm", "go", "apt", "helm", "tarball", "git", "cargo", "conda", "hf".
 type ProtocolConfig struct {
+	// Enabled switches this protocol off. Absence means ENABLED: Specula serves
+	// every protocol it implements, with the built-in upstream chain, unless the
+	// operator says otherwise (see applyProtocolDefaults). Only `enabled: false`
+	// removes a protocol, and a removed protocol registers no handler.
+	//
+	// It is a POINTER for the same reason MutableTTLSeconds is: false is the
+	// meaningful value, so a plain bool could not tell "the operator disabled
+	// this" from "the operator wrote nothing", and the zero value would read as
+	// "disable everything".
+	Enabled *bool `koanf:"enabled"`
+
 	// Upstreams is the ordered fallback chain. The handler tries each
 	// in ascending Priority order; lower Priority = tried first.
+	//
+	// Empty is filled from the built-in defaults at load time, so a block that
+	// only retunes a TTL does not have to restate the mirror list.
 	Upstreams []UpstreamConfig `koanf:"upstreams"`
 
 	// Verification configures the chain for this protocol.
@@ -819,6 +833,16 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := applyStorageDefaults(&cfg); err != nil {
+		return nil, err
+	}
+
+	// Serve every protocol Specula implements unless the config disables it. This
+	// runs before Validate so a defaulted protocol is checked exactly like a
+	// hand-written one. koanf answers whether a key was actually written, which
+	// keeps `upstreams: []` a validation error instead of a silent substitution.
+	if err := applyProtocolDefaults(&cfg, func(protocol string) bool {
+		return k.Exists("protocols." + protocol + ".upstreams")
+	}); err != nil {
 		return nil, err
 	}
 

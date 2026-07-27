@@ -211,8 +211,13 @@ protocols:
 	require.NoError(t, err)
 	require.NotNil(t, cfg.Protocols["apt"].Apt)
 	assert.NotEmpty(t, cfg.Protocols["apt"].Apt.Repositories)
-	_, hasHelm := cfg.Protocols["helm"]
-	assert.False(t, hasHelm, "helm must not be injected when --section apt")
+	// helm is served by default now, so its presence in the loaded config proves
+	// nothing about ApplyExample. What must hold is that ApplyExample wrote only
+	// the requested section into the FILE.
+	written, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(written), "\n  helm:",
+		"helm must not be injected into the file when --section apt")
 }
 
 func TestIntegrateHintsForChanges(t *testing.T) {

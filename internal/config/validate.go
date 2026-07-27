@@ -208,7 +208,11 @@ func Validate(cfg *Config) error {
 	// ── Protocols ─────────────────────────────────────────────────────────
 	for name, proto := range cfg.Protocols {
 		if len(proto.Upstreams) == 0 {
-			add("protocols.%s: at least one upstream is required", name)
+			// Reachable only when the operator wrote an empty chain: an omitted
+			// upstreams key inherits the built-in one. Say both ways out.
+			add("protocols.%s: at least one upstream is required "+
+				"(omit the upstreams key to use the built-in chain, or set "+
+				"protocols.%s.enabled: false to stop serving it)", name, name)
 			// Skip further checks for this protocol — no upstreams to inspect.
 			continue
 		}
