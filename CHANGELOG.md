@@ -5,6 +5,31 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+### Fixed — the same bytes under a different name went back to upstream
+
+Blob and manifest storage is content-addressed and name-independent: one object per
+digest, however many repositories reference it. The cache LOOKUP, though, keys on
+`(protocol, name, digest)`. So a pull of `library/redis` missed on bytes Specula
+physically held — arrived earlier as `docker.io/library/redis`, or as a layer shared
+with another image — went to upstream, re-downloaded the whole layer, and discovered
+at `Put` time that the object was already there.
+
+Storage was never duplicated (the CAS deduplicates, and `Put` head-checks first), so
+this cost bandwidth and latency rather than space. The part that broke a cluster: with
+every Hub mirror failing, a blob already sitting in the store answered **502**.
+
+A miss on `(name, digest)` now looks for the same digest under any other name whose
+content is public pull-through, serves those bytes, and records a metadata row for the
+new name so the next pull is a direct hit — a row, never a second copy. Manifests get
+the same treatment, since one image pulled under two names has one manifest digest.
+
+Excluded, deliberately: hosted repos and owned namespaces. Hosted content may be a
+private org's push and a blob digest is readable from any manifest, so a digest-keyed
+shortcut across names would otherwise be a private-content read primitive. The safety
+argument rests on pull-through content being public, which holds while every upstream
+is anonymous; `sharedcas.go` states the invariant so per-upstream credentials cannot
+quietly break it.
+
 ### Fixed — CAS dedup could delete bytes another entry still referenced
 
 Blob storage is content-addressed: the key is `blobs/<algo>/<hex>` with no

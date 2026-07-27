@@ -79,10 +79,30 @@ func (h *Handler) serveBlob(w http.ResponseWriter, r *http.Request, imageName, d
 		return
 	}
 
+	// Second chance before treating this as a miss: are these exact bytes already
+	// in the CAS under a DIFFERENT repository name? The store is
+	// content-addressed, so a layer two images share — or one reached earlier as
+	// docker.io/library/redis and now asked for as library/redis — is an object we
+	// already hold. Without this the handler re-downloads a whole layer from
+	// upstream only for Put to discover the object exists, and when upstreams are
+	// failing it answers 502 for bytes sitting on disk.
+	//
+	// Excluded: hosted repos and owned namespaces. Those are authoritative local
+	// content where a miss is a definitive 404, and hosted bytes may be private —
+	// see sharedcas.go for the full argument.
+	if entry == nil && !hostedRepo && !h.isOwnedNamespace(ctx, imageName) {
+		if shared := h.sharedBlobEntryFor(ctx, imageName, digest); shared != nil {
+			h.log.Debug("oci: cross-name CAS reuse", "detail",
+				describeSharedReuse(shared.Ref.Name, imageName, digest))
+			entry = shared
+		}
+	}
+
 	if entry != nil {
 		// CAS hit: the body comes from cache, no upstream body transfer. This
 		// includes hosted repos, whose blobs are authoritative local content and
-		// are likewise served without any upstream fetch.
+		// are likewise served without any upstream fetch, and blobs adopted from
+		// another name above.
 		metrics.MarkHit(ctx)
 	}
 

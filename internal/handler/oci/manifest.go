@@ -163,7 +163,25 @@ func (h *Handler) tryServeManifestFromCache(w http.ResponseWriter, r *http.Reque
 
 	rc, entry, err := h.cache.Serve(ctx, ref, 0, -1)
 	if err != nil || rc == nil {
-		return false
+		// The same manifest bytes may already be cached under a DIFFERENT
+		// repository name: one image pulled as docker.io/library/redis and then as
+		// library/redis has one manifest digest and one set of bytes. Adopting it
+		// here saves the upstream round trip that would otherwise precede the
+		// layers we can already serve. Public pull-through content only — see
+		// sharedcas.go.
+		if h.isHosted(ctx, imageName) || h.isOwnedNamespace(ctx, imageName) {
+			return false
+		}
+		shared := h.sharedBlobEntryFor(ctx, imageName, digest)
+		if shared == nil {
+			return false
+		}
+		h.log.Debug("oci: cross-name CAS reuse (manifest)", "detail",
+			describeSharedReuse(shared.Ref.Name, imageName, digest))
+		rc, entry, err = h.cache.Serve(ctx, ref, 0, -1)
+		if err != nil || rc == nil {
+			return false
+		}
 	}
 	defer rc.Close()
 
