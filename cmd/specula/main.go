@@ -138,6 +138,19 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "upgrade":
+			// Single-host ops: `scp specula host:/tmp/ && sudo /tmp/specula upgrade`.
+			if err := runService(append([]string{"upgrade"}, os.Args[2:]...)); err != nil {
+				fmt.Fprintf(os.Stderr, "specula upgrade: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "rollback":
+			if err := runService(append([]string{"rollback"}, os.Args[2:]...)); err != nil {
+				fmt.Fprintf(os.Stderr, "specula rollback: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "uninstall":
 			if err := runService(append([]string{"uninstall"}, os.Args[2:]...)); err != nil {
 				fmt.Fprintf(os.Stderr, "specula uninstall: %v\n", err)

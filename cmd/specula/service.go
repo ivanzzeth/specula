@@ -28,7 +28,7 @@ const (
 // runService implements: specula service install|uninstall|status|enable|disable|start|stop
 func runService(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: specula service <install|uninstall|status|enable|disable|start|stop>")
+		return fmt.Errorf("usage: specula service <install|upgrade|rollback|uninstall|status|enable|disable|start|stop>")
 	}
 	cmd := args[0]
 	rest := args[1:]
@@ -37,6 +37,10 @@ func runService(args []string) error {
 		return serviceInstall(rest)
 	case "uninstall":
 		return serviceUninstall(rest)
+	case "upgrade":
+		return serviceUpgrade(rest)
+	case "rollback":
+		return serviceRollback(rest)
 	case "status":
 		return runSystemctl("status", "specula.service")
 	case "enable":
@@ -57,12 +61,21 @@ func runService(args []string) error {
 
 const serviceUsage = `Usage:
   specula install | specula service install [--config PATH] [--binary PATH] [--user NAME] [--no-start]
+  specula upgrade | specula service upgrade [--binary PATH] [--config PATH]
+                                            [--no-restart] [--skip-health] [--health-timeout D]
+  specula rollback | specula service rollback [--binary PATH] [--skip-health]
   specula uninstall | specula service uninstall [--purge]
   specula service status|enable|disable|start|stop
 
 Installs a systemd unit so Specula starts on boot (WantedBy=multi-user.target).
 Requires root. Creates system user, /etc/specula, /var/lib/specula if missing.
 Config is written from the embedded example when missing (no external YAML required).
+
+upgrade replaces the installed binary with the one you just ran (rename, so it
+works while the daemon is live), restarts the unit, waits for /healthz, and rolls
+back to <binary>.prev if the new build does not come up. Config is never touched.
+
+  scp specula host:/tmp/specula && ssh host 'sudo /tmp/specula upgrade'
 `
 
 func serviceInstall(args []string) error {
