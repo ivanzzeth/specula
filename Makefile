@@ -231,6 +231,7 @@ test-trust-oracle-mutations:
 #
 # Each script picks its own free ports and temp dirs, so these collide neither with each
 # other nor with any running instance. Sequential: several drive shared client caches.
+# Includes oci-huawei-swr (live SWR nested path_prefix; skips if SWR unreachable).
 test-realclient:
 	bash scripts/realclient-pypi.sh
 	bash scripts/realclient-npm.sh
@@ -239,6 +240,7 @@ test-realclient:
 	bash scripts/realclient-git.sh
 	bash scripts/realclient-docker.sh
 	bash scripts/realclient-oci-remote.sh
+	bash scripts/realclient-oci-huawei-swr.sh
 	bash scripts/realclient-cri-k8s.sh
 	bash scripts/realclient-offline.sh
 	bash scripts/realclient-cargo.sh
