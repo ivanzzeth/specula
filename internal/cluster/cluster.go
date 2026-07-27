@@ -17,6 +17,9 @@ const (
 	DefaultRelease   = "boot"
 	DefaultNamespace = "specula-boot"
 	DefaultNodePort  = 30732
+	// DefaultDataPort is the Service (not node) port of the data plane — what the
+	// API-server Service proxy addresses when doctor probes from outside the VPC.
+	DefaultDataPort = 7732
 )
 
 // InstallOptions configures cluster install.

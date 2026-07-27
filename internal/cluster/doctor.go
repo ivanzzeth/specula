@@ -54,14 +54,19 @@ func Doctor(opts DoctorOptions) error {
 		fmt.Fprintln(os.Stdout, "cluster doctor: chart PVC absent (existingClaim/hostPath/emptyDir OK)")
 	}
 
+	// Reachability. Default route is the API server's Service proxy, NOT a node
+	// IP + NodePort: the operator's machine usually cannot reach a node port
+	// (macOS/docker-driver minikube, or a laptop pointed at a cloud cluster whose
+	// nodes sit in a VPC), so the old default reported healthy clusters as broken.
+	// The API server can always reach the Service, and kubectl is already
+	// required. An explicit --addr still probes directly — useful from inside the
+	// VPC, and the only way to check the NodePort itself.
+	svc := rel + "-specula-bootstrap"
 	addr := strings.TrimSpace(opts.Addr)
-	if addr == "" && !opts.SkipProbe {
-		addr, err = resolveProbeAddr(opts.Kubeconfig, opts.Context)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "cluster doctor: probe addr warn: %v\n", err)
-		}
-	}
-	if addr != "" && !opts.SkipProbe {
+	switch {
+	case opts.SkipProbe:
+		// nothing
+	case addr != "":
 		if err := probeHealthz(addr); err != nil {
 			return fmt.Errorf("cluster doctor: Specula %s/healthz: %w", addr, err)
 		}
@@ -74,6 +79,18 @@ func Doctor(opts DoctorOptions) error {
 			return fmt.Errorf("cluster doctor: unexpected /v2/ status %s", code)
 		}
 		fmt.Fprintf(os.Stdout, "cluster doctor: %s/v2/ → %s\n", addr, code)
+	default:
+		if err := probeHealthzViaAPIServer(opts.Kubeconfig, opts.Context, ns, svc); err != nil {
+			return fmt.Errorf("cluster doctor: Specula svc/%s /healthz: %w", svc, err)
+		}
+		fmt.Fprintf(os.Stdout, "cluster doctor: svc/%s /healthz OK (via API server proxy)\n", svc)
+		code, err := probeV2ViaAPIServer(opts.Kubeconfig, opts.Context, ns, svc)
+		if err != nil {
+			return fmt.Errorf("cluster doctor: Specula svc/%s /v2/: %w", svc, err)
+		}
+		fmt.Fprintf(os.Stdout, "cluster doctor: svc/%s /v2/ → %s\n", svc, code)
+		fmt.Fprintf(os.Stdout, "cluster doctor: note: node-side %s:%d is checked by the integrate DaemonSet, not from here\n",
+			"127.0.0.1", DefaultNodePort)
 	}
 
 	ds := rel + "-specula-bootstrap-integrate"
@@ -100,7 +117,59 @@ func Doctor(opts DoctorOptions) error {
 	return nil
 }
 
-func resolveProbeAddr(kubeconfig, context string) (string, error) {
+// serviceProxyPath builds the API-server path that proxies to a Service port.
+// Reaching Specula this way needs only kubectl and works from anywhere kubectl
+// works — no node reachability, no curl on the operator's machine.
+func serviceProxyPath(ns, svc string, port int, subPath string) string {
+	return fmt.Sprintf("/api/v1/namespaces/%s/services/%s:%d/proxy/%s",
+		ns, svc, port, strings.TrimPrefix(subPath, "/"))
+}
+
+func probeHealthzViaAPIServer(kubeconfig, context, ns, svc string) error {
+	out, err := kubectl(kubeconfig, context, "get", "--raw",
+		serviceProxyPath(ns, svc, DefaultDataPort, "healthz"))
+	if err != nil {
+		return fmt.Errorf("%w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func probeV2ViaAPIServer(kubeconfig, context, ns, svc string) (string, error) {
+	out, err := kubectl(kubeconfig, context, "get", "--raw",
+		serviceProxyPath(ns, svc, DefaultDataPort, "v2/"))
+	return classifyV2Probe(string(out), err)
+}
+
+// classifyV2Probe separates "the registry answered an auth challenge" (healthy:
+// /v2/ returns 401 by design for the Docker token handshake, which kubectl
+// reports as a non-zero exit) from "the Service could not be reached at all".
+// Treating every error as failure flags a working registry; treating every error
+// as success hides a Service with no endpoints.
+func classifyV2Probe(out string, err error) (string, error) {
+	if err == nil {
+		return "200", nil
+	}
+	low := strings.ToLower(out)
+	for _, marker := range []string{
+		"no endpoints available",
+		"not found",
+		"connection refused",
+		"serviceunavailable",
+		"service unavailable",
+		"timeout",
+		"no such host",
+		"no route to host",
+	} {
+		if strings.Contains(low, marker) {
+			return "", fmt.Errorf("%w (%s)", err, strings.TrimSpace(out))
+		}
+	}
+	// Anything else — credentials / unauthorized / forbidden — means the handler
+	// answered, which is what this probe is asserting.
+	return "401", nil
+}
+
+func resolveProbeAddr(kubeconfig, context string) (string, error) { //nolint:unused // explicit --addr path + kept for callers probing a NodePort directly
 	runtime, _ := DetectRuntime(kubeconfig, context)
 	if runtime == "minikube" {
 		profile := minikubeProfile(context)
