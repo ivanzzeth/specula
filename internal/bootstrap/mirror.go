@@ -177,3 +177,78 @@ func isDockerIO(reg string) bool {
 	r := strings.ToLower(strings.TrimSpace(reg))
 	return r == "docker.io" || r == "registry-1.docker.io" || r == "index.docker.io"
 }
+
+// RemoveContainerdHosts deletes the certs.d/<registry>/hosts.toml drop-ins that
+// point at the given Specula endpoint, and the directories they leave empty.
+// Returns how many files were removed.
+//
+// Why this is needed: `cluster uninstall` removes the helm release but the nodes
+// keep their hosts.toml, so every redirected registry keeps resolving to a
+// NodePort with nothing behind it. CN mode writes no public `server =` fallback on
+// purpose, so those pulls do not degrade — they fail. Observed on a real ACK
+// cluster: registry.k8s.io/pause:3.10 → ErrImagePull after Specula was gone.
+//
+// Matching is by host:port found in the file body, so only OUR drop-ins go. A
+// hosts.toml naming a different endpoint (another cluster, a hand-written corporate
+// mirror) is left exactly as it was — deleting an operator's own config would be a
+// worse bug than the one this fixes. An empty endpoint or certs dir is refused
+// rather than interpreted as "match everything".
+func RemoveContainerdHosts(certsDir, endpoint string) (int, error) {
+	certs := strings.TrimSpace(certsDir)
+	if certs == "" {
+		return 0, fmt.Errorf("bootstrap: certs-dir is required")
+	}
+	needle := endpointHostPort(endpoint)
+	if needle == "" {
+		return 0, fmt.Errorf("bootstrap: endpoint is required")
+	}
+	entries, err := os.ReadDir(certs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil // node never had Specula, or already cleaned
+		}
+		return 0, fmt.Errorf("bootstrap: read %s: %w", certs, err)
+	}
+	removed := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(certs, e.Name())
+		path := filepath.Join(dir, "hosts.toml")
+		body, err := os.ReadFile(path)
+		if err != nil {
+			continue // no drop-in here, or unreadable — leave it alone
+		}
+		if !strings.Contains(string(body), needle) {
+			continue // someone else's config
+		}
+		if err := os.Remove(path); err != nil {
+			return removed, fmt.Errorf("bootstrap: remove %s: %w", path, err)
+		}
+		removed++
+		// Drop the directory only when nothing else lives in it (a node may keep
+		// ca.crt or client certs next to hosts.toml).
+		if rest, err := os.ReadDir(dir); err == nil && len(rest) == 0 {
+			_ = os.Remove(dir)
+		}
+	}
+	return removed, nil
+}
+
+// endpointHostPort reduces http://host:port/, host:port and bare host to the
+// host:port form that appears inside a rendered hosts.toml.
+func endpointHostPort(endpoint string) string {
+	e := strings.TrimSpace(endpoint)
+	if e == "" {
+		return ""
+	}
+	for _, scheme := range []string{"https://", "http://"} {
+		e = strings.TrimPrefix(e, scheme)
+	}
+	e = strings.TrimSuffix(e, "/")
+	if i := strings.IndexAny(e, "/?"); i >= 0 {
+		e = e[:i]
+	}
+	return strings.TrimSpace(e)
+}
