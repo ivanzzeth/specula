@@ -129,3 +129,49 @@ func TestFirstFatalWaitingState(t *testing.T) {
 		t.Fatal("no fatal state expected")
 	}
 }
+
+// Gap found on the ACK run: fail-fast watched only container Waiting states, but an
+// UNSCHEDULABLE Pod has no containerStatuses at all — the signal lives in
+// status.conditions[type=PodScheduled].reason=Unschedulable. So `--wait` burned the
+// full 5 minutes on "Insufficient memory" after the mirror DaemonSet had already
+// rewritten hosts.toml, exactly the outage this was supposed to prevent.
+func TestUnschedulableReasonIsFatal(t *testing.T) {
+	msg := "0/2 nodes are available: 1 Insufficient memory, 1 node(s) didn't match " +
+		"Pod's node affinity/selector."
+	reason, fatal := blockingScheduleReason("Unschedulable", msg)
+	if !fatal {
+		t.Fatal("Unschedulable must be fatal — waiting cannot create capacity")
+	}
+	for _, want := range []string{"Unschedulable", "Insufficient memory"} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason must carry %q: %s", want, reason)
+		}
+	}
+}
+
+// A Pod that simply has not been scheduled yet reports no reason. Must not abort.
+func TestEmptyScheduleReasonIsNotFatal(t *testing.T) {
+	if _, fatal := blockingScheduleReason("", ""); fatal {
+		t.Fatal("no reason yet must not be fatal")
+	}
+	if _, fatal := blockingScheduleReason("SchedulerError", "transient"); fatal {
+		t.Fatal("SchedulerError is transient, not terminal")
+	}
+}
+
+// Parses `kubectl get pods -o jsonpath` for the PodScheduled condition:
+// "<status>\t<reason>\t<message>" per Pod.
+func TestParseScheduleStates(t *testing.T) {
+	raw := "True\t\t\n" +
+		"False\tUnschedulable\t0/2 nodes are available: 1 Insufficient memory\n"
+	reason, fatal := firstFatalScheduleState(parseScheduleStates(raw))
+	if !fatal {
+		t.Fatalf("expected fatal, got reason=%q", reason)
+	}
+	if !strings.Contains(reason, "Insufficient memory") {
+		t.Fatalf("reason=%q", reason)
+	}
+	if _, fatal := firstFatalScheduleState(parseScheduleStates("True\t\t\n")); fatal {
+		t.Fatal("a scheduled Pod must not be fatal")
+	}
+}

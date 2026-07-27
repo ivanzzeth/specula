@@ -75,6 +75,61 @@ func firstFatalWaitingState(states []waitingState) (string, bool) {
 	return "", false
 }
 
+// scheduleState is one Pod's PodScheduled condition.
+type scheduleState struct {
+	Status  string
+	Reason  string
+	Message string
+}
+
+// blockingScheduleReason reports whether a PodScheduled condition is terminal.
+//
+// Unschedulable is the one that matters and the one that was missed: an
+// unschedulable Pod has NO containerStatuses, so watching container Waiting states
+// alone never sees "Insufficient memory". Waiting cannot create capacity, and by
+// the time the rollout times out the mirror DaemonSet has already rewritten
+// hosts.toml on every node — a capacity problem turned into broken node pulls.
+//
+// SchedulerError is transient (API hiccup, webhook blip) and is NOT terminal.
+func blockingScheduleReason(reason, message string) (string, bool) {
+	if strings.TrimSpace(reason) != "Unschedulable" {
+		return "", false
+	}
+	if message = strings.TrimSpace(message); message != "" {
+		return fmt.Sprintf("Unschedulable: %s", message), true
+	}
+	return "Unschedulable", true
+}
+
+// parseScheduleStates reads "<status>\t<reason>\t<message>" per Pod.
+func parseScheduleStates(raw string) []scheduleState {
+	var out []scheduleState
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		f := strings.SplitN(line, "\t", 3)
+		st := scheduleState{Status: strings.TrimSpace(f[0])}
+		if len(f) > 1 {
+			st.Reason = strings.TrimSpace(f[1])
+		}
+		if len(f) > 2 {
+			st.Message = strings.TrimSpace(f[2])
+		}
+		out = append(out, st)
+	}
+	return out
+}
+
+func firstFatalScheduleState(states []scheduleState) (string, bool) {
+	for _, s := range states {
+		if reason, fatal := blockingScheduleReason(s.Reason, s.Message); fatal {
+			return reason, true
+		}
+	}
+	return "", false
+}
+
 // waitRolloutOrFailFast waits for a workload's Pods while polling for a terminal
 // Waiting state. It returns as soon as either the rollout succeeds or a Pod is
 // provably stuck, so an unpullable image fails in seconds with the registry's own
@@ -103,6 +158,16 @@ func waitRolloutOrFailFast(kubeconfig, context, ns, selector, rolloutTarget stri
 			}
 			if reason, fatal := firstFatalWaitingState(parseWaitingStates(string(out))); fatal {
 				return fmt.Errorf("%s will not become ready — %s", rolloutTarget, reason)
+			}
+			// Unschedulable Pods have no container statuses at all, so the check
+			// above cannot see them. This is where "Insufficient memory" lives.
+			sched, serr := kubectl(kubeconfig, context, "get", "pods", "-n", ns, "-l", selector,
+				"-o", `jsonpath={range .items[*]}{range .status.conditions[?(@.type=="PodScheduled")]}`+
+					`{.status}{"\t"}{.reason}{"\t"}{.message}{"\n"}{end}{end}`)
+			if serr == nil {
+				if reason, fatal := firstFatalScheduleState(parseScheduleStates(string(sched))); fatal {
+					return fmt.Errorf("%s will not become ready — %s", rolloutTarget, reason)
+				}
 			}
 		}
 	}
