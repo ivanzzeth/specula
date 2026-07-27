@@ -58,11 +58,16 @@ func Install(opts InstallOptions) (*Result, error) {
 			}
 		}
 		if pin == "" {
-			if n, err := AutoPinHostname(opts.Kubeconfig, opts.Context); err == nil && n != "" {
+			// Capacity-aware: refuse before helm runs rather than pin to a node that
+			// cannot fit the Pod (see AutoPinNode).
+			n, perr := AutoPinNode(opts.Kubeconfig, opts.Context, DefaultRequestMi)
+			if perr != nil {
+				return nil, fmt.Errorf("pick pin node: %w (use --skip-pin-node to schedule anywhere, "+
+					"or --pin-node <host> to override)", perr)
+			}
+			if n != "" {
 				pin = n
 				fmt.Fprintf(os.Stdout, "cluster install: pinning Specula to node %s\n", pin)
-			} else if err != nil {
-				fmt.Fprintf(os.Stderr, "cluster install: pin node warn: %v\n", err)
 			}
 		}
 	}
