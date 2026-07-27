@@ -111,12 +111,17 @@ func Install(opts InstallOptions) (*Result, error) {
 		fmt.Fprint(os.Stdout, string(out))
 	}
 
+	// Where the nodes dial is read off the mirror DaemonSet helm just created, not
+	// assumed to be the NodePort: a hosted profile exposes an internal
+	// LoadBalancer and has no NodePort at all, and printing one sends the operator
+	// to an address nothing listens on.
+	nodeEndpoint, endpointFound := MirrorEndpoint(opts, ns, rel)
 	res := &Result{
 		Namespace: ns,
 		Release:   rel,
-		Endpoint:  fmt.Sprintf("http://127.0.0.1:%d", DefaultNodePort),
+		Endpoint:  nodeEndpoint,
 		Notes: []string{
-			"nodes dial Specula at " + fmt.Sprintf("http://127.0.0.1:%d", DefaultNodePort) + " (NodePort)",
+			mirrorEndpointNote(nodeEndpoint, endpointFound),
 			"integrate DaemonSet: hosts.toml + CRI config_path; containerd reload=once (healthz + stamp)",
 			"self-heal: Pod crash / same-node reboot OK; node loss does not migrate the cache volume",
 		},

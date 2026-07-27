@@ -127,13 +127,7 @@ func CleanupNodeMirrors(opts InstallOptions, ns, rel string) error {
 		return fmt.Errorf("mirror DaemonSet reported no image")
 	}
 
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d", DefaultNodePort)
-	if got, err := kubectl(opts.Kubeconfig, opts.Context, "get", "ds", mirrorDS, "-n", ns,
-		"-o", `jsonpath={.spec.template.spec.containers[0].args}`); err == nil {
-		if ep := extractEndpointArg(string(got)); ep != "" {
-			endpoint = ep
-		}
-	}
+	endpoint, _ := MirrorEndpoint(opts, ns, rel)
 
 	name := rel + "-specula-node-cleanup"
 	manifest := RenderNodeCleanupDaemonSet(NodeCleanupSpec{
@@ -181,4 +175,35 @@ func extractEndpointArg(args string) string {
 		rest = rest[:j]
 	}
 	return strings.TrimSpace(rest)
+}
+
+// MirrorEndpoint reports the endpoint the mirror DaemonSet actually writes into
+// the nodes' hosts.toml, read off the live DaemonSet rather than assumed.
+//
+// found is false when there is no mirror DaemonSet to ask — mirror.enabled=false,
+// or a release that has not created it yet — in which case the returned endpoint
+// is only the NodePort default, and a caller that prints it must say so. Claiming
+// "nodes dial Specula at http://127.0.0.1:30733" under a profile whose nodes dial
+// an internal LoadBalancer sends the operator debugging the wrong address.
+func MirrorEndpoint(opts InstallOptions, ns, rel string) (endpoint string, found bool) {
+	mirrorDS := rel + "-specula-bootstrap-mirror"
+	got, err := kubectl(opts.Kubeconfig, opts.Context, "get", "ds", mirrorDS, "-n", ns,
+		"-o", `jsonpath={.spec.template.spec.containers[0].args}`)
+	if err == nil {
+		if ep := extractEndpointArg(string(got)); ep != "" {
+			return ep, true
+		}
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", DefaultNodePort), false
+}
+
+// mirrorEndpointNote renders the install note for where the nodes dial Specula.
+// Pure, so the wording is testable without a cluster.
+func mirrorEndpointNote(endpoint string, found bool) string {
+	if found {
+		return "nodes dial Specula at " + endpoint + " (from the mirror DaemonSet)"
+	}
+	return "no mirror DaemonSet: this cluster's nodes are NOT pointed at Specula " +
+		"(mirror.enabled=false). They will pull from upstream registries directly, " +
+		"which in CN mostly fails."
 }
