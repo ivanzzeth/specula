@@ -101,3 +101,35 @@ func FormatNodePinLine(name, rolesCSV, ready string) string {
 	}
 	return fmt.Sprintf("%s\t%s\t%s", name, roles, ready)
 }
+
+// NoDefaultStorageClassHint explains what to do when nothing is marked default.
+//
+// Managed clusters routinely ship several StorageClasses with none default — ACK
+// has four alicloud-disk-* classes that way — so the useful message is the list
+// itself plus the consequence of leaving it alone, not a bare flag name.
+func NoDefaultStorageClassHint(classes []string) string {
+	if len(classes) == 0 {
+		return "cluster install: no StorageClass in this cluster — cache is not persisted " +
+			"(emptyDir). Pass --host-path <dir> for node-local storage, or --pvc <name> " +
+			"for a volume you provisioned yourself."
+	}
+	return fmt.Sprintf("cluster install: %d StorageClass(es) exist but none is marked default "+
+		"— cache is not persisted (emptyDir). Re-run with --storage-class <name>: %s",
+		len(classes), strings.Join(classes, ", "))
+}
+
+// ListStorageClasses returns StorageClass names, or nil when none/unreadable.
+func ListStorageClasses(kubeconfig, context string) []string {
+	out, err := kubectl(kubeconfig, context, "get", "storageclass",
+		"-o", `jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, l := range strings.Split(string(out), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			names = append(names, l)
+		}
+	}
+	return names
+}

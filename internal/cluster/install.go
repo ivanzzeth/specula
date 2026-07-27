@@ -178,7 +178,9 @@ func resolvePersistence(opts InstallOptions) PersistenceMode {
 	}
 	if enabled {
 		if !HasDefaultStorageClass(opts.Kubeconfig, opts.Context) && p.StorageClass == "" {
-			fmt.Fprintln(os.Stderr, "cluster install: no default StorageClass — persistence disabled (pass --pvc, --host-path, or --storage-class)")
+			// Name the classes that DO exist: on a managed cluster (ACK ships four
+			// alicloud-disk-* with none default) the flag alone is not actionable.
+			fmt.Fprintln(os.Stderr, NoDefaultStorageClassHint(ListStorageClasses(opts.Kubeconfig, opts.Context)))
 			enabled = false
 		}
 	}

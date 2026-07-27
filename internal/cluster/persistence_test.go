@@ -75,3 +75,31 @@ func setMap(args []string) map[string]string {
 	}
 	return m
 }
+
+// On a managed cluster the useful information is WHICH classes exist. ACK ships
+// four alicloud-disk-* classes with none marked default, so "no default
+// StorageClass — pass --storage-class" leaves the operator to go look them up
+// before a one-command install can persist its cache.
+func TestNoDefaultStorageClassHintNamesTheClasses(t *testing.T) {
+	got := NoDefaultStorageClassHint([]string{"alicloud-disk-efficiency", "alicloud-disk-essd", "alicloud-disk-ssd"})
+	for _, want := range []string{"alicloud-disk-essd", "--storage-class"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("hint must mention %q: %s", want, got)
+		}
+	}
+	if !strings.Contains(got, "cache is not persisted") {
+		t.Fatalf("hint must state the consequence: %s", got)
+	}
+}
+
+// No classes at all is a different situation: there is nothing to pass, so point
+// at --host-path instead of a flag that cannot help.
+func TestNoDefaultStorageClassHintWithNoClasses(t *testing.T) {
+	got := NoDefaultStorageClassHint(nil)
+	if !strings.Contains(got, "--host-path") {
+		t.Fatalf("with no StorageClass at all, hint must offer --host-path: %s", got)
+	}
+	if strings.Contains(got, "--storage-class") {
+		t.Fatalf("must not suggest --storage-class when none exist: %s", got)
+	}
+}
