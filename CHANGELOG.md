@@ -15,9 +15,44 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
   daocloud→1ms; PyPI +USTC/Tencent; apt +USTC/Huawei; Cargo prefers rsproxy;
   conda +USTC cloud.
 
-## [0.11.0] — HA coalesce: PG advisory lock + tarball stampede — (tag pending)
+## [0.11.0] — CN bootstrap unblocked: multi-registry publish, single-host ops, quarantine on the data volume — 2026-07-27
+
+### Fixed
+
+- **Quarantine no longer lands in `os.TempDir()`** (`storage.quarantine_dir`, default
+  `<data dir>/quarantine`). No handler was ever given `WithQuarantineDir`, so every
+  cache fill streamed through `/tmp`: total failure in an image without `/tmp`
+  (while `/healthz` stayed 200 — healthy-looking and caching nothing), and multi-GB
+  OCI layers written to tmpfs (RAM) under systemd or the ephemeral container layer
+  under Kubernetes. The daemon now creates the directory at startup and refuses to
+  start if it cannot; both charts set it, and the HA chart mounts a dedicated
+  emptyDir (`quarantineSizeLimit`).
+- **`cluster doctor` probes through the API server**, not a node IP + NodePort. The
+  old default was unreachable from a macOS/docker-driver minikube and from any
+  laptop pointed at a cloud cluster whose nodes sit in a VPC — reporting healthy
+  clusters as broken on the first command after install. `--addr` still probes
+  directly.
+- **A binary built without `web/dist` boots** instead of panicking on startup and
+  taking the data plane down with it; it serves a committed placeholder page and
+  logs a WARN.
 
 ### Added
+
+- **Multi-registry release publish**: one multi-arch build pushed to every registry
+  whose secrets are set — Docker Hub, **Aliyun ACR**, Huawei SWR, GHCR. Measured
+  from ACK cn-chengdu, Docker Hub and every public CN mirror tried
+  (`docker.m.daocloud.io` 403, `docker.1ms.run`, `docker.xuanyuan.me` timeouts)
+  failed, so a cloud-region registry is the only way a CN cluster can bootstrap
+  Specula's own image.
+- **`specula upgrade` / `specula rollback`**: single-host ops path — rename-swap of
+  a live binary (Linux refuses to write into a running executable), restart,
+  `/healthz` gate, automatic rollback to `<binary>.prev`. `docs/SINGLE-HOST.md`
+  covers the intranet one-VM deployment.
+- **`make test-single-host`**: install/upgrade/rollback verified against real
+  systemd in a throwaway container, including the ETXTBSY premise and the
+  WebUI-less boot regression.
+
+### Added (HA coalesce)
 
 - **`coalesce.lock_driver=postgres`**: wires `PGAdvisoryLocker` on the shared meta
   pool for Redis-free HA stampede protection. HA accepts **redis** (default when
