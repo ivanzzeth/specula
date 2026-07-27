@@ -512,12 +512,18 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 
 ## 8. Ports
 
-单一数据面端口按**路径前缀**分发全部协议（非每协议一个端口）。
+**单一端口**按**路径前缀**分发全部内容（非每协议一个端口，也不再分数据面/控制面两个
+TCP 端口）。运维只需暴露一个端口,公网入口由 Ingress + LB 按 K8s 常规方式做。
 
-| 平面 | 端口 | 内容 |
-|---|---|---|
-| **数据面** | **7733** | 11 协议:`/v2/`(OCI+registry) `/pypi/` `/npm/` `/go/` `/apt/` `/helm/` `/tarball/` `/git/` `/cargo/` `/conda/` `/hf/` + `/token` |
-| **控制面** | **7733** | 内嵌 WebUI + Admin API + `/healthz` `/readyz` `/metrics` + `/token` |
+| 路径 | 内容 |
+|---|---|
+| `/v2/` `/pypi/` `/npm/` `/go/` `/apt/` `/helm/` `/tarball/` `/git/` `/cargo/` `/conda/` `/hf/` | 11 个制品协议 |
+| `/token` | OCI Bearer 令牌端点 |
+| `/api/v1/**` | Admin API |
+| `/healthz` `/readyz` `/metrics` | 探针与指标 |
+| `/` | 内嵌 WebUI(最后注册,兜底) |
+
+端口默认 **7733**,由 `server.listen_addr` 配置。
 
 **为什么是 7733**：电话键盘上 `S-P-E-C` = `7-7-3-2` —— 既是 **Spec**ula，也是这个代理
 赖以立身的那些 **spec**（OCI Distribution / PEP 503 / Debian Repository Format …）。
@@ -526,7 +532,8 @@ WebUI 才出现）；(2) **首次测量在启动时同步完成**（`cmd/specula
 主机上最可能已经在跑的东西"；`8080` 不必解释。同时避开 `7760-7766`（常见的 pull-through-cache
 组件栈占用该段）。
 
-两个端口均可配置（`server.data_plane_addr` / `server.control_plane_addr`）。
+路径分工保持独立语义 —— 合并的是端口,不是语义;制品协议**没有**迁到 `/api/v1` 之下。
+`server.data_plane_addr` 已移除,配置里仍写它会直接启动失败并提示改用 `server.listen_addr`。
 
 ## 9. Milestones
 

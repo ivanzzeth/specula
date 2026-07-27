@@ -3,7 +3,7 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
-## [Unreleased]
+## [0.12.0] — One port: 7732 removed — 2026-07-28
 
 ### ⚠️ BREAKING — one port, 7732 removed
 

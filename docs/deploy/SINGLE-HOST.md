@@ -45,12 +45,11 @@ cron/timer plus `systemctl reload-or-restart specula`.
 
 ```yaml
 server:
-  data_plane_addr: "0.0.0.0:7733"
-  control_plane_addr: "0.0.0.0:7733"
+  listen_addr: "0.0.0.0:7733"
   tls:
     cert_file: /etc/specula/tls/fullchain.pem
     key_file: /etc/specula/tls/privkey.pem
-  # Do not omit: left empty the server derives "<host the browser used>:<data port>",
+  # Do not omit: left empty the server derives it from the request Host,
   # which is wrong for every non-loopback deployment.
   registry_public_host: specula.internal.example.com
 ```
