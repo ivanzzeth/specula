@@ -14,9 +14,12 @@ import (
 	"strings"
 
 	"github.com/ivanzzeth/specula/pkg/handler/apt"
+	"github.com/ivanzzeth/specula/pkg/handler/cargo"
+	"github.com/ivanzzeth/specula/pkg/handler/conda"
 	"github.com/ivanzzeth/specula/pkg/handler/git"
 	"github.com/ivanzzeth/specula/pkg/handler/gomod"
 	"github.com/ivanzzeth/specula/pkg/handler/helm"
+	"github.com/ivanzzeth/specula/pkg/handler/hf"
 	"github.com/ivanzzeth/specula/pkg/handler/npm"
 	"github.com/ivanzzeth/specula/pkg/handler/oci"
 	"github.com/ivanzzeth/specula/pkg/handler/pypi"
@@ -27,7 +30,8 @@ import (
 
 // Options configures which protocols to mount and where.
 type Options struct {
-	// Protocols lists enabled names (oci, gomod, …). Empty = all eight.
+	// Protocols lists enabled names (oci, gomod, …). Empty = every protocol
+	// build() supports.
 	Protocols []string
 	// PathPrefix is prepended to every mount (e.g. "/proxy").
 	PathPrefix string
@@ -74,7 +78,14 @@ func Handler(s *specula.Server, opts Options) http.Handler {
 
 func enabled(protocols []string) []string {
 	if len(protocols) == 0 {
-		return []string{"oci", "gomod", "pypi", "npm", "apt", "helm", "tarball", "git"}
+		// Every protocol build() can construct. An embedder who named nothing wants
+		// what Specula does; a handler missing from this list silently 404s — the
+		// same defect the daemon had when a config naming only OCI left the rest
+		// dark. Keep it in step with build().
+		return []string{
+			"oci", "gomod", "pypi", "npm", "apt", "helm",
+			"cargo", "conda", "hf", "tarball", "git",
+		}
 	}
 	out := make([]string, 0, len(protocols))
 	for _, p := range protocols {
@@ -91,6 +102,7 @@ func patternFor(prefix, proto string) string {
 	mount := map[string]string{
 		"oci": "/v2/", "gomod": "/gomod/", "pypi": "/pypi/", "npm": "/npm/",
 		"apt": "/apt/", "helm": "/helm/", "tarball": "/tarball/", "git": "/git/",
+		"cargo": "/cargo/", "conda": "/conda/", "hf": "/hf/",
 	}[proto]
 	if mount == "" {
 		mount = "/" + proto + "/"
@@ -146,6 +158,33 @@ func build(s *specula.Server, proto, qdir string, ups map[string][]upstream.Upst
 			opts = append(opts, helm.WithUpstream(cl, list))
 		}
 		return helm.NewHandler(cm, opts...)
+	case "cargo":
+		opts := []cargo.Option{
+			cargo.WithMeta(meta), cargo.WithQuarantineDir(qdir), cargo.WithLogger(log),
+			cargo.WithPathPrefix("/cargo"),
+		}
+		if len(list) > 0 {
+			opts = append(opts, cargo.WithUpstream(cl, list))
+		}
+		return cargo.NewHandler(cm, opts...)
+	case "conda":
+		opts := []conda.Option{
+			conda.WithMeta(meta), conda.WithQuarantineDir(qdir), conda.WithLogger(log),
+			conda.WithPathPrefix("/conda"),
+		}
+		if len(list) > 0 {
+			opts = append(opts, conda.WithUpstream(cl, list))
+		}
+		return conda.NewHandler(cm, opts...)
+	case "hf":
+		opts := []hf.Option{
+			hf.WithMeta(meta), hf.WithQuarantineDir(qdir), hf.WithLogger(log),
+			hf.WithPathPrefix("/hf"),
+		}
+		if len(list) > 0 {
+			opts = append(opts, hf.WithUpstream(cl, list))
+		}
+		return hf.NewHandler(cm, opts...)
 	case "tarball":
 		return tarball.NewHandler(cm, tarball.WithQuarantineDir(qdir), tarball.WithLogger(log), tarball.WithPathPrefix("/tarball"))
 	case "git":

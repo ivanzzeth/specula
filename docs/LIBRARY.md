@@ -83,6 +83,24 @@ import (
 
 Or construct drivers yourself and pass `Options.Blob` / `Options.Meta`.
 
+## Which protocols `pkg/embed` mounts
+
+`Options.Protocols` empty means **all of them**, matching the daemon: `oci`,
+`gomod`, `pypi`, `npm`, `apt`, `helm`, `cargo`, `conda`, `hf`, `tarball`, `git`.
+
+```go
+embed.Mount(mux, s, embed.Options{})                             // everything
+embed.Mount(mux, s, embed.Options{Protocols: []string{"gomod"}}) // just one
+```
+
+Patterns are `/v2/` for OCI and `/<name>/` for the rest, under `Options.PathPrefix`
+when set. A protocol name is normalised the way a Specula config spells it, so
+`"go"` mounts the `gomod` handler rather than nothing.
+
+`cargo`, `conda` and `hf` were mountable as `pkg/handler/*` façades but absent from
+`pkg/embed`'s switch and default list, so `embed.Options{}` silently served eight of
+eleven protocols. Fixed in 0.12.1.
+
 ## Quick start
 
 See [`examples/sdk-get-module`](../examples/sdk-get-module) and

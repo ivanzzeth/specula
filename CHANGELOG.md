@@ -37,6 +37,11 @@ clone. Name it in the config to opt in.
 Charts gained `protocolOverrides`, a raw passthrough into `protocols:`, for retuning
 or disabling one — not for enabling, which needs no configuration.
 
+**SDK.** `pkg/embed` had the same defect in miniature: `cargo`, `conda` and `hf`
+existed as `pkg/handler/*` façades but were missing from `build()`'s switch and from
+the default protocol list, so `embed.Options{}` served eight of eleven protocols.
+Wired, with a test that keeps the default list and the switch in step.
+
 Verified against a real config that names only OCI: all nine handlers mount, and
 `/npm`, `/pypi`, `/go`, `/hf`, `/apt/ubuntu/dists/jammy/Release`,
 `/helm/bitnami/index.yaml` and `/conda/conda-forge/noarch/repodata.json` all return
