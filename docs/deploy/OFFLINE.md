@@ -39,6 +39,30 @@ docker pull 127.0.0.1:7733/registry.k8s.io/pause:3.9
   --images docker.io/library/hello-world:latest,registry.k8s.io/pause:3.9
 ```
 
+Both of those require Specula itself to reach the upstream. When it cannot — an
+air-gapped install, or a CN cluster whose mirrors fail on blobs — seed the cache from
+an image pulled on a machine that *can*:
+
+```bash
+# where the registry is reachable
+crane pull --format=oci docker.io/library/redis:7-alpine redis.tar
+
+# where Specula's stores are reachable (its own Pod is usually simplest)
+specula cache import --config specula.yaml \
+    --from redis.tar --as docker.io/library/redis:7-alpine
+
+# into a distroless Pod, over stdin — kubectl cp needs tar inside the image
+kubectl exec -i -n specula-boot POD -- /specula cache import \
+    --config /etc/specula/specula.yaml \
+    --from - --as docker.io/library/redis:7-alpine < redis.tar
+```
+
+This writes the tag pointer, the manifest and every layer, so the pull that follows
+contacts no upstream at all. Use a tool that preserves the registry's digests —
+`crane pull --format=oci` or `skopeo copy … oci-archive:`. A legacy `docker save`
+archive is refused rather than half-imported: it re-packs layers, so its digests are
+not the ones a client asks for.
+
 Apt / Helm / Conda / Cargo / git: hit Specula once per object while online
 (`apt-get update` against Specula, `helm pull`, `git clone` via insteadOf, …).
 
