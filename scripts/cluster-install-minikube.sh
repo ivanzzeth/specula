@@ -57,18 +57,57 @@ echo "==> building Specula binary + local image"
     (cd web && npm ci && npm run build)
   fi
   mkdir -p bin
-  CGO_ENABLED=0 go build -trimpath \
-    -ldflags "-s -w -X github.com/ivanzzeth/specula/internal/version.Version=cluster-local" \
-    -o bin/specula ./cmd/specula
+  # GOOS/GOARCH must be explicit: a bare `go build` on a macOS host produces a
+  # darwin binary that lands in a Linux image and dies with
+  #   exec /specula: exec format error
+  # after helm reports success — a CrashLoopBackOff with no obvious cause.
+  # Target the container runtime's platform, not the developer's.
+  NODE_ARCH="$(docker version --format '{{.Server.Arch}}' 2>/dev/null || true)"
+  if [[ -z "${NODE_ARCH}" ]]; then
+    case "$(uname -m)" in
+      arm64 | aarch64) NODE_ARCH=arm64 ;;
+      x86_64 | amd64) NODE_ARCH=amd64 ;;
+      *) echo "cluster-install-minikube: unsupported arch $(uname -m)" >&2; exit 1 ;;
+    esac
+  fi
+  LDFLAGS="-s -w -X github.com/ivanzzeth/specula/internal/version.Version=cluster-local"
   STAGE="$(mktemp -d)"
   trap 'rm -rf "${STAGE}"' EXIT
-  cp bin/specula "${STAGE}/specula"
+
+  # Two products, deliberately: bin/specula runs `cluster install` on THIS host,
+  # so it must be native; the image needs linux/<node arch>. Cross-compiling only
+  # one of them breaks the other.
+  echo "    host binary (native) → bin/specula"
+  CGO_ENABLED=0 go build -trimpath -ldflags "${LDFLAGS}" -o bin/specula ./cmd/specula
+  echo "    image binary (linux/${NODE_ARCH})"
+  GOOS=linux GOARCH="${NODE_ARCH}" CGO_ENABLED=0 go build -trimpath \
+    -ldflags "${LDFLAGS}" -o "${STAGE}/specula" ./cmd/specula
+
   cp contrib/docker/specula.yaml "${STAGE}/specula.yaml"
   if docker image inspect "${IMAGE_REPO}:${IMAGE_TAG}" >/dev/null 2>&1; then
     BASE="${IMAGE_REPO}:${IMAGE_TAG}"
   else
     BASE="scratch"
-    cp /etc/ssl/certs/ca-certificates.crt "${STAGE}/ca-certificates.crt"
+    # The FROM scratch image carries no CA bundle, so one is copied from the host.
+    # Its path is distro-specific and absent entirely on macOS — hardcoding the
+    # Debian path made this gate silently Linux-only ("cp: /etc/ssl/certs/
+    # ca-certificates.crt: No such file or directory" after a full WebUI build).
+    HOST_CA=""
+    for candidate in \
+      /etc/ssl/certs/ca-certificates.crt \
+      /etc/pki/tls/certs/ca-bundle.crt \
+      /etc/ssl/cert.pem \
+      /opt/homebrew/etc/ca-certificates/cert.pem \
+      /usr/local/etc/ca-certificates/cert.pem; do
+      if [[ -f "${candidate}" ]]; then HOST_CA="${candidate}"; break; fi
+    done
+    if [[ -z "${HOST_CA}" ]]; then
+      echo "cluster-install-minikube: no CA bundle found on this host — set SPECULA_HOST_CA=<path>" >&2
+      exit 1
+    fi
+    HOST_CA="${SPECULA_HOST_CA:-${HOST_CA}}"
+    echo "    CA bundle: ${HOST_CA}"
+    cp "${HOST_CA}" "${STAGE}/ca-certificates.crt"
   fi
   if [[ "${BASE}" == "scratch" ]]; then
     cat > "${STAGE}/Dockerfile" <<'EOF'
@@ -125,9 +164,23 @@ kubectl --context "${MINIKUBE_PROFILE}" -n "${NAMESPACE}" rollout status \
   "ds/${RELEASE}-specula-bootstrap-integrate" --timeout=120s >/dev/null 2>&1 || true
 
 # Stamp proves once-reload path ran (or config already matched).
-STAMP="$(minikube ssh -p "${MINIKUBE_PROFILE}" -- 'sudo test -f /var/lib/specula/.cri-reload-hash && echo ok' 2>/dev/null || true)"
+#
+# POLLED, not sampled once: the DaemonSet writes hosts.toml → integrate → restart
+# containerd → stamp, and restarting containerd briefly disturbs kubelet, so the
+# rollout-status above (which is `|| true`) can return before the stamp lands. A
+# single-shot check failed here with the stamp appearing seconds later.
+STAMP=""
+for _ in $(seq 1 60); do
+  STAMP="$(minikube ssh -p "${MINIKUBE_PROFILE}" -- \
+    'sudo test -f /var/lib/specula/.cri-reload-hash && echo ok' 2>/dev/null || true)"
+  [[ "${STAMP}" == *ok* ]] && break
+  sleep 2
+done
 if [[ "${STAMP}" != *ok* ]]; then
-  echo "cluster-install-minikube: missing /var/lib/specula/.cri-reload-hash (once-reload stamp)" >&2
+  echo "cluster-install-minikube: missing /var/lib/specula/.cri-reload-hash after 120s (once-reload stamp)" >&2
+  echo "  integrate DS logs:" >&2
+  kubectl --context "${MINIKUBE_PROFILE}" -n "${NAMESPACE}" \
+    logs "ds/${RELEASE}-specula-bootstrap-integrate" --tail=30 >&2 2>/dev/null || true
   exit 1
 fi
 echo "    cri-reload stamp OK"
