@@ -3,7 +3,7 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
-## [Unreleased]
+## [0.12.4] — Cache import, cross-name CAS reuse, dedup-safe eviction — 2026-07-28
 
 ### Added — `specula cache import`: seed the cache from an image pulled elsewhere
 
