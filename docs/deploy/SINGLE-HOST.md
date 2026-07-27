@@ -58,6 +58,39 @@ server:
 Cert files must be readable by `User=specula` (`chown specula: /etc/specula/tls/*`,
 mode `0640` on the key).
 
+## 2b. First login: whoever registers first is the admin
+
+There is no default account. `internal/auth/service.go` `Register()` gives
+`system_role=admin` to the account created when the user count is zero, and makes
+it owner of the default org — so the first person to reach the control plane
+becomes the administrator, and everyone after that is an ordinary user.
+
+Register immediately after install:
+
+```
+https://specula.internal.example.com:7733
+```
+
+Two keys decide whether that session survives:
+
+```yaml
+auth:
+  # 32 raw bytes, base64:  openssl rand -base64 32
+  config_secret: "…"
+  cookie_secure: true      # the control plane is HTTPS here
+```
+
+Without `config_secret` the encrypted settings store is disabled, so the
+auto-generated `jwt_secret` is **ephemeral** — every restart signs everyone out,
+which means every `specula upgrade` logs you out. A malformed value is a startup
+error, never a silent downgrade. Prefer the env var
+`SPECULA_AUTH__CONFIG_SECRET` over the file so the key does not live in the
+database it protects.
+
+For CLI and automation, issue an API key in the WebUI (`spck_…`) and use
+`specula login --token spck_…`; that is separate from the browser session. Without
+one, `specula stats` shows traffic counters only.
+
 ## 3. Resolve the domain to the private IP
 
 Cloud private DNS (Aliyun PrivateZone / Tencent Private DNS) with an A record to
