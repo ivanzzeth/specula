@@ -121,10 +121,18 @@ specula cluster install --cn --wait \
 
 ## Chart / binary version skew
 
-The config loader runs with `ErrorUnused: true` — an unknown YAML key is a hard
-startup error, not a warning. So a chart that emits a key the image's binary does
-not know will crash-loop the Pod. Concretely: the chart in this repo emits
-`storage.quarantine_dir`, which binaries before v0.11.0 reject.
+Two ways a newer working tree breaks against an older published image. Both were
+hit for real:
+
+**Unknown config key.** The config loader runs with `ErrorUnused: true` — an unknown
+YAML key is a hard startup error, not a warning. The chart here emits
+`storage.quarantine_dir`, which binaries before v0.11.0 reject with a crash loop.
+
+**Missing subcommand.** Chart-driven DaemonSets invoke the image's own CLI. When the
+tree adds a subcommand the published image lacks, the Pod never turns Ready and the
+caller sees only a timeout. Concretely: `cluster uninstall` runs
+`bootstrap-mirror remove`, added after v0.11.0, so against that image the node
+cleanup silently fell back to its warning path.
 
 **Keep the chart and the image on the same version.** When testing an older
 published image, point `--chart-dir` at a worktree of that tag:
@@ -144,3 +152,9 @@ specula cluster install --chart-dir /tmp/specula-v0.10.0/deploy/helm/specula-boo
 - [ ] tag pushed; `gh run watch` green
 - [ ] every configured coordinate pulls
 - [ ] chart and image versions match for any deployment you hand to someone else
+- [ ] **installed onto a cluster with a real CSI StorageClass**, not just minikube —
+      minikube's hostpath provisioner hands out 0777 volumes and structurally cannot
+      catch the permission class of bug (`fsGroup`, root-owned mounts) that breaks
+      every cloud driver
+- [ ] any new image-invoked subcommand exists in the image you are deploying (see
+      version skew above)
