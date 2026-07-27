@@ -170,13 +170,17 @@ func runClusterUninstall(args []string) error {
 	fs := flag.NewFlagSet("cluster uninstall", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	kubeconfig, context, ns, release, _, _, _, _, _ := clusterFlags(fs)
+	skipNodeCleanup := fs.Bool("skip-node-cleanup", false,
+		"leave node certs.d hosts.toml in place (default: remove it, or nodes keep "+
+			"pointing at a Specula that no longer exists and every redirected registry fails)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	return cluster.Uninstall(cluster.InstallOptions{
-		Kubeconfig: *kubeconfig,
-		Context:    *context,
-		Namespace:  *ns,
-		Release:    *release,
+		Kubeconfig:      *kubeconfig,
+		Context:         *context,
+		Namespace:       *ns,
+		Release:         *release,
+		SkipNodeCleanup: *skipNodeCleanup,
 	})
 }

@@ -299,6 +299,19 @@ func Uninstall(opts InstallOptions) error {
 	if rel == "" {
 		rel = DefaultRelease
 	}
+	// Undo the node-side hosts.toml BEFORE the release goes away: the cleanup
+	// DaemonSet needs the release's image (the one image those nodes are known to
+	// have), and leaving the drop-ins behind breaks every redirected registry
+	// because CN mode keeps no public fallback.
+	if !opts.SkipNodeCleanup {
+		if err := CleanupNodeMirrors(opts, ns, rel); err != nil {
+			// Best-effort: an operator who asked to uninstall gets the uninstall.
+			fmt.Fprintf(os.Stderr, "cluster uninstall: node cleanup skipped: %v\n", err)
+			fmt.Fprintf(os.Stderr, "cluster uninstall: nodes may still point at Specula — "+
+				"run `specula bootstrap-mirror remove --endpoint http://127.0.0.1:%d` on each node\n",
+				DefaultNodePort)
+		}
+	}
 	fmt.Fprintf(os.Stdout, "cluster uninstall: helm uninstall %s -n %s\n", rel, ns)
 	_, err := helm(opts.Kubeconfig, opts.Context, "uninstall", rel, "--namespace", ns, "--wait")
 	return err

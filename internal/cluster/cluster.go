@@ -41,6 +41,10 @@ type InstallOptions struct {
 	BinaryPath string
 	HA         bool // reserved: Phase 3 promote (not default)
 
+	// SkipNodeCleanup leaves node hosts.toml in place on uninstall. Only useful
+	// when another Specula still serves that endpoint on the same nodes.
+	SkipNodeCleanup bool
+
 	// Persistence: existingClaim > hostPath > created PVC when Persist is true.
 	// Persist defaults to true when unset via PersistSet; see ResolvePersistence.
 	Persist         bool
@@ -191,6 +195,28 @@ func needBins(names ...string) error {
 		if _, err := exec.LookPath(n); err != nil {
 			return fmt.Errorf("%s not found on PATH", n)
 		}
+	}
+	return nil
+}
+
+// kubectlApplyStdin applies a manifest passed on stdin. Used for the short-lived
+// node-cleanup DaemonSet, which is not part of the helm chart on purpose: it has
+// to outlive the release it is cleaning up after.
+func kubectlApplyStdin(kubeconfig, context, manifest string) error {
+	all := make([]string, 0, 8)
+	if kubeconfig != "" {
+		all = append(all, "--kubeconfig", kubeconfig)
+	}
+	if context != "" {
+		all = append(all, "--context", context)
+	}
+	all = append(all, "apply", "-f", "-")
+	cmd := exec.Command("kubectl", all...)
+	cmd.Stdin = strings.NewReader(manifest)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if _, err := cmd.Output(); err != nil {
+		return fmt.Errorf("kubectl apply -f -: %w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
