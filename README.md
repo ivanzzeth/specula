@@ -588,6 +588,7 @@ Full map with categories: **[docs/README.md](docs/README.md)**.
 |-------|-----|
 | One VM + systemd (intranet, `scp` + `specula upgrade`) | [docs/deploy/SINGLE-HOST.md](docs/deploy/SINGLE-HOST.md) |
 | Into a cluster (`specula cluster install --cn`, one command with a kubeconfig) | [docs/deploy/CLUSTER.md](docs/deploy/CLUSTER.md) |
+| Hosted — one stateless instance serving many clusters | [docs/deploy/HOSTED.md](docs/deploy/HOSTED.md) |
 | Air-gapped / offline | [docs/deploy/OFFLINE.md](docs/deploy/OFFLINE.md) |
 
 **Operate / build on it:**

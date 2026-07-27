@@ -1,0 +1,201 @@
+# Hosted Specula (one instance, many clusters)
+
+Run **one** stateless Specula and point every other cluster at it, instead of
+installing a mirror in each. Verified on Alibaba Cloud ACK + RDS PostgreSQL + OSS,
+cn-chengdu.
+
+```bash
+cp deploy/profiles/hosted-aliyun.example.yaml specula-deploy.yaml
+$EDITOR specula-deploy.yaml                       # fill the <> placeholders
+specula cluster install --values specula-deploy.yaml --wait --kubeconfig <path>
+```
+
+One file, one command. The chart creates the credential Secret from the profile, so
+there is no separate `kubectl create secret` step.
+
+## Why stateless
+
+| | Per-cluster mirror (default) | Hosted (this doc) |
+|---|---|---|
+| Metadata | SQLite on a volume | PostgreSQL |
+| Blobs | local disk CAS | S3-compatible object store |
+| Replicas | 1, pinned to a node | HPA, reschedulable |
+| Node loss | data survives but the Pod stays Pending until re-pinned | nothing to lose |
+| Who it serves | its own cluster's nodes | any cluster that can reach it |
+
+Multi-replica needs a cross-replica stampede lock. `lockDriver: postgres` uses
+advisory locks on the metadata pool, so **no Redis** is required.
+
+## The pitfalls, in the order you hit them
+
+Every one of these was hit for real. None is obvious from the config file.
+
+### 1. The image must be pullable from the nodes
+
+Inside China that means your own cloud-region registry over its **VPC** endpoint.
+Measured from an ACK cluster in cn-chengdu:
+
+| Source | Result |
+|--------|--------|
+| `registry-1.docker.io` | unreachable |
+| `docker.m.daocloud.io` | **403** |
+| `docker.1ms.run`, `docker.xuanyuan.me` | timeout |
+| ACR (VPC endpoint) | pulled in 1.9s |
+
+See [RELEASE.md](../RELEASE.md) for wiring ACR into CI, including the trap that an
+ACR **instance** domain (`crpi-<id>.cn-<region>.personal.cr.aliyuncs.com`) is not
+interchangeable with the legacy shared domain — instance credentials get a 403
+against the shared one, which reads like a wrong password.
+
+### 2. RDS PostgreSQL ships with SSL **off**
+
+`sslmode=require` then fails with:
+
+```
+tls error: server refused TLS connection
+```
+
+Enable it (Aliyun: 数据安全性 → SSL), or use `sslmode=disable` for VPC-internal
+traffic. Enabling it is one toggle; prefer that.
+
+### 3. PostgreSQL 15+ revoked `CREATE` on schema `public`
+
+An ordinary account dies at startup:
+
+```
+create version table "goose_db_version": permission denied for schema public (SQLSTATE 42501)
+```
+
+On PG 15+ the `public` schema is owned by `pg_database_owner`, so **CREATE follows
+database ownership**, not account privilege level.
+
+### 4. Aliyun's "高权限账号" is not a superuser
+
+Switching to a privileged account does **not** fix #3 by itself — if the database was
+created by someone else, the privileged account still has no CREATE on `public`. What
+works is making it the database owner:
+
+```sql
+ALTER DATABASE specula OWNER TO specula_admin;
+-- or, from scratch:
+DROP DATABASE specula; CREATE DATABASE specula OWNER specula_admin;
+```
+
+Run it from DMS (RDS console → 登录数据库) as a privileged account.
+
+Note the follow-on: tables are then owned by that account. Moving back to an ordinary
+account later needs `REASSIGN OWNED BY specula_admin TO specula`.
+
+### 5. The RAM policy must cover HEAD, not just GET/PUT
+
+The S3 `HeadObject` that Specula uses for its exists-check maps to OSS
+`oss:GetObjectMeta`. Without it every cache write fails:
+
+```
+s3 HeadObject blobs/sha256/…: StatusCode: 403, api error Forbidden
+```
+
+Note this is an **authorization** failure, not a signature one — the request was
+signed, reached OSS and came back with a RequestID. Minimum object-level actions:
+
+```
+oss:GetObject  oss:GetObjectMeta  oss:PutObject  oss:DeleteObject
+oss:AbortMultipartUpload  oss:ListParts
+```
+
+plus bucket-level `oss:GetBucketInfo`, `oss:GetBucketLocation`, `oss:ListObjects`.
+`AbortMultipartUpload` / `ListParts` are not optional: multi-GB layers use multipart
+uploads.
+
+To split a policy problem from a signature problem in one step, attach
+`AliyunOSSFullAccess` temporarily. If it works, it was the policy.
+
+### 6. `cache.maxBytes` defaults to 0 — never evict
+
+Object storage then grows without bound. Specula evicts oldest-first and only
+**unpinned, cached-origin** entries; pinned entries and content pushed into Specula
+are never touched.
+
+**Do not add an OSS lifecycle rule that deletes objects.** Capacity accounting reads
+the metadata store, never the bucket, so objects deleted behind Specula's back stay
+"present" in metadata and reads fail. A rule that aborts **incomplete** multipart
+uploads (7 days) is safe and worth having — an interrupted layer upload otherwise
+leaves billable fragments.
+
+### 7. Upstreams have to work from *this* cluster
+
+A hosted Specula is the only thing fetching from the outside world, so its upstream
+chain matters more than in any other shape. The chart default points at DaoCloud,
+which returned **403** from cn-chengdu — the request arrived, so egress is fine; the
+mirror refused. Verify with a real fetch before declaring the deployment done:
+
+```bash
+kubectl -n specula-boot run ossprobe --restart=Never --image=<same image> --command -- \
+  /specula bootstrap-prefetch --addr http://boot-specula-bootstrap:7732 \
+  --images registry.k8s.io/pause:3.10
+kubectl -n specula-boot logs ossprobe
+```
+
+This is the only client-side check that does the Docker token handshake;
+`kubectl get --raw …/v2/…` gets a 401 and proves nothing.
+
+### 8. Changing a credential does not restart anything (fixed)
+
+`helm upgrade` that only alters the ConfigMap or Secret leaves the Pod template
+byte-identical, so nothing rolls and CrashLoopBackOff Pods keep the old value. The
+chart now carries `checksum/config` and `checksum/creds` annotations, so a content
+change is a spec change. If you edit a Secret by hand, you still need
+`kubectl rollout restart`.
+
+### 9. A CSI volume is root-owned (fixed)
+
+Not applicable to the stateless shape, but for the record: the image runs as nonroot
+(65532) while a freshly provisioned CSI volume mounts `root:root 0755`, so the daemon
+could not create its data directories. Both charts now set `fsGroup: 65532`.
+minikube's hostpath provisioner hands out 0777 and hides this entirely.
+
+## Letting other clusters in
+
+Expose a VPC address — no public IP, no egress bill:
+
+```yaml
+service:
+  type: LoadBalancer
+  annotations:
+    service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: intranet
+```
+
+```bash
+kubectl -n specula-boot get svc boot-specula-bootstrap \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+```
+
+Then in each client cluster, deploy the node-side agent only — see
+[`deploy/profiles/client-mirror.example.yaml`](../../deploy/profiles/client-mirror.example.yaml).
+It is a DaemonSet, so every worker that joins is covered automatically and the 5m
+reconcile repairs drift; there is no per-node manual step.
+
+Prefer a private DNS name over the raw LoadBalancer IP: the IP changes if the CLB is
+recreated, and although the DaemonSet rewrites `hosts.toml` automatically, pulls fail
+in between.
+
+## First login
+
+There is no default account. The first account created while the user count is zero
+becomes admin and owner of the default org — so **register immediately** after
+install. Set `auth.configSecret` (base64 of exactly 32 bytes) or the JWT secret is
+regenerated on every restart: every rollout signs everyone out, and replicas do not
+share sessions.
+
+## Acceptance
+
+```bash
+specula cluster doctor --kubeconfig <path>     # ready=N/N, /healthz OK, /v2/ → 401
+# real fetch through Specula (token handshake), then confirm bytes landed:
+kubectl get --raw "/api/v1/namespaces/specula-boot/services/boot-specula-bootstrap:7733/proxy/metrics" \
+  | grep 'specula_cache_bytes{protocol="oci"}'
+```
+
+`specula_cache_bytes{protocol="oci"} 0` after a successful fetch means the blob store
+rejected the write — check the Specula logs for an S3 error before believing the
+deployment is healthy.

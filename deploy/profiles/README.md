@@ -35,6 +35,8 @@ could never work.
 | `client-mirror.example.yaml` | A client cluster pointing at a hosted Specula over the VPC. Mirror DaemonSet only — no Deployment, Service, PVC or HPA. Auto-covers new workers. |
 | `hosted-aliyun.example.yaml` | Centrally hosted, **stateless**: Postgres metadata + OSS blobs, `ha=true` with Postgres advisory locks (no Redis), HPA, no PVC, no node pin. One instance serves many clusters. |
 
+Full runbook with every pitfall: [docs/deploy/HOSTED.md](../../docs/deploy/HOSTED.md).
+
 For a per-cluster mirror instead — SQLite + local disk, pinned to one node, with the
 mirror/integrate DaemonSets rewriting node `hosts.toml` — pass no profile at all;
 that is what `cluster install --cn` does by default. See

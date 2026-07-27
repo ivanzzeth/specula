@@ -555,6 +555,7 @@ Chart：[`deploy/helm/specula-bootstrap`](deploy/helm/specula-bootstrap)。说�
 |------|------|
 | 单机 + systemd（内网一台，`scp` + `specula upgrade` 更新） | [docs/deploy/SINGLE-HOST.md](docs/deploy/SINGLE-HOST.md) |
 | 装进集群（`specula cluster install --cn`，有 kubeconfig 就一条命令） | [docs/deploy/CLUSTER.md](docs/deploy/CLUSTER.md) |
+| 中心托管 —— 一个无状态实例服务多个集群 | [docs/deploy/HOSTED.md](docs/deploy/HOSTED.md) |
 | 离线 / 气隙 | [docs/deploy/OFFLINE.md](docs/deploy/OFFLINE.md) |
 
 **运维 / 二次开发：**
