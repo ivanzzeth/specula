@@ -222,6 +222,36 @@ Note the node-side `integrate --protocols oci` below is a different setting: it 
 which *client* configs get rewritten on the node (containerd, and optionally apt/helm),
 not which protocols the server answers.
 
+## Pushing to it (docker / crane) with more than one replica
+
+Works, with no special routing. A blob push is a stateful three-request protocol —
+POST opens an upload session, PATCH streams chunks, PUT finalises — and those requests
+land on whichever Pod the Service or Ingress picks. Upload sessions therefore live in
+the shared metadata tier with their chunk bytes in the blob store (postgres + S3 in
+HA), so any replica can finalise what another one started.
+
+Nothing to configure: no `service.sessionAffinity`, no
+`nginx.ingress.kubernetes.io/affinity=cookie`, no pinned `replicaCount: 1`.
+
+If a push ever fails at the blob stage with
+
+```
+BLOB_UPLOAD_UNKNOWN: upload session not found
+```
+
+then it is running a build older than 0.12.2, where sessions were per-process. The
+symptom was distinctive: scaling the Deployment to one replica made the identical push
+succeed, and cookie affinity did **not** help — crane and docker do not carry an
+Ingress's affinity cookie. Upgrade rather than scaling down.
+
+Two things that are still worth setting on the Ingress for pushes:
+
+- `nginx.ingress.kubernetes.io/proxy-body-size` large enough for your layers (a small
+  value shows up as **413**, not `BLOB_UPLOAD_UNKNOWN`).
+- `server.registry_public_host` set to the Ingress hostname, since with one port a
+  direct deployment can derive it from the request but an ingress hostname and :443
+  appear nowhere in the listen address.
+
 ## Node integration is not optional
 
 **Never deploy with `integrate.enabled=false` or `mirror.enabled=false` in a CN

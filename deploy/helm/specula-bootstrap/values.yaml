@@ -146,6 +146,9 @@ regionProfile: ""
 # ha=true additionally needs a cross-replica stampede lock. lock_driver=postgres uses
 # advisory locks on the meta pool, so no Redis is required — size the pool for
 # concurrent cold misses.
+# Safe to raise: blob upload sessions are shared through the metadata tier and blob
+# store, so a docker/crane push whose POST, PATCH and PUT land on different Pods
+# still completes. No sessionAffinity or cookie affinity needed.
 replicaCount: 1
 ha: false
 lockDriver: postgres # postgres | redis | local (only read when ha=true)
