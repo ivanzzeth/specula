@@ -1,3 +1,4 @@
+{{- if .Values.deployment.enabled }}
 {{- /* Create a PVC only when enabled and not using existingClaim/hostPath. */ -}}
 {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (not .Values.persistence.hostPath) }}
 apiVersion: v1
@@ -15,4 +16,5 @@ spec:
   {{- if .Values.persistence.storageClass }}
   storageClassName: {{ .Values.persistence.storageClass | quote }}
   {{- end }}
+{{- end }}
 {{- end }}

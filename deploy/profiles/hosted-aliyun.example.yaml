@@ -1,0 +1,94 @@
+# Specula — centrally hosted, stateless deployment profile (Alibaba Cloud).
+#
+# ONE file, ONE command:
+#
+#   cp deploy/profiles/hosted-aliyun.example.yaml specula-deploy.yaml
+#   $EDITOR specula-deploy.yaml            # fill in the <> placeholders
+#   specula cluster install --values specula-deploy.yaml --wait
+#
+# Nothing else: the chart creates the credential Secret from the values below, so
+# there is no separate `kubectl create secret` step.
+#
+# The real file holds a database password and an OSS secret key — keep it out of
+# git. Anything named *specula-deploy*.yaml and the whole /tmp/ directory are
+# already ignored (.gitignore); do not rename it into a tracked path.
+#
+# This profile is the STATELESS shape: Postgres for metadata + object storage for
+# blobs, so no PVC, no node pinning, replicas can scale and a lost node costs
+# nothing. That is what lets ONE Specula serve many clusters instead of every
+# cluster running its own.
+
+# ── Image ─────────────────────────────────────────────────────────────────────
+# Must be pullable FROM THE NODES. Inside China that means your own cloud-region
+# registry: Docker Hub and every public CN mirror measured were unusable
+# (docs/RELEASE.md has the numbers). Prefer the VPC endpoint — same bytes, no
+# public egress bill.
+image:
+  repository: <registry-vpc-host>/<namespace>/specula
+  tag: v0.11.1
+  pullPolicy: IfNotPresent
+
+# ── Replicas ──────────────────────────────────────────────────────────────────
+# ha=true switches on the cross-replica stampede lock. lockDriver=postgres uses
+# advisory locks on the metadata pool, so no Redis is needed — size the Postgres
+# connection pool for concurrent cold misses.
+ha: true
+lockDriver: postgres
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# ── Metadata: PostgreSQL ──────────────────────────────────────────────────────
+# Schema migrations run automatically at startup (embedded goose).
+# This DB is NOT only a cache: it holds TOFU pins and user accounts too, so back it
+# up like a database, not like a cache.
+meta:
+  driver: postgres
+  dsn: postgres://<user>:<password>@<host>:5432/specula?sslmode=require
+
+# ── Blobs: OSS (S3-compatible) ────────────────────────────────────────────────
+# Create a private Standard bucket in the SAME region as the cluster and use the
+# -internal endpoint (VPC, no egress charge). Server-side encryption "OSS-managed"
+# is free and transparent; do not use KMS (per-object KMS calls on a hot cache).
+# Scope the RAM user to this bucket rather than granting OSSFullAccess.
+blob:
+  driver: s3
+  s3:
+    bucket: <bucket-name>
+    endpoint: https://oss-<region>-internal.aliyuncs.com
+    region: <region>
+    usePathStyle: false # OSS/COS/OBS are virtual-host style; MinIO needs true
+    accessKeyId: <ram-access-key-id>
+    secretAccessKey: <ram-access-key-secret>
+
+# Stateless: no volume to own.
+persistence:
+  enabled: false
+
+# ── Hosting, not mirroring ────────────────────────────────────────────────────
+# A hosted Specula serves OTHER clusters, so it must not rewrite containerd config
+# on the nodes it happens to run on. Client clusters point at it by address.
+mirror:
+  enabled: false
+integrate:
+  enabled: false
+
+# ── Control-plane auth ────────────────────────────────────────────────────────
+# There is no default account: the FIRST person to register at the control plane
+# becomes admin. Register immediately after install.
+# config_secret must be base64 of exactly 32 bytes:  openssl rand -base64 32
+# Without it the JWT secret is regenerated on every restart, so every rollout signs
+# all users out.
+auth:
+  configSecret: <openssl rand -base64 32>
+  cookieSecure: false # true once the control plane is served over HTTPS
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: "2"
+    memory: 1Gi

@@ -81,17 +81,30 @@ func Install(opts InstallOptions) (*Result, error) {
 	args := []string{
 		"upgrade", "--install", rel, chart,
 		"--namespace", ns, "--create-namespace",
-		"--set", "image.repository=" + repo,
-		"--set", "image.tag=" + tag,
-		"--set", "image.pullPolicy=IfNotPresent",
-		"--set", "mirror.enabled=true",
-		"--set", "integrate.enabled=true",
-		"--set", "integrate.restartContainerd=once",
-		"--set", "mirror.certsDir=" + certsDir,
-		"--set", fmt.Sprintf("mirror.endpoint=http://127.0.0.1:%d", DefaultNodePort),
-		"--set", "installer.enabled=false",
 	}
-	args = append(args, HelmPersistenceArgs(persist)...)
+
+	// helm applies --set AFTER every -f regardless of order, so an unconditional
+	// --set silently overrides the deployment profile. With a profile in play, only
+	// the flags the operator actually typed may become --set — otherwise a single
+	// config file could never work, which is the whole point of --values.
+	profile := len(opts.ValuesFiles) > 0
+	setIf := func(explicit bool, kv ...string) {
+		if !profile || explicit {
+			for _, v := range kv {
+				args = append(args, "--set", v)
+			}
+		}
+	}
+	setIf(opts.ImageRepo != "", "image.repository="+repo, "image.tag="+tag,
+		"image.pullPolicy=IfNotPresent")
+	setIf(false, "installer.enabled=false")
+	setIf(false, "mirror.enabled=true", "integrate.enabled=true",
+		"integrate.restartContainerd=once", "mirror.certsDir="+certsDir,
+		fmt.Sprintf("mirror.endpoint=http://127.0.0.1:%d", DefaultNodePort))
+	if !profile || opts.PersistSet || opts.ExistingClaim != "" ||
+		opts.HostPath != "" || opts.StorageClass != "" || opts.PVCSize != "" {
+		args = append(args, HelmPersistenceArgs(persist)...)
+	}
 	if md := strings.ToLower(strings.TrimSpace(opts.MetaDriver)); md == "postgres" {
 		// DSN itself stays in the Secret; only the reference is passed to helm.
 		args = append(args,

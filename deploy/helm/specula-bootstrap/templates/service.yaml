@@ -1,22 +1,35 @@
+{{- if .Values.deployment.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "specula-bootstrap.fullname" . }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   labels:
     {{- include "specula-bootstrap.labels" . | nindent 4 }}
 spec:
-  # NodePort: the node container runtime reaches the mirror at 127.0.0.1:<nodePort>.
-  type: NodePort
+  # NodePort by default: the node's container runtime reaches the mirror at
+  # 127.0.0.1:<nodePort>, which is node-local and costs no network at all.
+  # LoadBalancer (with an internal annotation) is for a HOSTED Specula that other
+  # clusters in the same VPC dial by address.
+  type: {{ .Values.service.type | default "NodePort" }}
   selector:
     {{- include "specula-bootstrap.selectorLabels" . | nindent 4 }}
   ports:
     - name: data
       port: {{ .Values.service.dataPort }}
       targetPort: data
+      {{- if eq (.Values.service.type | default "NodePort") "NodePort" }}
       nodePort: {{ .Values.service.dataNodePort }}
+      {{- end }}
       protocol: TCP
     - name: control
       port: {{ .Values.service.controlPort }}
       targetPort: control
+      {{- if eq (.Values.service.type | default "NodePort") "NodePort" }}
       nodePort: {{ .Values.service.controlNodePort }}
+      {{- end }}
       protocol: TCP
+{{- end }}

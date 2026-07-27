@@ -41,7 +41,19 @@ resources:
     cpu: "1"
     memory: 512Mi
 
+# Set false to deploy ONLY the mirror DaemonSet — a client cluster whose nodes point
+# at a Specula hosted somewhere else. No Deployment, Service, PVC, Secret or HPA.
+deployment:
+  enabled: true
+
 service:
+  # NodePort (default) keeps node→Specula traffic on localhost.
+  # LoadBalancer + an internal annotation exposes a stable VPC address for OTHER
+  # clusters. On Alibaba Cloud, intranet means no public IP and no egress bill:
+  #   annotations:
+  #     service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: intranet
+  type: NodePort
+  annotations: {}
   dataPort: 7732
   controlPort: 7733
   # NodePort so the node's container runtime (containerd/docker) can reach the
@@ -125,6 +137,11 @@ blob:
     region: ""
     # OSS/COS/OBS are virtual-host style (false). MinIO needs true.
     usePathStyle: false
+    # Put the credentials right here and the chart creates the Secret for you.
+    # Leave BOTH empty to use the SDK credential chain (instance role / RRSA).
+    accessKeyId: ""
+    secretAccessKey: ""
+    # …or reference a Secret you already created. Takes precedence when set.
     existingSecret: ""
     accessKeyIDKey: access-key-id
     secretAccessKeyKey: secret-access-key
@@ -144,11 +161,25 @@ blob:
 # here. It is injected as SPECULA_STORAGE__META__DSN, which overrides the file.
 meta:
   driver: sqlite
-  # sqlite only; ignored when driver=postgres.
+  # sqlite: file path on the data volume.
+  # postgres: full DSN — put it here and the chart creates the Secret for you, e.g.
+  #   postgres://specula:pw@pg-x.pg.rds.aliyuncs.com:5432/specula?sslmode=require
   dsn: /var/lib/specula/meta.db
-  # postgres only. existingSecret is REQUIRED for driver=postgres.
+  # …or reference a Secret you already created. Takes precedence when set.
   existingSecret: ""
   dsnKey: dsn
+
+# ── Control-plane auth ────────────────────────────────────────────────────────
+# There is no default account: the first account created while the user count is
+# zero becomes admin. Register right after install.
+#
+# configSecret is base64 of exactly 32 bytes (openssl rand -base64 32). It encrypts
+# the runtime-settings store, which is what makes the auto-generated JWT secret
+# durable. Empty = ephemeral: every restart signs everyone out, and replicas do not
+# share sessions. A malformed value is a startup error, never a silent downgrade.
+auth:
+  configSecret: ""
+  cookieSecure: false
 
 cache:
   defaultMutableTTLSeconds: 300

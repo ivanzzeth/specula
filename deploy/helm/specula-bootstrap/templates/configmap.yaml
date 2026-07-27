@@ -65,11 +65,12 @@ data:
       max_bytes: {{ .Values.cache.maxBytes }}
 
     auth:
-      # Empty → Specula auto-generates and persists in the SQLite settings store.
-      # Anonymous pull-through of public upstream repos still works (that is the
-      # whole point of a bootstrap mirror).
-      config_secret: ""
-      cookie_secure: {{ .Values.tls.enabled }}
+      # Empty → auto-generated but EPHEMERAL: every restart invalidates all sessions
+      # and, with more than one replica, sessions are not shared. Set it (base64 of
+      # exactly 32 bytes) for anything long-lived. Anonymous pull-through of public
+      # upstreams works either way — that is the point of a bootstrap mirror.
+      config_secret: {{ .Values.auth.configSecret | quote }}
+      cookie_secure: {{ .Values.auth.cookieSecure | default .Values.tls.enabled }}
 
     protocols:
       oci:

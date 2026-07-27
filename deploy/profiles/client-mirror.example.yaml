@@ -1,0 +1,61 @@
+# Specula — client cluster profile: point this cluster's nodes at a Specula hosted
+# somewhere else in the same VPC. Deploys ONLY the mirror DaemonSet.
+#
+#   cp deploy/profiles/client-mirror.example.yaml specula-deploy-client.yaml
+#   $EDITOR specula-deploy-client.yaml       # set mirror.endpoint
+#   specula cluster install --values specula-deploy-client.yaml --wait
+#
+# Auto-adapts to node-pool scaling: it is a DaemonSet, so every worker that joins
+# gets its hosts.toml written, and the reconcile loop repairs drift every 5m. No
+# per-node manual step, ever.
+#
+# Traffic stays on the VPC: the endpoint below is the hosted Specula's INTERNAL
+# LoadBalancer address, so pulls never touch the public internet and are not billed
+# as egress.
+
+# No Specula here — this cluster only redirects to the hosted one.
+deployment:
+  enabled: false
+
+# The hosted Specula's intranet address. On the hosting side, expose it with:
+#   service:
+#     type: LoadBalancer
+#     annotations:
+#       service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: intranet
+# then read the assigned IP:
+#   kubectl -n specula-boot get svc <release>-specula-bootstrap \
+#     -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+#
+# Use a DNS name instead of a raw IP if you have private DNS — the IP can change if
+# the LoadBalancer is recreated, and every node's hosts.toml would need rewriting
+# (the DaemonSet does that automatically, but pulls fail in between).
+mirror:
+  enabled: true
+  endpoint: http://<hosted-specula-intranet-ip>:7732
+  certsDir: /etc/containerd/certs.d
+  # k3s keeps its own certs.d; harmless when the path does not exist.
+  k3sCertsDir: /var/lib/rancher/k3s/agent/etc/containerd/certs.d
+  registries:
+    - docker.io
+    - registry.k8s.io
+    - k8s.gcr.io
+    - ghcr.io
+    - quay.io
+    - gcr.io
+  # true only for an HTTPS endpoint with a non-public CA. For plain http:// this
+  # MUST stay false — otherwise containerd dials TLS against an HTTP port.
+  skipVerify: false
+
+# The integrate DaemonSet additionally fixes the CRI config_path, which containerd
+# 2.2 needs before crictl/kubelet honour hosts.toml at all. Keep it on: it is the
+# difference between "hosts.toml written" and "hosts.toml actually used".
+integrate:
+  enabled: true
+  protocols: oci
+  restartContainerd: once
+  reconcileInterval: 5m
+
+image:
+  repository: <registry-vpc-host>/<namespace>/specula
+  tag: v0.11.1
+  pullPolicy: IfNotPresent

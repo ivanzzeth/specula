@@ -33,3 +33,8 @@
 
 # Scratch kubeconfigs / local cluster credentials — never commit
 /tmp/
+
+# Deployment profiles hold a DB password and an object-store secret key.
+# The example under deploy/profiles/ is tracked; anything you fill in is not.
+specula-deploy*.yaml
+*.deploy.local.yaml
