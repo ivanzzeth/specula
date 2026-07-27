@@ -110,6 +110,9 @@ Flags:
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// Only flags the operator actually typed may override a --values profile.
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 	repo, tag := parseImage(*image)
 	_, err := cluster.Install(cluster.InstallOptions{
 		Kubeconfig:    *kubeconfig,
@@ -132,6 +135,7 @@ Flags:
 		PVCSize:       *pvcSize,
 		PinHostname:   *pin,
 		SkipPinNode:   *skipPin,
+		ExplicitFlags: explicit,
 		ValuesFiles:   *valuesFiles,
 		MetaDriver:    *metaDriver,
 		MetaSecret:    *metaSecret,

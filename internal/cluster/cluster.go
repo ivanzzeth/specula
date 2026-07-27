@@ -41,6 +41,13 @@ type InstallOptions struct {
 	BinaryPath string
 	HA         bool // reserved: Phase 3 promote (not default)
 
+	// ExplicitFlags names the CLI flags the operator actually typed. With a values
+	// profile in play, only these may become helm --set: every flag has a default, so
+	// "value is non-empty" cannot distinguish typed from defaulted, and an
+	// unconditional --set silently overrides the profile (helm ranks --set above -f
+	// regardless of order).
+	ExplicitFlags map[string]bool
+
 	// ValuesFiles are extra helm values files, applied in order AFTER the chart's
 	// own values and after --cn's values-cn.yaml, so a deployment profile can carry
 	// the whole hosted shape (postgres meta + S3 blob + ha + HPA + ingress) in one

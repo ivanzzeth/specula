@@ -54,9 +54,23 @@ func Install(opts InstallOptions) (*Result, error) {
 		}
 	}
 
-	persist := resolvePersistence(opts)
+	// A values profile declares its own storage and placement. Probing for a default
+	// StorageClass and auto-pinning would then be wrong AND harmful: the hosted shape
+	// is stateless with several replicas, and pinning it to one node caps it at that
+	// node's capacity while HPA tries to scale past it.
+	profileOwnsPlacement := len(opts.ValuesFiles) > 0 &&
+		!opts.ExplicitFlags["pin-node"] && !opts.ExplicitFlags["skip-pin-node"]
+	profileOwnsStorage := len(opts.ValuesFiles) > 0 &&
+		!opts.ExplicitFlags["persist"] && !opts.ExplicitFlags["pvc"] &&
+		!opts.ExplicitFlags["host-path"] && !opts.ExplicitFlags["storage-class"] &&
+		!opts.ExplicitFlags["pvc-size"]
+
+	var persist PersistenceMode
+	if !profileOwnsStorage {
+		persist = resolvePersistence(opts)
+	}
 	pin := strings.TrimSpace(opts.PinHostname)
-	if pin == "" && !opts.SkipPinNode {
+	if pin == "" && !opts.SkipPinNode && !profileOwnsPlacement {
 		if claim := strings.TrimSpace(opts.ExistingClaim); claim != "" {
 			if n, err := PVCSelectedNode(opts.Kubeconfig, opts.Context, ns, claim); err == nil && n != "" {
 				pin = n
@@ -78,62 +92,17 @@ func Install(opts InstallOptions) (*Result, error) {
 		}
 	}
 
-	args := []string{
-		"upgrade", "--install", rel, chart,
-		"--namespace", ns, "--create-namespace",
-	}
-
-	// helm applies --set AFTER every -f regardless of order, so an unconditional
-	// --set silently overrides the deployment profile. With a profile in play, only
-	// the flags the operator actually typed may become --set — otherwise a single
-	// config file could never work, which is the whole point of --values.
-	profile := len(opts.ValuesFiles) > 0
-	setIf := func(explicit bool, kv ...string) {
-		if !profile || explicit {
-			for _, v := range kv {
-				args = append(args, "--set", v)
-			}
-		}
-	}
-	setIf(opts.ImageRepo != "", "image.repository="+repo, "image.tag="+tag,
-		"image.pullPolicy=IfNotPresent")
-	setIf(false, "installer.enabled=false")
-	setIf(false, "mirror.enabled=true", "integrate.enabled=true",
-		"integrate.restartContainerd=once", "mirror.certsDir="+certsDir,
-		fmt.Sprintf("mirror.endpoint=http://127.0.0.1:%d", DefaultNodePort))
-	if !profile || opts.PersistSet || opts.ExistingClaim != "" ||
-		opts.HostPath != "" || opts.StorageClass != "" || opts.PVCSize != "" {
-		args = append(args, HelmPersistenceArgs(persist)...)
-	}
-	if md := strings.ToLower(strings.TrimSpace(opts.MetaDriver)); md == "postgres" {
-		// DSN itself stays in the Secret; only the reference is passed to helm.
-		args = append(args,
-			"--set", "meta.driver=postgres",
-			"--set", "meta.existingSecret="+opts.MetaSecret)
-		if k := strings.TrimSpace(opts.MetaDSNKey); k != "" {
-			args = append(args, "--set", "meta.dsnKey="+k)
-		}
-	}
-	if pin != "" {
-		args = append(args, "--set", "nodeSelector.kubernetes\\.io/hostname="+pin)
-	}
-	// Profile files first, flags after: helm honours the last --set/-f in order, and
-	// an explicit flag must beat the file it is overriding. Existence was checked
-	// up front (validateInputs).
-	for _, f := range opts.ValuesFiles {
-		if strings.TrimSpace(f) != "" {
-			args = append(args, "-f", f)
-		}
-	}
-
-	if opts.CN {
-		cnValues := filepath.Join(chart, "values-cn.yaml")
-		if _, err := os.Stat(cnValues); err == nil {
-			args = append(args, "-f", cnValues)
-		}
-		args = append(args, "--set", "regionProfile=cn")
-	}
-
+	args := BuildHelmArgs(HelmArgsInput{
+		Opts:     opts,
+		Release:  rel,
+		Chart:    chart,
+		NS:       ns,
+		Repo:     repo,
+		Tag:      tag,
+		CertsDir: certsDir,
+		Pin:      pin,
+		Persist:  persist,
+	})
 	fmt.Fprintf(os.Stdout, "cluster install: helm upgrade --install %s (chart=%s ns=%s image=%s:%s cn=%v runtime=%s persist=%v pin=%s)\n",
 		rel, chart, ns, repo, tag, opts.CN, runtime, persist.Enabled || persist.ExistingClaim != "" || persist.HostPath != "", pin)
 	if out, err := helm(opts.Kubeconfig, opts.Context, args...); err != nil {
@@ -399,4 +368,87 @@ func validateMeta(opts InstallOptions) error {
 	default:
 		return fmt.Errorf("meta driver %q: want sqlite or postgres", opts.MetaDriver)
 	}
+}
+
+// HelmArgsInput is everything BuildHelmArgs needs, so the argument construction is a
+// pure function and therefore testable — this logic silently broke a deployment
+// profile twice (image, then node pinning) precisely because it could only be
+// exercised against a live cluster.
+type HelmArgsInput struct {
+	Opts     InstallOptions
+	Release  string
+	Chart    string
+	NS       string
+	Repo     string
+	Tag      string
+	CertsDir string
+	Pin      string
+	Persist  PersistenceMode
+}
+
+// BuildHelmArgs assembles the `helm upgrade --install` argument list.
+//
+// The rule that matters: helm ranks --set ABOVE every -f regardless of order, so an
+// unconditional --set silently overrides a --values profile. Every flag has a
+// default, so "the value is non-empty" cannot tell a typed flag from a defaulted
+// one — hence Opts.ExplicitFlags, populated from flag.FlagSet.Visit. With a profile
+// in play, only typed flags become --set.
+func BuildHelmArgs(in HelmArgsInput) []string {
+	opts := in.Opts
+	args := []string{
+		"upgrade", "--install", in.Release, in.Chart,
+		"--namespace", in.NS, "--create-namespace",
+	}
+	profile := len(opts.ValuesFiles) > 0
+	typed := func(names ...string) bool {
+		for _, n := range names {
+			if opts.ExplicitFlags[n] {
+				return true
+			}
+		}
+		return false
+	}
+	setIf := func(explicit bool, kv ...string) {
+		if !profile || explicit {
+			for _, v := range kv {
+				args = append(args, "--set", v)
+			}
+		}
+	}
+	setIf(typed("image"), "image.repository="+in.Repo, "image.tag="+in.Tag,
+		"image.pullPolicy=IfNotPresent")
+	setIf(false, "installer.enabled=false")
+	setIf(false, "mirror.enabled=true", "integrate.enabled=true",
+		"integrate.restartContainerd=once", "mirror.certsDir="+in.CertsDir,
+		fmt.Sprintf("mirror.endpoint=http://127.0.0.1:%d", DefaultNodePort))
+	if !profile || typed("persist", "pvc", "host-path", "storage-class", "pvc-size") {
+		args = append(args, HelmPersistenceArgs(in.Persist)...)
+	}
+	if md := strings.ToLower(strings.TrimSpace(opts.MetaDriver)); md == "postgres" {
+		// The DSN stays in the Secret; only the reference is passed to helm.
+		args = append(args,
+			"--set", "meta.driver=postgres",
+			"--set", "meta.existingSecret="+opts.MetaSecret)
+		if k := strings.TrimSpace(opts.MetaDSNKey); k != "" {
+			args = append(args, "--set", "meta.dsnKey="+k)
+		}
+	}
+	if in.Pin != "" {
+		args = append(args, "--set", "nodeSelector.kubernetes\\.io/hostname="+in.Pin)
+	}
+	// Profile files before flag-derived --set (helm ranks --set higher anyway);
+	// existence was checked by validateInputs.
+	for _, f := range opts.ValuesFiles {
+		if strings.TrimSpace(f) != "" {
+			args = append(args, "-f", f)
+		}
+	}
+	if opts.CN {
+		cnValues := filepath.Join(in.Chart, "values-cn.yaml")
+		if _, err := os.Stat(cnValues); err == nil {
+			args = append(args, "-f", cnValues)
+		}
+		args = append(args, "--set", "regionProfile=cn")
+	}
+	return args
 }
