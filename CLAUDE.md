@@ -73,6 +73,12 @@ Known production constraints (do not regress):
   background task, and you report from its output when it finishes. Never chain
   sleeps or poll in the foreground: a blocked session cannot be redirected while a
   15-minute build runs. Single quick checks (`gh run view`, a file read) are fine.
+- **Backgrounding is not handing off.** After launching a background task, keep
+  working in the same turn: chain the follow-up steps into that task, or do the
+  next independent piece. Never end a turn with "waiting for the notification" —
+  the human should never have to ask "进度如何". Prefer ONE background chain that
+  runs the whole remaining sequence (build → install → verify → clean up) over
+  several tasks that each need a prompt to continue.
 - **Never mutate a live cluster to make a test easier.** Do not delete images the
   cluster depends on (`crictl rmi …/pause`), restart node components, or drain
   nodes to force a cache miss. Pull something the node does not have instead, and

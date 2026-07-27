@@ -15,6 +15,40 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
   daocloud→1ms; PyPI +USTC/Tencent; apt +USTC/Huawei; Cargo prefers rsproxy;
   conda +USTC cloud.
 
+## [0.11.1] — Real-cluster fixes: fsGroup, capacity-aware pin, uninstall cleanup — 2026-07-27
+
+Everything here was found by installing v0.11.0 onto a real Alibaba Cloud ACK
+cluster. None of it could be caught by the minikube gate.
+
+### Fixed
+
+- **`fsGroup` on both charts** — the image runs as distroless nonroot (65532) and a
+  CSI-provisioned PVC mounts root:root 0755, so the daemon could not create
+  `/var/lib/specula/{blobs,quarantine}` and crash-looped with "mkdir: permission
+  denied". This broke one-command install on **every** cloud CSI driver; minikube's
+  hostpath provisioner hands out 0777 and hid it completely.
+- **Pin node picked by memory headroom** — `AutoPinHostname` took the first Ready
+  worker regardless of capacity, pinned Specula to a node that could not fit its
+  128Mi request, and left the Pod Pending *after* the mirror DaemonSet had already
+  rewritten hosts.toml on every node — turning a capacity problem into broken node
+  pulls. Now refuses before helm runs, quoting per-node headroom.
+- **Fail fast on `Unschedulable`** — the earlier fail-fast watched container Waiting
+  states, but an unschedulable Pod has no container statuses at all; "Insufficient
+  memory" lives in the PodScheduled condition.
+- **`cluster uninstall` removes the node hosts.toml it wrote** (new
+  `bootstrap-mirror remove`) — otherwise the seven redirected registries keep
+  resolving to a dead NodePort and fail, since CN mode keeps no public fallback.
+- **`cluster doctor` probes through the API server** instead of a node IP, so it
+  works from a laptop outside the VPC.
+
+### Changed
+
+- Image is **cross-compiled** rather than QEMU-emulated: builder stages pinned to
+  `$BUILDPLATFORM`, Go targets `$TARGETARCH`, WebUI built once. The multi-arch
+  release step was taking ~15 minutes under emulation.
+- `docs/` reorganised by task, `docs/RELEASE.md` added (registry secrets, the ACR
+  instance-vs-shared-domain trap, chart/binary version skew).
+
 ## [0.11.0] — CN bootstrap unblocked: multi-registry publish, single-host ops, quarantine on the data volume — 2026-07-27
 
 ### Fixed
