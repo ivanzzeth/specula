@@ -100,23 +100,24 @@ blob:
 persistence:
   enabled: false
 
-# ── Do this cluster's own nodes use Specula? ──────────────────────────────────
-# Two shapes, pick deliberately:
+# ── Node integration — REQUIRED, do not turn this off ─────────────────────────
+# This is the entire point of deploying Specula into a CN cluster: the cluster's own
+# nodes pull images THROUGH it. The mirror DaemonSet writes containerd hosts.toml on
+# every node; integrate fixes the CRI config_path so crictl/kubelet actually honour it.
+# Both are DaemonSets, so every worker that joins is covered and the 5m reconcile
+# repairs drift — no per-node manual step.
 #
-# a) PURE HOSTING — mirror.enabled=false, integrate.enabled=false. Specula serves
-#    other clusters only and never touches the containerd config of the nodes it runs
-#    on. Those nodes then pull images the way they always did.
+# Setting either to false means the nodes keep pulling from upstream registries
+# directly, which in CN means they mostly cannot pull at all. The only defensible
+# reason to disable them is a Specula that exclusively fronts OTHER clusters and whose
+# own nodes are deliberately excluded — and if you think that is you, re-read this
+# paragraph first.
 #
-# b) HOSTS **AND** SERVES ITSELF (uncommented below) — the mirror DaemonSet writes
-#    containerd hosts.toml on every node and integrate fixes the CRI config_path so
-#    crictl/kubelet actually honour it. Both are DaemonSets, so new workers are covered
-#    automatically and the 5m reconcile repairs drift.
+# endpoint must be reachable FROM THE NODE. This profile exposes an internal
+# LoadBalancer and therefore has no NodePort, so the nodes dial the CLB address; that
+# same address serves every other cluster in the VPC.
 #
-# For (b) the endpoint must be reachable FROM THE NODE. This profile exposes Specula
-# through an internal LoadBalancer, so there is no NodePort to dial — use the CLB
-# address. One address then serves this cluster and every other cluster in the VPC.
-#
-# skipVerify must stay false for a plain http:// endpoint: skip_verify tells containerd
+# skipVerify must stay false for a plain http:// endpoint — skip_verify tells containerd
 # to speak TLS, and it would then dial TLS against an HTTP port.
 mirror:
   enabled: true

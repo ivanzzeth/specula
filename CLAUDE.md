@@ -64,6 +64,7 @@ Known production constraints (do not regress):
 - Upstream HTTP clients must send `Specula/upstream` User-Agent (`upstream.WrapUserAgent`); CN mirrors (tuna) 403 Go's default UA.
 - Gate: `make test-cri` / `scripts/realclient-cri-k8s.sh` (hermetic colon-bypass + single-path Specula + live pause/etcd via CRI). Set `SPECULA_E2E_CRI=0` to skip.
 - OCI install overwrite only when config is still single-`base_url` / one-upstream (or `SPECULA_FORCE_CN_OCI=1`).
+- **Never ship a CN cluster deployment with `mirror.enabled=false` / `integrate.enabled=false`.** The nodes pulling through Specula IS the deliverable; with the DaemonSets off containerd goes straight upstream and mostly cannot pull. `mirror.endpoint` must be reachable *from the node* — a LoadBalancer-only profile has no NodePort, so dial the internal LB address — and `skipVerify` stays false on a plain `http://` endpoint.
 
 ## Agent working rules
 

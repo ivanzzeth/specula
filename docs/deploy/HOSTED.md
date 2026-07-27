@@ -181,33 +181,47 @@ Not applicable to the stateless shape, but for the record: the image runs as non
 could not create its data directories. Both charts now set `fsGroup: 65532`.
 minikube's hostpath provisioner hands out 0777 and hides this entirely.
 
-## Does the hosting cluster use Specula itself?
+## Node integration is not optional
 
-Deliberate choice, and getting it wrong is the difference between "my nodes pull
-through the cache" and "my nodes cannot pull at all":
-
-- **Pure hosting** (`mirror.enabled=false`, `integrate.enabled=false`) — Specula serves
-  other clusters and never rewrites containerd config on the nodes it runs on.
-- **Hosts and serves itself** (both `true`) — the mirror DaemonSet writes `hosts.toml`
-  on every node, integrate fixes the CRI `config_path`. New workers are covered
-  automatically.
-
-For the second shape the endpoint must be reachable **from the node**, and this profile
-has no NodePort (it exposes an internal LoadBalancer), so point the nodes at the CLB
-address:
+**Never deploy with `integrate.enabled=false` or `mirror.enabled=false` in a CN
+cluster.** The reason Specula is in the cluster at all is that the cluster's nodes pull
+images through it; with the node-side agents off, containerd goes straight to the
+upstream registries, which in CN means it mostly cannot pull.
 
 ```yaml
 mirror:
   enabled: true
   endpoint: http://<internal-lb-ip>:7733
   skipVerify: false   # plain http:// — skip_verify would make containerd speak TLS
+integrate:
+  enabled: true
+  protocols: oci
+  restartContainerd: once
+  reconcileInterval: 5m
 ```
 
-`--wait` no longer blocks on the integrate DaemonSet when it is switched off; it used
-to poll a DaemonSet that would never appear for the full five minutes and then report a
-healthy install as failed.
+Both are DaemonSets, so every worker that joins is covered automatically and the 5m
+reconcile repairs drift.
 
-## Letting other clusters in
+Two details that decide whether it works:
+
+- **The endpoint must be reachable from the node.** A profile that exposes an internal
+  LoadBalancer has no NodePort, so `http://127.0.0.1:30733` points at nothing — dial the
+  CLB address instead. That one address then serves this cluster and every other cluster
+  in the VPC.
+- **`skipVerify: false` for an http endpoint.** `skip_verify` tells containerd to use
+  TLS; against a plain HTTP port that fails every pull.
+
+The only shape where disabling them is defensible is a Specula that exclusively fronts
+*other* clusters and whose own nodes are deliberately excluded. That is rare, and it is
+not what "deploy Specula in my CN cluster" means.
+
+`--wait` no longer blocks on the integrate DaemonSet when it is absent — it used to poll
+for the full five minutes and then report a healthy install as failed — but it now says
+plainly that the cluster's nodes are not pointed at Specula, because that is the
+consequence you need to notice.
+
+## Letting other clusters in## Letting other clusters in
 
 Expose a VPC address — no public IP, no egress bill:
 
