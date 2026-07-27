@@ -11,6 +11,12 @@ import (
 
 // Install deploys the local bootstrap chart and waits for Deployment + integrate DS.
 func Install(opts InstallOptions) (*Result, error) {
+	// Validate inputs BEFORE touching the cluster. An invalid combination that only
+	// helm rejects has already created a release, pulled images and possibly run the
+	// mirror DaemonSet — side effects for a typo.
+	if err := validateMeta(opts); err != nil {
+		return nil, err
+	}
 	if err := needBins("kubectl", "helm"); err != nil {
 		return nil, err
 	}
@@ -86,6 +92,15 @@ func Install(opts InstallOptions) (*Result, error) {
 		"--set", "installer.enabled=false",
 	}
 	args = append(args, HelmPersistenceArgs(persist)...)
+	if md := strings.ToLower(strings.TrimSpace(opts.MetaDriver)); md == "postgres" {
+		// DSN itself stays in the Secret; only the reference is passed to helm.
+		args = append(args,
+			"--set", "meta.driver=postgres",
+			"--set", "meta.existingSecret="+opts.MetaSecret)
+		if k := strings.TrimSpace(opts.MetaDSNKey); k != "" {
+			args = append(args, "--set", "meta.dsnKey="+k)
+		}
+	}
 	if pin != "" {
 		args = append(args, "--set", "nodeSelector.kubernetes\\.io/hostname="+pin)
 	}
@@ -326,4 +341,25 @@ func formatDuration(d time.Duration) string {
 		return strconv.Itoa(s/60) + "m"
 	}
 	return strconv.Itoa(s) + "s"
+}
+
+// validateMeta rejects a bad metadata-store combination up front.
+//
+// postgres without a Secret is the one that matters: helm's `required` catches it,
+// but only after `helm upgrade --install` has already been invoked against the
+// cluster. The DSN carries credentials, so it is never passed as a helm value.
+func validateMeta(opts InstallOptions) error {
+	md := strings.ToLower(strings.TrimSpace(opts.MetaDriver))
+	switch md {
+	case "", "sqlite":
+		return nil
+	case "postgres":
+		if strings.TrimSpace(opts.MetaSecret) == "" {
+			return fmt.Errorf("meta driver postgres requires --meta-secret <k8s-secret> holding the DSN " +
+				"(postgres://user:pass@host:5432/specula?sslmode=require)")
+		}
+		return nil
+	default:
+		return fmt.Errorf("meta driver %q: want sqlite or postgres", opts.MetaDriver)
+	}
 }

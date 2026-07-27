@@ -96,7 +96,36 @@ guidance — promote manually after preloading dependency images.
 Priority: `--pvc` / `existingClaim` > `--host-path` > created PVC > `emptyDir`.
 
 Specula is pinned to one node so RWO volumes stay schedulable. **Self-heal** covers
-Pod crash and same-node reboot; a lost node does not migrate the cache.
+Pod crash and same-node reboot.
+
+### What a lost node actually costs
+
+| Mode | Node lost |
+|------|-----------|
+| Created PVC / `--pvc` (cloud disk) | **Data survives** — the disk exists independently of the node. But the Deployment carries `nodeSelector: kubernetes.io/hostname=<gone>`, so the Pod stays **Pending forever** until you re-run install with `--pin-node <new-node>`. The disk is zonal: the new node must be in the same zone. |
+| `--host-path` | Data is gone with the node. |
+| `emptyDir` | Data is gone as soon as the Pod is replaced. |
+
+So the failure mode is **"data intact, service does not self-recover"**, not data loss —
+except for host-path and emptyDir, where it is data loss.
+
+### The metadata store is not purely a cache
+
+`meta.db` holds three different things, and only the first is a cache:
+
+- **cache entries** — losing them costs a re-download, nothing more;
+- **TOFU pins** — first-seen digests. Losing them resets the trust baseline, so a
+  later upstream substitution raises no alert;
+- **users, orgs, API keys** — losing them means everyone re-registers, and
+  first-registrant-becomes-admin applies again.
+
+`helm uninstall` **deletes the chart-created PVC** along with the release, so an
+uninstall discards all of the above. Use `--pvc <your-own-claim>`
+(`persistence.existingClaim`) when it should outlive the release.
+
+Genuine node-failure tolerance means leaving local storage: `blob.driver: s3`
+(OSS/COS/S3) plus `meta.driver: postgres`, which makes the Pod stateless and
+reschedulable. The bootstrap chart does not template that today.
 
 ## What gets installed
 

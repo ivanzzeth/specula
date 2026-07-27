@@ -27,8 +27,14 @@ data:
       # otherwise burn ephemeral-storage and get the Pod evicted.
       quarantine_dir: /var/lib/specula/quarantine
       meta:
-        driver: sqlite
-        dsn: /var/lib/specula/meta.db
+        driver: {{ .Values.meta.driver | quote }}
+        {{- if eq .Values.meta.driver "postgres" }}
+        # Placeholder only: the real DSN arrives as SPECULA_STORAGE__META__DSN from
+        # meta.existingSecret, so the credential never lands in a ConfigMap.
+        dsn: "postgres://placeholder/specula"
+        {{- else }}
+        dsn: {{ .Values.meta.dsn | quote }}
+        {{- end }}
 
     cache:
       default_mutable_ttl_seconds: {{ .Values.cache.defaultMutableTTLSeconds }}

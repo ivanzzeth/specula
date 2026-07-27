@@ -84,6 +84,27 @@ remoteRegistries: []
 # (Huawei SWR layout:huawei-ddn → DaoCloud → 1ms) for registry.k8s.io / k8s.gcr.io.
 regionProfile: ""
 
+# ── Metadata store ────────────────────────────────────────────────────────────
+# sqlite (default) keeps everything on the data volume — simplest, but the Pod is
+# then pinned to that volume's node and `helm uninstall` discards the DB along with
+# the PVC (which holds TOFU pins and user accounts, not only cache entries).
+#
+# postgres points meta at an external database (RDS/CloudSQL/self-hosted). Schema
+# migrations run automatically at startup (embedded goose). This does NOT require
+# server.ha — a single replica with external meta is a supported shape and the step
+# that makes the Pod survive losing its node.
+#
+# Supply the DSN through a Secret, never in values: put a key holding
+# postgres://user:pass@host:5432/specula?sslmode=require in it and reference it
+# here. It is injected as SPECULA_STORAGE__META__DSN, which overrides the file.
+meta:
+  driver: sqlite
+  # sqlite only; ignored when driver=postgres.
+  dsn: /var/lib/specula/meta.db
+  # postgres only. existingSecret is REQUIRED for driver=postgres.
+  existingSecret: ""
+  dsnKey: dsn
+
 cache:
   defaultMutableTTLSeconds: 300
   negativeTTLSeconds: 1800

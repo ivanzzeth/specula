@@ -44,6 +44,17 @@ spec:
           args:
             - --config
             - /etc/specula/specula.yaml
+          {{- if eq .Values.meta.driver "postgres" }}
+          # The DSN carries credentials, so it comes from a Secret as an env var.
+          # SPECULA_ env vars override the config file, and the strict loader means a
+          # missing Secret key fails fast at startup rather than silently falling back.
+          env:
+            - name: SPECULA_STORAGE__META__DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "meta.existingSecret is required when meta.driver=postgres" .Values.meta.existingSecret }}
+                  key: {{ .Values.meta.dsnKey | default "dsn" }}
+          {{- end }}
           ports:
             - name: data
               containerPort: {{ .Values.service.dataPort }}

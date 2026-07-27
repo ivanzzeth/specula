@@ -41,6 +41,14 @@ type InstallOptions struct {
 	BinaryPath string
 	HA         bool // reserved: Phase 3 promote (not default)
 
+	// MetaDriver is "sqlite" (default) or "postgres". Postgres needs
+	// MetaSecret — the DSN carries credentials and never goes in a ConfigMap.
+	// Independent of HA: a single replica with external meta is supported, and is
+	// what makes the Pod survive losing its node.
+	MetaDriver string
+	MetaSecret string
+	MetaDSNKey string
+
 	// SkipNodeCleanup leaves node hosts.toml in place on uninstall. Only useful
 	// when another Specula still serves that endpoint on the same nodes.
 	SkipNodeCleanup bool
