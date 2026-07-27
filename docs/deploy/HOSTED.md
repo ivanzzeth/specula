@@ -122,7 +122,21 @@ the metadata store, never the bucket, so objects deleted behind Specula's back s
 uploads (7 days) is safe and worth having — an interrupted layer upload otherwise
 leaves billable fragments.
 
-### 7. Verify with a real fetch, and read the error carefully
+### 7. Non-Hub registries need `regionProfile: cn` (or an explicit allowlist)
+
+`remote_registries` is empty by default, and that allowlist is also the SSRF guard —
+so a path-style pull of a non-Hub registry returns **404 by design**:
+
+```
+warm registry.k8s.io/pause:3.10 (path=registry.k8s.io/pause) -> ERR: manifest GET: HTTP 404
+```
+
+Docker Hub works without it (it is the default namespace); ghcr.io, quay.io, gcr.io and
+registry.k8s.io do not. `regionProfile: cn` enables the CN mirror chain for all of them
+(Huawei SWR `layout: huawei-ddn` → DaoCloud → 1ms), or set `remoteRegistries`
+explicitly for a chain of your own.
+
+### 8. Verify with a real fetch, and read the error carefully
 
 A hosted Specula is the only thing fetching from the outside world, so verify its
 upstream chain with an actual pull rather than assuming:
@@ -152,7 +166,7 @@ registry host, so `registry.k8s.io/pause:3.10` was asked of Docker Hub as the re
 host-stripping was a real bug and is fixed; the lesson is that the per-image server-side
 error says which layer failed, and the client-side 502 does not.
 
-### 8. Changing a credential does not restart anything (fixed)
+### 9. Changing a credential does not restart anything (fixed)
 
 `helm upgrade` that only alters the ConfigMap or Secret leaves the Pod template
 byte-identical, so nothing rolls and CrashLoopBackOff Pods keep the old value. The
@@ -160,7 +174,7 @@ chart now carries `checksum/config` and `checksum/creds` annotations, so a conte
 change is a spec change. If you edit a Secret by hand, you still need
 `kubectl rollout restart`.
 
-### 9. A CSI volume is root-owned (fixed)
+### 10. A CSI volume is root-owned (fixed)
 
 Not applicable to the stateless shape, but for the record: the image runs as nonroot
 (65532) while a freshly provisioned CSI volume mounts `root:root 0755`, so the daemon

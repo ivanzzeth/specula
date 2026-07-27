@@ -60,6 +60,14 @@ meta:
   driver: postgres
   dsn: postgres://<user>:<password>@<host>:5432/specula?sslmode=require
 
+# ── Upstreams ─────────────────────────────────────────────────────────────────
+# regionProfile=cn turns on the CN chain for non-Hub registries: ghcr.io, quay.io,
+# gcr.io and registry.k8s.io get mirror chains (Huawei SWR layout:huawei-ddn →
+# DaoCloud → 1ms). Without it, remote_registries is EMPTY and Specula serves only
+# Docker Hub — a path-style pull of registry.k8s.io/... returns 404 by design, since
+# the allowlist is also the SSRF guard.
+regionProfile: cn
+
 # ── Cache capacity ────────────────────────────────────────────────────────────
 # 0 (the default) means NEVER evict — object storage then grows without bound.
 # Specula evicts oldest-first, unpinned, cached-origin entries only; pinned entries

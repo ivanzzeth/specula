@@ -10,7 +10,7 @@ reading further.
 
 | Shape | Doc | When |
 |-------|-----|------|
-| **Hosted, one for many** | [deploy/HOSTED.md](deploy/HOSTED.md) | ONE stateless instance (Postgres + object storage, HPA) serving every other cluster. One profile file, one command. Includes the nine pitfalls hit deploying it for real. |
+| **Hosted, one for many** | [deploy/HOSTED.md](deploy/HOSTED.md) | ONE stateless instance (Postgres + object storage, HPA) serving every other cluster. One profile file, one command. Includes the ten pitfalls hit deploying it for real. |
 | **One VM, systemd** | [deploy/SINGLE-HOST.md](deploy/SINGLE-HOST.md) | One intranet box serves the whole VPC. Single static binary, `scp` + `specula upgrade` to update. No Kubernetes. |
 | **Into a cluster** | [deploy/CLUSTER.md](deploy/CLUSTER.md) | `specula cluster install --cn` — one command with a kubeconfig. Node `hosts.toml` + CRI wiring handled by a DaemonSet. |
 | **Air-gapped / offline** | [deploy/OFFLINE.md](deploy/OFFLINE.md) | Warm the cache, then serve with no upstream at all. |
