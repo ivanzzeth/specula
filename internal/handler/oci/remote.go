@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ivanzzeth/specula/internal/ocilayout"
 	"github.com/ivanzzeth/specula/internal/upstream"
 )
 
@@ -28,9 +29,11 @@ func WithRemoteRegistries(regs remoteRegistry) Option {
 // RemoteUpstreamSpec is one mirror in a remote-registry chain (config→handler
 // wiring without importing internal/config).
 type RemoteUpstreamSpec struct {
-	Name     string
-	BaseURL  string
-	Priority int
+	Name       string
+	BaseURL    string
+	Priority   int
+	PathPrefix string // explicit OCI /v2/{prefix}/{repo}/… segment
+	Layout     string // named shorthand (e.g. huawei-ddn); PathPrefix wins
 }
 
 // RemoteRegistrySpec is a host + optional mirror chain used when wiring the
@@ -61,10 +64,11 @@ func RemoteRegistriesFromSpecs(specs []RemoteRegistrySpec) RemoteRegistryMap {
 		}
 		origin := "https://" + host
 		type cand struct {
-			name string
-			url  string
-			pri  int
-			ord  int // declaration order for stable sort
+			name       string
+			url        string
+			pathPrefix string
+			pri        int
+			ord        int // declaration order for stable sort
 		}
 		cands := make([]cand, 0, 1+len(s.Upstreams))
 		ord := 0
@@ -92,7 +96,13 @@ func RemoteRegistriesFromSpecs(specs []RemoteRegistrySpec) RemoteRegistryMap {
 				// explicitly prioritised entries; keep declaration order.
 				pri = 1000 + ord
 			}
-			cands = append(cands, cand{name: name, url: url, pri: pri, ord: ord})
+			cands = append(cands, cand{
+				name:       name,
+				url:        url,
+				pathPrefix: expandRemotePathPrefix(u, host),
+				pri:        pri,
+				ord:        ord,
+			})
 			ord++
 		}
 		sort.SliceStable(cands, func(i, j int) bool {
@@ -111,10 +121,11 @@ func RemoteRegistriesFromSpecs(specs []RemoteRegistrySpec) RemoteRegistryMap {
 			}
 			seen[c.url] = struct{}{}
 			chain = append(chain, upstream.Upstream{
-				Name:     "remote:" + host + ":" + c.name,
-				BaseURL:  c.url,
-				Priority: pri,
-				Official: false,
+				Name:       "remote:" + host + ":" + c.name,
+				BaseURL:    c.url,
+				Priority:   pri,
+				Official:   false,
+				PathPrefix: c.pathPrefix,
 			})
 			pri++
 		}
@@ -134,12 +145,17 @@ func RemoteRegistriesFromSpecs(specs []RemoteRegistrySpec) RemoteRegistryMap {
 				Official: true,
 			}}
 		} else {
-			// Origin already listed as a "mirror"; mark the last matching entry official.
+			// Origin already listed as a "mirror"; mark matching entries official
+			// and clear PathPrefix (origin is always transparent).
 			for i := range chain {
-				if chain[i].BaseURL == origin {
-					chain[i].Official = true
-					chain[i].Name = "remote:" + host
+				if chain[i].BaseURL != origin {
+					continue
 				}
+				up := chain[i]
+				up.Official = true
+				up.Name = "remote:" + host
+				up.PathPrefix = ""
+				chain[i] = up
 			}
 		}
 		// If somehow empty (shouldn't happen), origin-only.
@@ -154,6 +170,17 @@ func RemoteRegistriesFromSpecs(specs []RemoteRegistrySpec) RemoteRegistryMap {
 		out[host] = chain
 	}
 	return out
+}
+
+// expandRemotePathPrefix resolves PathPrefix / Layout via ocilayout (same rules
+// as config.ResolveUpstreamPathPrefix). Unknown layouts yield empty prefix;
+// config.Validate rejects them before mount.
+func expandRemotePathPrefix(u RemoteUpstreamSpec, registryHost string) string {
+	p, err := ocilayout.Resolve(u.PathPrefix, u.Layout, registryHost)
+	if err != nil {
+		return ""
+	}
+	return p
 }
 
 // parseRemoteName splits imageName into (host, repo) when the first path

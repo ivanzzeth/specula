@@ -402,6 +402,55 @@ func TestValidate_HA_RequiresPostgresRedisSharedCAS(t *testing.T) {
 	})
 }
 
+func TestValidate_PathPrefixLayoutOCIOnly(t *testing.T) {
+	t.Run("layout on npm rejected", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Protocols["npm"] = config.ProtocolConfig{
+			Upstreams: []config.UpstreamConfig{{
+				Name:    "npmmirror",
+				BaseURL: "https://registry.npmmirror.com",
+				Layout:  "huawei-ddn",
+			}},
+		}
+		assertValidationErr(t, config.Validate(cfg), "path_prefix and layout are OCI-only")
+	})
+	t.Run("path_prefix on apt rejected", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Protocols["apt"] = config.ProtocolConfig{
+			Upstreams: []config.UpstreamConfig{{
+				Name:       "tuna",
+				BaseURL:    "https://mirrors.tuna.tsinghua.edu.cn/ubuntu",
+				PathPrefix: "ddn-k8s/registry.k8s.io",
+			}},
+		}
+		assertValidationErr(t, config.Validate(cfg), "path_prefix and layout are OCI-only")
+	})
+	t.Run("layout on oci hub allowed", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Protocols["oci"] = config.ProtocolConfig{
+			Upstreams: []config.UpstreamConfig{{
+				Name:    "swr",
+				BaseURL: "https://swr.cn-north-4.myhuaweicloud.com",
+				Layout:  "huawei-ddn",
+			}},
+		}
+		if err := config.Validate(cfg); err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+	})
+	t.Run("unknown oci layout rejected", func(t *testing.T) {
+		cfg := validCfg()
+		cfg.Protocols["oci"] = config.ProtocolConfig{
+			Upstreams: []config.UpstreamConfig{{
+				Name:    "x",
+				BaseURL: "https://example.com",
+				Layout:  "nope",
+			}},
+		}
+		assertValidationErr(t, config.Validate(cfg), "unknown upstream layout")
+	})
+}
+
 // assertValidationErr fails t if err is nil or if its message does not contain
 // the expected substring. All Validate errors are multi-line diagnostic strings;
 // substring matching is intentional.

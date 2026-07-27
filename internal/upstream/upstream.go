@@ -59,6 +59,12 @@ type Upstream struct {
 	BaseURL  string // base URL for the mirror
 	Priority int    // lower = tried first
 	Official bool   // true if this is the authoritative origin (for origin-check)
+
+	// PathPrefix, when set for OCI, is inserted after /v2/ before the repo
+	// name: /v2/{PathPrefix}/{repo}/manifests|blobs/…. Used for nested mirror
+	// layouts (Huawei SWR: ddn-k8s/registry.k8s.io/…). Transparent mirrors
+	// leave this empty.
+	PathPrefix string
 }
 
 // RequestOption configures an individual upstream HTTP request.

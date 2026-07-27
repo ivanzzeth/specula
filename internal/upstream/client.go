@@ -441,13 +441,13 @@ func (c *fallbackClient) tryOnce(
 	if hc == nil {
 		hc = c.http
 	}
-	rawURL := buildURL(up.BaseURL, ref)
+	rawURL := buildURL(up, ref)
 	var (
 		authToken    string
 		didAuthRetry bool
 	)
 	if ref.Protocol == "oci" {
-		scope := "repository:" + ref.Name + ":pull"
+		scope := "repository:" + ociFetchName(up, ref.Name) + ":pull"
 		if tok := c.getCachedToken(up.Name, scope); tok != "" {
 			authToken = tok
 		}
@@ -747,29 +747,46 @@ func isContextError(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// buildURL constructs the fetch URL from an upstream BaseURL and an
-// ArtifactRef. The path structure is protocol-specific; see buildPath.
-func buildURL(baseURL string, ref artifact.ArtifactRef) string {
-	base := strings.TrimRight(baseURL, "/")
-	path := buildPath(ref)
+// buildURL constructs the fetch URL from an upstream and an ArtifactRef.
+// The path structure is protocol-specific; see buildPath. For OCI, a non-empty
+// upstream PathPrefix is inserted after /v2/ (Huawei SWR nested layout).
+func buildURL(up Upstream, ref artifact.ArtifactRef) string {
+	base := strings.TrimRight(up.BaseURL, "/")
+	path := buildPath(ref, up)
 	if path == "" {
 		return base
 	}
 	return base + "/" + path
 }
 
+// ociFetchName returns the repository path used on this upstream (with optional
+// PathPrefix). Cache keys and ArtifactRef.Name stay unprefixed; only the
+// wire URL / bearer scope use the prefixed name.
+func ociFetchName(up Upstream, repo string) string {
+	repo = strings.Trim(repo, "/")
+	prefix := strings.Trim(strings.TrimSpace(up.PathPrefix), "/")
+	if prefix == "" {
+		return repo
+	}
+	if repo == "" {
+		return prefix
+	}
+	return prefix + "/" + repo
+}
+
 // buildPath derives the URL path component from an ArtifactRef following
 // ecosystem conventions. Protocol handlers are responsible for populating
 // the relevant ref fields correctly before calling Fetch / Revalidate.
-func buildPath(ref artifact.ArtifactRef) string {
+func buildPath(ref artifact.ArtifactRef, up Upstream) string {
 	switch ref.Protocol {
 	case "oci":
+		name := ociFetchName(up, ref.Name)
 		// Mutable (tag) or unresolved → manifest by tag/reference.
 		// Immutable (resolved digest) → blob by digest.
 		if ref.Mutable || ref.Digest == "" {
-			return "v2/" + ref.Name + "/manifests/" + ref.Version
+			return "v2/" + name + "/manifests/" + ref.Version
 		}
-		return "v2/" + ref.Name + "/blobs/" + ref.Digest
+		return "v2/" + name + "/blobs/" + ref.Digest
 
 	case "gomod":
 		// GOPROXY: /{module}/@latest for the latest-version endpoint, else
@@ -835,7 +852,7 @@ func buildPath(ref artifact.ArtifactRef) string {
 
 	case "conda":
 		// Name = "<channel>/<subdir>/…path" relative to channel root (or full
-		// relative path including channel when BaseURL is the conda hub root).
+		// relative path including channel when BaseURL is the channel hub root).
 		return ref.Name
 
 	case "hf":

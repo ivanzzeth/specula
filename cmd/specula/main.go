@@ -736,11 +736,17 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 				ups := make([]oci.RemoteUpstreamSpec, 0, len(rr.Upstreams))
 				for _, u := range rr.Upstreams {
 					ups = append(ups, oci.RemoteUpstreamSpec{
-						Name: u.Name, BaseURL: u.BaseURL, Priority: u.Priority,
+						Name:       u.Name,
+						BaseURL:    u.BaseURL,
+						Priority:   u.Priority,
+						PathPrefix: u.PathPrefix,
+						Layout:     u.Layout,
 					})
 				}
 				specs = append(specs, oci.RemoteRegistrySpec{
-					Host: rr.Host, BaseURL: rr.BaseURL, Upstreams: ups,
+					Host:      rr.Host,
+					BaseURL:   rr.BaseURL,
+					Upstreams: ups,
 				})
 			}
 			opts = append(opts, oci.WithRemoteRegistries(oci.RemoteRegistriesFromSpecs(specs)))
@@ -1615,14 +1621,29 @@ func upstreamHosts(ups []config.UpstreamConfig) []string {
 }
 
 // toUpstreams converts config upstream entries into the upstream package type.
+// Hub-chain OCI layouts resolve against registryHost "docker.io".
 func toUpstreams(in []config.UpstreamConfig) []upstream.Upstream {
+	return toUpstreamsForHost(in, "docker.io")
+}
+
+// toUpstreamsForHost resolves PathPrefix/Layout against registryHost.
+// Unknown layouts leave PathPrefix empty (config.Validate rejects them at load;
+// this is a defensive fallback for tests that skip Validate).
+func toUpstreamsForHost(in []config.UpstreamConfig, registryHost string) []upstream.Upstream {
 	out := make([]upstream.Upstream, 0, len(in))
 	for _, u := range in {
+		prefix, err := config.ResolveUpstreamPathPrefix(u, registryHost)
+		if err != nil {
+			slog.Error("specula: resolve upstream path_prefix failed (ignored; check layout)",
+				"upstream", u.Name, "registry_host", registryHost, "err", err)
+			prefix = ""
+		}
 		out = append(out, upstream.Upstream{
-			Name:     u.Name,
-			BaseURL:  u.BaseURL,
-			Priority: u.Priority,
-			Official: u.Official,
+			Name:       u.Name,
+			BaseURL:    u.BaseURL,
+			Priority:   u.Priority,
+			Official:   u.Official,
+			PathPrefix: prefix,
 		})
 	}
 	return out

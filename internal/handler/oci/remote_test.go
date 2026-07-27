@@ -112,6 +112,46 @@ func TestRemoteRegistriesFromSpecsMultiMirrorChain(t *testing.T) {
 	assert.False(t, regs["ghcr.io"][0].Official)
 }
 
+func TestRemoteRegistriesFromSpecsHuaweiLayoutPathPrefix(t *testing.T) {
+	regs := RemoteRegistriesFromSpecs([]RemoteRegistrySpec{
+		{
+			Host: "registry.k8s.io",
+			Upstreams: []RemoteUpstreamSpec{
+				{
+					Name:     "huawei-swr",
+					BaseURL:  "https://swr.cn-north-4.myhuaweicloud.com",
+					Layout:   "huawei-ddn",
+					Priority: 1,
+				},
+				{Name: "daocloud", BaseURL: "https://k8s.m.daocloud.io", Priority: 2},
+			},
+		},
+	})
+	chain := regs["registry.k8s.io"]
+	require.Len(t, chain, 3)
+	assert.Equal(t, "https://swr.cn-north-4.myhuaweicloud.com", chain[0].BaseURL)
+	assert.Equal(t, "ddn-k8s/registry.k8s.io", chain[0].PathPrefix)
+	assert.Empty(t, chain[1].PathPrefix, "transparent mirrors keep empty PathPrefix")
+	assert.Empty(t, chain[2].PathPrefix, "origin is transparent")
+	assert.True(t, chain[2].Official)
+}
+
+func TestRemoteRegistriesFromSpecsExplicitPathPrefixWins(t *testing.T) {
+	regs := RemoteRegistriesFromSpecs([]RemoteRegistrySpec{
+		{
+			Host: "registry.k8s.io",
+			Upstreams: []RemoteUpstreamSpec{{
+				Name:       "custom",
+				BaseURL:    "https://swr.example",
+				PathPrefix: "my-org/registry.k8s.io",
+				Layout:     "huawei-ddn",
+				Priority:   1,
+			}},
+		},
+	})
+	assert.Equal(t, "my-org/registry.k8s.io", regs["registry.k8s.io"][0].PathPrefix)
+}
+
 func TestRemoteRegistriesFromSpecsBaseURLPlusUpstreams(t *testing.T) {
 	regs := RemoteRegistriesFromSpecs([]RemoteRegistrySpec{
 		{
@@ -185,6 +225,70 @@ func TestRemotePullFallsBackAcrossMultiMirrorChain(t *testing.T) {
 	assert.GreaterOrEqual(t, hits1.Load(), int32(1))
 	assert.GreaterOrEqual(t, hits2.Load(), int32(1))
 	assert.GreaterOrEqual(t, hitsOrigin.Load(), int32(1))
+}
+
+func TestRemotePullUsesPathPrefixWhenTransparentMirrorMisses(t *testing.T) {
+	// Production: DaoCloud/1ms serve transparent /v2/<repo>/…; Huawei SWR nests
+	// under /v2/ddn-k8s/registry.k8s.io/<repo>/…. Specula must failover to the
+	// prefixed mirror when the transparent path 404s.
+	const prefixed = "/v2/ddn-k8s/registry.k8s.io/pause/manifests/3.9"
+	var transparentHits, nestedHits atomic.Int32
+
+	transparent := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		transparentHits.Add(1)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(transparent.Close)
+
+	nested := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nestedHits.Add(1)
+		if r.URL.Path == prefixed {
+			w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+			w.Header().Set("Docker-Content-Digest", "sha256:"+strings.Repeat("a", 64))
+			_, _ = io.WriteString(w, `{"schemaVersion":2,"mediaType":"application/vnd.docker.distribution.manifest.v2+json","config":{"digest":"sha256:`+strings.Repeat("b", 64)+`","size":1},"layers":[]}`)
+			return
+		}
+		// Wrong path (missing prefix) must not succeed — proves PathPrefix is applied.
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(nested.Close)
+
+	regs := RemoteRegistriesFromSpecs([]RemoteRegistrySpec{
+		{
+			Host: "registry.k8s.io",
+			Upstreams: []RemoteUpstreamSpec{
+				{Name: "daocloud", BaseURL: transparent.URL, Priority: 1},
+				{
+					Name:       "huawei-swr",
+					BaseURL:    nested.URL,
+					PathPrefix: "ddn-k8s/registry.k8s.io",
+					Priority:   2,
+				},
+			},
+		},
+	})
+	chain := regs["registry.k8s.io"]
+	require.Len(t, chain, 3)
+	// Drop auto origin so the pull can only succeed via the nested mirror.
+	chain = chain[:2]
+
+	h := NewHandler(newStoringFakeCache(),
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{
+			{Name: "hub", BaseURL: "http://127.0.0.1:1", Priority: 1},
+		}),
+		WithRemoteRegistries(RemoteRegistryMap{"registry.k8s.io": chain}),
+		WithQuarantineDir(t.TempDir()),
+	)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + "/v2/registry.k8s.io/pause/manifests/3.9")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"nested SWR-style path_prefix must serve after transparent 404")
+	assert.GreaterOrEqual(t, transparentHits.Load(), int32(1))
+	assert.GreaterOrEqual(t, nestedHits.Load(), int32(1))
 }
 
 func TestRemotePullFallsBackToOriginWhenMirror403(t *testing.T) {

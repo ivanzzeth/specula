@@ -208,10 +208,12 @@ protocols:
     # Prefer `upstreams:` (multi-mirror). Legacy single `base_url:` still works.
     # Specula ALWAYS appends https://<host> as the final official origin
     # (mirror allowlist 403 → next mirror → real registry).
+    # registry.k8s.io / k8s.gcr.io: Huawei SWR first (layout: huawei-ddn →
+    # path_prefix ddn-k8s/<host>), then DaoCloud → 1ms → origin.
     oci:
       remote_registries:
-        # CN default chain: DaoCloud → 1ms → origin. Outside CN, omit upstreams
-        # (and base_url) to use https://<host> only.
+        # CN default chain. Outside CN, omit upstreams (and base_url) to use
+        # https://<host> only.
         - host: ghcr.io
           upstreams:
             - name: daocloud
@@ -230,12 +232,19 @@ protocols:
               priority: 2
         - host: registry.k8s.io
           upstreams:
+            # Huawei SWR nests the original host under ddn-k8s/… — layout expands
+            # to path_prefix: ddn-k8s/registry.k8s.io. Prefer first: large blob
+            # pulls often stall on DaoCloud/1ms while SWR stays reachable in CN.
+            - name: huawei-swr
+              base_url: https://swr.cn-north-4.myhuaweicloud.com
+              layout: huawei-ddn
+              priority: 1
             - name: daocloud
               base_url: https://k8s.m.daocloud.io
-              priority: 1
+              priority: 2
             - name: 1ms
               base_url: https://k8s.1ms.run
-              priority: 2
+              priority: 3
         - host: gcr.io
           upstreams:
             - name: daocloud
@@ -246,13 +255,19 @@ protocols:
               priority: 2
         - host: k8s.gcr.io
           upstreams:
+            - name: huawei-swr
+              base_url: https://swr.cn-north-4.myhuaweicloud.com
+              # Same SWR bucket layout as registry.k8s.io (legacy k8s.gcr.io →
+              # images live under ddn-k8s/k8s.gcr.io/…).
+              layout: huawei-ddn
+              priority: 1
             - name: daocloud
               base_url: https://k8s-gcr.m.daocloud.io
-              priority: 1
+              priority: 2
             - name: 1ms
               # 1ms folds legacy k8s.gcr.io under the same k8s endpoint.
               base_url: https://k8s.1ms.run
-              priority: 2
+              priority: 3
         - host: mcr.microsoft.com
           upstreams:
             - name: daocloud

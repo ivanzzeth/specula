@@ -358,7 +358,24 @@ func Validate(cfg *Config) error {
 						add("protocols.%s.oci.remote_registries[%d].upstreams[%d].base_url: must be http(s) URL, got %q",
 							name, i, j, up.BaseURL)
 					}
+					if err := ValidateUpstreamLayout(up); err != nil {
+						add("protocols.%s.oci.remote_registries[%d].upstreams[%d].layout: %v",
+							name, i, j, err)
+					}
 				}
+			}
+		}
+		for i, up := range proto.Upstreams {
+			hasLayout := strings.TrimSpace(up.Layout) != ""
+			hasPrefix := strings.TrimSpace(up.PathPrefix) != ""
+			if name != "oci" {
+				if hasLayout || hasPrefix {
+					add("protocols.%s.upstreams[%d]: path_prefix and layout are OCI-only", name, i)
+				}
+				continue
+			}
+			if err := ValidateUpstreamLayout(up); err != nil {
+				add("protocols.%s.upstreams[%d].layout: %v", name, i, err)
 			}
 		}
 

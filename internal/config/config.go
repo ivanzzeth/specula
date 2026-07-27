@@ -462,6 +462,16 @@ type UpstreamConfig struct {
 	// Official marks this upstream as the authoritative source. Used by the
 	// consensus verifier as the "origin-check" witness.
 	Official bool `koanf:"official"`
+
+	// PathPrefix is an OCI-only path segment inserted after /v2/ before the
+	// repository name (e.g. "ddn-k8s/registry.k8s.io" for Huawei SWR). Empty
+	// keeps a transparent mirror layout. Wins over Layout when both are set.
+	PathPrefix string `koanf:"path_prefix"`
+
+	// Layout is a named shorthand for PathPrefix. Known values:
+	//   huawei-ddn → ddn-k8s/<registry-host> (Hub: ddn-k8s/docker.io)
+	// Ignored when PathPrefix is non-empty. Unknown layouts fail Validate.
+	Layout string `koanf:"layout"`
 }
 
 // VerificationConfig configures the verification chain for one protocol

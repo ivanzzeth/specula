@@ -648,10 +648,89 @@ func TestBuildURL_Protocols(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildURL(tt.base, tt.ref)
+			got := buildURL(Upstream{BaseURL: tt.base}, tt.ref)
 			assert.Equal(t, tt.base+tt.wantPath, got)
 		})
 	}
+}
+
+func TestBuildURL_OCIPathPrefix(t *testing.T) {
+	ref := artifact.ArtifactRef{Protocol: "oci", Name: "ingress-nginx/controller", Version: "v1.11.0", Mutable: true}
+	up := Upstream{
+		BaseURL:    "https://swr.cn-north-4.myhuaweicloud.com",
+		PathPrefix: "ddn-k8s/registry.k8s.io",
+	}
+	got := buildURL(up, ref)
+	want := "https://swr.cn-north-4.myhuaweicloud.com/v2/ddn-k8s/registry.k8s.io/ingress-nginx/controller/manifests/v1.11.0"
+	assert.Equal(t, want, got)
+
+	blob := artifact.ArtifactRef{Protocol: "oci", Name: "pause", Digest: "sha256:abc"}
+	gotBlob := buildURL(up, blob)
+	assert.Equal(t, "https://swr.cn-north-4.myhuaweicloud.com/v2/ddn-k8s/registry.k8s.io/pause/blobs/sha256:abc", gotBlob)
+}
+
+// TestFetch_BearerToken_PathPrefixScope: nested SWR-style PathPrefix must drive
+// both the wire path and the bearer scope (challenge + token query) so auth
+// matches the repository the registry actually serves.
+func TestFetch_BearerToken_PathPrefixScope(t *testing.T) {
+	const (
+		expectedToken = "swr-token"
+		repo          = "pause"
+		prefix        = "ddn-k8s/registry.k8s.io"
+		wantScope     = "repository:ddn-k8s/registry.k8s.io/pause:pull"
+		wantPath      = "/v2/ddn-k8s/registry.k8s.io/pause/manifests/latest"
+	)
+	var (
+		tokenHits   atomic.Int64
+		gotScope    atomic.Value // string
+		gotFetchURL atomic.Value // string
+	)
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			tokenHits.Add(1)
+			gotScope.Store(r.URL.Query().Get("scope"))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"token":"`+expectedToken+`","expires_in":3600}`)
+			return
+		}
+		gotFetchURL.Store(r.URL.Path)
+		if r.Header.Get("Authorization") != "Bearer "+expectedToken {
+			w.Header().Set("WWW-Authenticate",
+				`Bearer realm="`+srv.URL+`/token",service="swr",scope="`+wantScope+`"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path != wantPath {
+			http.Error(w, "wrong path "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok-manifest")
+	}))
+	defer srv.Close()
+
+	c := testClient(3)
+	body, meta, err := c.Fetch(context.Background(),
+		artifact.ArtifactRef{Protocol: "oci", Name: repo, Version: "latest", Mutable: true},
+		[]Upstream{{
+			Name:       "swr",
+			BaseURL:    srv.URL,
+			Priority:   1,
+			PathPrefix: prefix,
+		}},
+		WithOCIManifestAccept(),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, body)
+	defer body.Close()
+	data, _ := io.ReadAll(body)
+	assert.Equal(t, "ok-manifest", string(data))
+	assert.Equal(t, http.StatusOK, meta.StatusCode)
+	assert.Equal(t, int64(1), tokenHits.Load())
+	assert.Equal(t, wantScope, gotScope.Load())
+	assert.Equal(t, wantPath, gotFetchURL.Load())
 }
 
 // ── blockTracker unit tests ───────────────────────────────────────────────────
