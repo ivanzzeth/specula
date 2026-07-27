@@ -69,7 +69,27 @@ func WarmImages(ctx context.Context, opts PrefetchOptions) ([]WarmResult, error)
 	return out, nil
 }
 
+// firstSegment returns the part before the first "/" (the whole string when absent).
+func firstSegment(s string) string {
+	if i := strings.Index(s, "/"); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// isRegistryHost reports whether a leading path segment looks like a registry host
+// rather than a Docker Hub organisation: hosts carry a dot or a port, org names do not
+// ("bitnami" is an org, "ghcr.io" and "reg.example.com:5000" are hosts).
+func isRegistryHost(seg string) bool {
+	return strings.Contains(seg, ".") || strings.Contains(seg, ":")
+}
+
 func parseImageRef(ref string) (path, tag string, err error) {
+	// Guard first: an empty ref would otherwise become the repo "library/" once the
+	// official-image prefix is applied, and warm a nonexistent path.
+	if strings.TrimSpace(ref) == "" {
+		return "", "", fmt.Errorf("empty image ref")
+	}
 	tag = "latest"
 	repo := ref
 	if i := strings.LastIndex(ref, ":"); i > 0 && !strings.Contains(ref[i+1:], "/") {
@@ -80,25 +100,33 @@ func parseImageRef(ref string) (path, tag string, err error) {
 			tag = ref[i+1:]
 		}
 	}
-	repo = strings.TrimPrefix(repo, "docker.io/")
-	// Bare names (redis) need library/
-	if !strings.Contains(repo, "/") {
+	// Specula routes non-Hub registries BY PATH: /v2/<registry-host>/<repo>/… (see
+	// oci.parseRemoteName). So the host must stay in the path — stripping it, as this
+	// used to do for registry.k8s.io and for any host-looking first segment, turns
+	// registry.k8s.io/pause into the Hub repo "pause", which does not exist. The warm
+	// then fails with a 403 from the Hub mirror that reads like an upstream outage.
+	//
+	// docker.io is the one host that IS dropped: Hub is the default namespace, and
+	// bare/official names additionally need the library/ prefix.
+	if h, rest, ok := strings.Cut(repo, "/"); ok && (h == "docker.io" || h == "index.docker.io") {
+		repo = rest
+	}
+	if isRegistryHost(firstSegment(repo)) {
+		// Non-Hub registry: keep host/repo exactly as-is.
+	} else if !strings.Contains(repo, "/") {
+		// Bare official image.
 		repo = "library/" + repo
 	}
-	// Strip a registry host prefix for non-docker.io (registry.k8s.io/metrics-server/...)
-	// Specula OCI paths are registry-relative under the configured upstream; for
-	// docker.io-style paths we keep org/name. For registry.k8s.io keep full path
-	// after the host.
-	if strings.HasPrefix(repo, "registry.k8s.io/") {
-		repo = strings.TrimPrefix(repo, "registry.k8s.io/")
-	} else if i := strings.Index(repo, "/"); i > 0 {
-		first := repo[:i]
-		if strings.Contains(first, ".") || strings.Contains(first, ":") {
-			// host/name/... → drop host for docker-hub-style; keep for others as path
-			if first != "docker.io" {
-				repo = repo[i+1:]
-			}
+	// Every segment must be a real name. Without this, ":" survives as a "registry
+	// host" (it contains a colon) and a bare host with no repo would be warmed.
+	segs := strings.Split(repo, "/")
+	for _, seg := range segs {
+		if strings.TrimSpace(seg) == "" {
+			return "", "", fmt.Errorf("invalid image ref %q: empty path segment", ref)
 		}
+	}
+	if isRegistryHost(segs[0]) && len(segs) < 2 {
+		return "", "", fmt.Errorf("invalid image ref %q: registry host with no repository", ref)
 	}
 	if repo == "" || tag == "" {
 		return "", "", fmt.Errorf("invalid image ref %q", ref)

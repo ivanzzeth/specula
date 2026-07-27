@@ -122,12 +122,10 @@ the metadata store, never the bucket, so objects deleted behind Specula's back s
 uploads (7 days) is safe and worth having — an interrupted layer upload otherwise
 leaves billable fragments.
 
-### 7. Upstreams have to work from *this* cluster
+### 7. Verify with a real fetch, and read the error carefully
 
-A hosted Specula is the only thing fetching from the outside world, so its upstream
-chain matters more than in any other shape. The chart default points at DaoCloud,
-which returned **403** from cn-chengdu — the request arrived, so egress is fine; the
-mirror refused. Verify with a real fetch before declaring the deployment done:
+A hosted Specula is the only thing fetching from the outside world, so verify its
+upstream chain with an actual pull rather than assuming:
 
 ```bash
 kubectl -n specula-boot run ossprobe --restart=Never --image=<same image> --command -- \
@@ -138,6 +136,21 @@ kubectl -n specula-boot logs ossprobe
 
 This is the only client-side check that does the Docker token handshake;
 `kubectl get --raw …/v2/…` gets a 401 and proves nothing.
+
+**Read the error before blaming the upstream.** Two failures in the same probe run
+looked identical from the client (both HTTP 502) and were completely different:
+
+```
+image=library/hello-world  err="cache store manifest: s3 HeadObject …: 403 Forbidden"
+image=pause                err="upstream daocloud: HTTP 403"
+```
+
+The first had **already fetched from the upstream** and failed writing to object
+storage — the upstream was fine. The second was a bad probe: prefetch had stripped the
+registry host, so `registry.k8s.io/pause:3.10` was asked of Docker Hub as the repo
+`pause`, which does not exist. Two 403s, neither meaning "the mirror is down". That
+host-stripping was a real bug and is fixed; the lesson is that the per-image server-side
+error says which layer failed, and the client-side 502 does not.
 
 ### 8. Changing a credential does not restart anything (fixed)
 
