@@ -100,13 +100,33 @@ blob:
 persistence:
   enabled: false
 
-# ── Hosting, not mirroring ────────────────────────────────────────────────────
-# A hosted Specula serves OTHER clusters, so it must not rewrite containerd config
-# on the nodes it happens to run on. Client clusters point at it by address.
+# ── Do this cluster's own nodes use Specula? ──────────────────────────────────
+# Two shapes, pick deliberately:
+#
+# a) PURE HOSTING — mirror.enabled=false, integrate.enabled=false. Specula serves
+#    other clusters only and never touches the containerd config of the nodes it runs
+#    on. Those nodes then pull images the way they always did.
+#
+# b) HOSTS **AND** SERVES ITSELF (uncommented below) — the mirror DaemonSet writes
+#    containerd hosts.toml on every node and integrate fixes the CRI config_path so
+#    crictl/kubelet actually honour it. Both are DaemonSets, so new workers are covered
+#    automatically and the 5m reconcile repairs drift.
+#
+# For (b) the endpoint must be reachable FROM THE NODE. This profile exposes Specula
+# through an internal LoadBalancer, so there is no NodePort to dial — use the CLB
+# address. One address then serves this cluster and every other cluster in the VPC.
+#
+# skipVerify must stay false for a plain http:// endpoint: skip_verify tells containerd
+# to speak TLS, and it would then dial TLS against an HTTP port.
 mirror:
-  enabled: false
+  enabled: true
+  endpoint: http://<internal-lb-ip>:7733
+  skipVerify: false
 integrate:
-  enabled: false
+  enabled: true
+  protocols: oci
+  restartContainerd: once
+  reconcileInterval: 5m
 
 # ── Control-plane auth ────────────────────────────────────────────────────────
 # There is no default account: the FIRST person to register at the control plane

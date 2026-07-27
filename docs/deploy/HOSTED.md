@@ -181,6 +181,32 @@ Not applicable to the stateless shape, but for the record: the image runs as non
 could not create its data directories. Both charts now set `fsGroup: 65532`.
 minikube's hostpath provisioner hands out 0777 and hides this entirely.
 
+## Does the hosting cluster use Specula itself?
+
+Deliberate choice, and getting it wrong is the difference between "my nodes pull
+through the cache" and "my nodes cannot pull at all":
+
+- **Pure hosting** (`mirror.enabled=false`, `integrate.enabled=false`) — Specula serves
+  other clusters and never rewrites containerd config on the nodes it runs on.
+- **Hosts and serves itself** (both `true`) — the mirror DaemonSet writes `hosts.toml`
+  on every node, integrate fixes the CRI `config_path`. New workers are covered
+  automatically.
+
+For the second shape the endpoint must be reachable **from the node**, and this profile
+has no NodePort (it exposes an internal LoadBalancer), so point the nodes at the CLB
+address:
+
+```yaml
+mirror:
+  enabled: true
+  endpoint: http://<internal-lb-ip>:7733
+  skipVerify: false   # plain http:// — skip_verify would make containerd speak TLS
+```
+
+`--wait` no longer blocks on the integrate DaemonSet when it is switched off; it used
+to poll a DaemonSet that would never appear for the full five minutes and then report a
+healthy install as failed.
+
 ## Letting other clusters in
 
 Expose a VPC address — no public IP, no egress bill:

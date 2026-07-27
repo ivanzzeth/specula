@@ -148,9 +148,17 @@ func Install(opts InstallOptions) (*Result, error) {
 		fmt.Fprintf(os.Stdout, "cluster install: waiting for ds/%s\n", ds)
 		deadline := time.Now().Add(waitTO)
 		ready := false
+		disabled := false
 		for time.Now().Before(deadline) {
 			out, err := kubectl(opts.Kubeconfig, opts.Context, "get", "ds", ds, "-n", ns,
 				"-o", "jsonpath={.status.numberReady}/{.status.desiredNumberScheduled}")
+			if daemonSetAbsent(err) {
+				// Switched off by the values profile (a hosted Specula does not touch
+				// the nodes it runs on). Waiting for it would burn the whole timeout
+				// and then call a healthy install failed.
+				disabled = true
+				break
+			}
 			if err == nil {
 				parts := strings.Split(strings.TrimSpace(string(out)), "/")
 				if len(parts) == 2 && parts[0] != "" && parts[0] == parts[1] && parts[1] != "0" {
@@ -160,7 +168,11 @@ func Install(opts InstallOptions) (*Result, error) {
 			}
 			time.Sleep(2 * time.Second)
 		}
-		if !ready {
+		switch {
+		case disabled:
+			fmt.Fprintf(os.Stdout, "cluster install: integrate DaemonSet not deployed "+
+				"(integrate.enabled=false) — this cluster's nodes are NOT pointed at Specula\n")
+		case !ready:
 			return res, fmt.Errorf("integrate DaemonSet %s not ready within %s", ds, formatDuration(waitTO))
 		}
 	}

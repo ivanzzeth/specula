@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -173,5 +174,38 @@ func TestParseScheduleStates(t *testing.T) {
 	}
 	if _, fatal := firstFatalScheduleState(parseScheduleStates("True\t\t\n")); fatal {
 		t.Fatal("a scheduled Pod must not be fatal")
+	}
+}
+
+// A deployment profile can switch the node-side agents off — a hosted Specula serves
+// OTHER clusters and must not rewrite containerd config on the nodes it happens to run
+// on, so `integrate.enabled=false` is a supported shape. `--wait` then spent the full
+// timeout polling a DaemonSet that does not exist and returned
+//
+//	integrate DaemonSet boot-specula-bootstrap-integrate not ready within 5m
+//
+// making a completely healthy install report failure. Absence is the signal: a
+// DaemonSet that is missing was disabled on purpose; one that exists but is not Ready
+// is still worth waiting for.
+func TestDaemonSetAbsenceIsNotFailure(t *testing.T) {
+	notFound := errors.New(`error from server (NotFound): daemonsets.apps ` +
+		`"boot-specula-bootstrap-integrate" not found in namespace "specula-boot"`)
+	if !daemonSetAbsent(notFound) {
+		t.Fatal("a NotFound error must be read as 'intentionally disabled', not 'not ready yet'")
+	}
+}
+
+// Every other error is transient — an API blip must not be mistaken for "disabled",
+// or a genuinely broken DaemonSet would be skipped silently.
+func TestDaemonSetAbsenceIgnoresOtherErrors(t *testing.T) {
+	for _, e := range []error{
+		nil,
+		errors.New("dial tcp 10.96.0.1:443: i/o timeout"),
+		errors.New("error from server (Forbidden): daemonsets.apps is forbidden"),
+		errors.New(`error from server (NotFound): pods "x" not found`), // not a DaemonSet
+	} {
+		if daemonSetAbsent(e) {
+			t.Fatalf("must not be treated as absent: %v", e)
+		}
 	}
 }

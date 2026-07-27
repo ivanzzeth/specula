@@ -172,3 +172,22 @@ func waitRolloutOrFailFast(kubeconfig, context, ns, selector, rolloutTarget stri
 		}
 	}
 }
+
+// daemonSetAbsent reports whether a kubectl error means the DaemonSet does not exist.
+//
+// A deployment profile may switch the node-side agents off — a hosted Specula serves
+// OTHER clusters and must not rewrite containerd config on the nodes it happens to run
+// on, so `integrate.enabled=false` is a supported shape. Without this check `--wait`
+// polled a DaemonSet that would never appear for the full timeout and then failed,
+// reporting a perfectly healthy install as broken.
+//
+// Only a NotFound naming daemonsets counts. Every other error is transient: an API
+// blip must not be mistaken for "disabled", or a genuinely stuck DaemonSet gets
+// skipped in silence.
+func daemonSetAbsent(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "notfound") && strings.Contains(msg, "daemonset")
+}
