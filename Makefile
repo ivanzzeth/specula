@@ -22,7 +22,7 @@ export CGO_ENABLED := 0
         test-trust-oracle test-trust-oracle-mutations test-trust-oracle-signed \
         test-groundtruth test-groundtruth-meta \
         test-mutation \
-        test-realclient test-cri test-e2e test-ui test-all test-cluster-install
+        test-realclient test-cri test-e2e test-ui test-all test-cluster-install test-single-host
 
 # Container image (Docker Hub: ivanzz/specula)
 IMAGE_NAME ?= specula
@@ -264,6 +264,17 @@ test-cluster-install:
 	@if [ "$${SPECULA_E2E_CLUSTER:-1}" = "0" ] || [ "$${SPECULA_E2E_CLUSTER:-}" = "false" ]; then \
 	  echo "SKIP: SPECULA_E2E_CLUSTER=0"; exit 0; fi
 	bash scripts/cluster-install-minikube.sh
+
+## test-single-host: install/upgrade/rollback on real systemd in a container (needs: docker + go)
+#
+# Gate for docs/SINGLE-HOST.md — the intranet one-VM deployment. Covers what Go
+# tests cannot: the ETXTBSY premise, a health-gated upgrade of a LIVE daemon,
+# auto-rollback on a failed gate, --no-restart, and the WebUI-less boot regression.
+# Set SPECULA_E2E_SINGLE_HOST=0 to skip; SPECULA_SYSTEMD_IMAGE=<image> to reuse one.
+test-single-host:
+	@if [ "$${SPECULA_E2E_SINGLE_HOST:-1}" = "0" ] || [ "$${SPECULA_E2E_SINGLE_HOST:-}" = "false" ]; then \
+	  echo "SKIP: SPECULA_E2E_SINGLE_HOST=0"; exit 0; fi
+	bash scripts/single-host-upgrade.sh
 
 ## test-e2e: the dimensions needing a real binary + real infra (needs: network + docker + clients)
 test-e2e: test-conformance test-realclient

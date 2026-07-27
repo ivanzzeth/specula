@@ -146,6 +146,21 @@ nodes must not carry.
 
 ## Acceptance
 
+Automated — real systemd in a throwaway container, no cluster required:
+
+```bash
+make test-single-host          # or: scripts/single-host-upgrade.sh
+# SPECULA_E2E_SINGLE_HOST=0 to skip; SPECULA_SYSTEMD_IMAGE=<image> to reuse one
+```
+
+Asserts install → `/healthz`, the ETXTBSY premise (`cp` onto the running binary
+must fail), a health-gated `upgrade` of a live daemon, auto-rollback when the
+gate fails, explicit `rollback`, `--no-restart` leaving `MainPID` untouched, and
+that a binary built without `web/dist` still boots (serving the placeholder page
+rather than panicking).
+
+On the real host:
+
 ```bash
 systemctl is-active specula
 curl -fsS https://specula.internal.example.com:7733/healthz
