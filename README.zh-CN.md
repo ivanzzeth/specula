@@ -75,6 +75,17 @@ sudo systemctl status specula
 ./bin/specula version                       # 版本来自 git tag（发版构建）
 ```
 
+后续升级就是 `scp` + 一条命令 —— rename 原子替换（守护进程运行中也可用）、重启、
+`/healthz` 健康门禁、失败自动回滚到 `<binary>.prev`：
+
+```bash
+scp specula host:/tmp/specula
+ssh host 'sudo /tmp/specula upgrade'        # 回退：sudo specula rollback
+```
+
+单台内网机器服务整个集群（TLS、私有 DNS、磁盘上限、兜底镜像）见
+[docs/SINGLE-HOST.md](docs/SINGLE-HOST.md)。
+
 打版本 tag 后 GitHub Actions 会发布**多架构二进制**与**容器镜像**：
 
 ```bash

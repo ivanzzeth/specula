@@ -82,6 +82,17 @@ sudo systemctl status specula
 ./bin/specula version                       # identity from git tag (release builds)
 ```
 
+Later upgrades are `scp` + one command — rename-swap (works while the daemon is
+live), restart, `/healthz` gate, automatic rollback to `<binary>.prev` on failure:
+
+```bash
+scp specula host:/tmp/specula
+ssh host 'sudo /tmp/specula upgrade'        # sudo specula rollback  to revert
+```
+
+For a single intranet VM serving a whole cluster (TLS, private DNS, disk caps,
+fallback mirror), see [docs/SINGLE-HOST.md](docs/SINGLE-HOST.md).
+
 Push a version tag to publish multi-arch binaries **and** the container image via GitHub Actions:
 
 ```bash
