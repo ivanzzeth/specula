@@ -252,6 +252,51 @@ Two things that are still worth setting on the Ingress for pushes:
   direct deployment can derive it from the request but an ingress hostname and :443
   appear nowhere in the listen address.
 
+## Seeding the cache when the upstreams will not cooperate
+
+CN mirrors do fail, and they fail worst on blobs: the manifest comes back from the
+mirror's own host while the layers redirect to a CDN (DaoCloud → `*.r2.daocloud.vip`,
+Docker Hub → `production.cloudfront.docker.com`) that the cluster cannot dial. The
+symptom is a pull that resolves the tag and then dies:
+
+```
+GET .../v2/library/redis/blobs/sha256:2a5181…?ns=docker.io: 502 Bad Gateway
+unknown: upstream fetch failed
+```
+
+`specula_upstream_failover_total` names the reason per upstream, which is how to tell
+"the mirror is rate-limiting" (`http_429`) from "the CDN is unreachable"
+(`dial_timeout`) from "this mirror does not carry it" (`http_4xx`).
+
+When no mirror works, stop fighting the network and seed the cache from a machine that
+*can* reach the registry:
+
+```bash
+# anywhere with registry access — a laptop, CI, a box outside CN
+crane pull --format=oci docker.io/library/redis:7-alpine redis.tar
+
+# then, from anywhere Specula's stores are reachable
+specula cache import --config specula.yaml \
+    --from redis.tar --as docker.io/library/redis:7-alpine
+```
+
+Every later pull of `redis:7-alpine` is served from the cache with no upstream request.
+Use `--dry-run` first to see the object count and size.
+
+For the hosted shape the config the import needs is not the in-cluster one: point
+`blob.s3.endpoint` at the **public** OSS endpoint (`https://oss-<region>.aliyuncs.com`
+rather than `-internal`) and give it the RDS DSN, and it writes to exactly the stores
+the cluster reads. Running it inside the cluster instead means getting the layout into a
+distroless Pod, which `kubectl cp` cannot do — there is no `tar` in the image.
+
+Two things to know:
+
+- **`docker save` output is not usable** and is refused rather than half-imported. That
+  format re-packs layers as uncompressed tars, so their digests are not the ones a
+  client asks for. Use `crane pull --format=oci` or `skopeo copy … oci-archive:`.
+- **Re-importing is cheap.** Bytes already in the store cost a metadata row, not a
+  second copy, so a shared base layer across ten imports is stored once.
+
 ## Node integration is not optional
 
 **Never deploy with `integrate.enabled=false` or `mirror.enabled=false` in a CN
