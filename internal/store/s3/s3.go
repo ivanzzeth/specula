@@ -105,6 +105,23 @@ type S3Config struct {
 // are applied when non-empty; everything else is left to SDK defaults.
 func buildLoadOptions(cfg S3Config) []func(*awsconfig.LoadOptions) error {
 	var opts []func(*awsconfig.LoadOptions) error
+
+	// Opportunistic checksums OFF. The SDK default (WhenSupported) makes PutObject
+	// send `aws-chunked` with a trailing checksum over an unsigned payload, which
+	// Alibaba Cloud OSS refuses outright:
+	//
+	//   PutObject: 400 NotImplemented:
+	//     Aws MultiChunkedEncoding STREAMING-UNSIGNED-PAYLOAD-TRAILER is not supported.
+	//
+	// Cloudflare R2 and older MinIO builds reject it as well, so the default would
+	// make this driver write-only-on-AWS — the opposite of why it exists. WhenRequired
+	// still sends checksums for the operations that mandate them, and Specula verifies
+	// every artifact by sha256 itself before admission, so nothing is lost.
+	opts = append(opts,
+		awsconfig.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired),
+		awsconfig.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired),
+	)
+
 	if cfg.Region != "" {
 		opts = append(opts, awsconfig.WithRegion(cfg.Region))
 	}

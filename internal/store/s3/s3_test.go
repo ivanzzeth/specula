@@ -480,11 +480,16 @@ func TestApplyS3Options_PathStyleOnly(t *testing.T) {
 func TestBuildLoadOptions_Region(t *testing.T) {
 	cfg := S3Config{Region: "eu-west-1"}
 	opts := buildLoadOptions(cfg)
-	require.Len(t, opts, 1, "expect exactly one option (region)")
 
+	// Assert the resulting LoadOptions, not the option COUNT: the count changes
+	// whenever a new default is pinned (checksum behaviour, retry mode, …) and a
+	// count assertion then fails for a change it does not actually cover.
 	var lo awsconfig.LoadOptions
-	require.NoError(t, opts[0](&lo))
+	for _, o := range opts {
+		require.NoError(t, o(&lo))
+	}
 	assert.Equal(t, "eu-west-1", lo.Region)
+	assert.Nil(t, lo.Credentials, "no static credentials without keys")
 }
 
 // TestBuildLoadOptions_StaticCreds verifies that both keys present causes a
@@ -496,7 +501,6 @@ func TestBuildLoadOptions_StaticCreds(t *testing.T) {
 		SecretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
 	}
 	opts := buildLoadOptions(cfg)
-	require.Len(t, opts, 2, "expect region option + credentials option")
 
 	var lo awsconfig.LoadOptions
 	for _, o := range opts {
@@ -511,10 +515,12 @@ func TestBuildLoadOptions_StaticCreds(t *testing.T) {
 func TestBuildLoadOptions_NoCredsWhenEmpty(t *testing.T) {
 	cfg := S3Config{Region: "ap-northeast-1"} // keys intentionally empty
 	opts := buildLoadOptions(cfg)
-	require.Len(t, opts, 1, "expect only region option; no credential option")
 
 	var lo awsconfig.LoadOptions
-	require.NoError(t, opts[0](&lo))
+	for _, o := range opts {
+		require.NoError(t, o(&lo))
+	}
+	assert.Equal(t, "ap-northeast-1", lo.Region)
 	assert.Nil(t, lo.Credentials, "credentials provider must not be set when keys are empty")
 }
 
@@ -523,7 +529,12 @@ func TestBuildLoadOptions_NoCredsWhenEmpty(t *testing.T) {
 func TestBuildLoadOptions_PartialCredsIgnored(t *testing.T) {
 	cfg := S3Config{AccessKeyID: "only-key-no-secret"}
 	opts := buildLoadOptions(cfg)
-	assert.Empty(t, opts, "partial credentials must be ignored")
+
+	var lo awsconfig.LoadOptions
+	for _, o := range opts {
+		require.NoError(t, o(&lo))
+	}
+	assert.Nil(t, lo.Credentials, "partial credentials must be ignored")
 }
 
 // TestBuildLoadOptions_EmptyRegionOmitted verifies that an empty Region does
@@ -534,7 +545,13 @@ func TestBuildLoadOptions_EmptyRegionOmitted(t *testing.T) {
 		SecretAccessKey: "secret",
 	}
 	opts := buildLoadOptions(cfg)
-	require.Len(t, opts, 1, "expect only credentials option; no region option")
+
+	var lo awsconfig.LoadOptions
+	for _, o := range opts {
+		require.NoError(t, o(&lo))
+	}
+	assert.Empty(t, lo.Region, "empty Region must not be forwarded")
+	assert.NotNil(t, lo.Credentials, "credentials were supplied")
 }
 
 // TestNewS3Driver_MinimalConfig verifies that NewS3Driver succeeds with only a
