@@ -5,7 +5,7 @@ no container runtime, no HA. Ops work after day one is `scp` + one command.
 
 ## When this is the right shape
 
-Use this instead of [`specula cluster install`](CLUSTER-INSTALL.md) when:
+Use this instead of [`specula cluster install`](CLUSTER.md) when:
 
 - One box is enough (a cache miss is slow once, then it is a local read).
 - Clients live in the **same VPC / region** as this box. Then client traffic is
@@ -75,7 +75,7 @@ specula doctor                        # exits 1 on RISK — run this every time
 
 `doctor` is not optional: it catches the containerd 2.2 colon `config_path`
 bypass, residual `server =` public fallbacks, k3s certs.d root, apt http-vs-https
-mismatches. See [CLAUDE.md](../CLAUDE.md) for the full list of known footguns.
+mismatches. See [CLAUDE.md](../../CLAUDE.md) for the full list of known footguns.
 
 ## 5. Upgrade and rollback
 

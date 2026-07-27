@@ -91,7 +91,7 @@ ssh host 'sudo /tmp/specula upgrade'        # sudo specula rollback  to revert
 ```
 
 For a single intranet VM serving a whole cluster (TLS, private DNS, disk caps,
-fallback mirror), see [docs/SINGLE-HOST.md](docs/SINGLE-HOST.md).
+fallback mirror), see [docs/deploy/SINGLE-HOST.md](docs/deploy/SINGLE-HOST.md).
 
 Push a version tag to publish multi-arch binaries **and** the container image via GitHub Actions:
 
@@ -542,7 +542,7 @@ working; misses return **404** and Specula makes **no outbound** fetches (git
 mirrors are served as-is — no clone/refresh).
 
 Full operator cookbook (prefetch, containerd `certs.d`, checklist):
-**[docs/OFFLINE.md](docs/OFFLINE.md)**.
+**[docs/deploy/OFFLINE.md](docs/deploy/OFFLINE.md)**.
 
 ```yaml
 server:
@@ -576,18 +576,30 @@ specula cluster install --cn --image specula:local --load-image --wait
 ```
 
 Chart: [`deploy/helm/specula-bootstrap`](deploy/helm/specula-bootstrap). Details:
-[docs/CLUSTER-INSTALL.md](docs/CLUSTER-INSTALL.md).
+[docs/deploy/CLUSTER.md](docs/deploy/CLUSTER.md).
 
 ## Docs
 
+Full map with categories: **[docs/README.md](docs/README.md)**.
+
+**Deploy** — pick the shape first, it drives TLS, disk and failure domain:
+
+| Shape | Doc |
+|-------|-----|
+| One VM + systemd (intranet, `scp` + `specula upgrade`) | [docs/deploy/SINGLE-HOST.md](docs/deploy/SINGLE-HOST.md) |
+| Into a cluster (`specula cluster install --cn`, one command with a kubeconfig) | [docs/deploy/CLUSTER.md](docs/deploy/CLUSTER.md) |
+| Air-gapped / offline | [docs/deploy/OFFLINE.md](docs/deploy/OFFLINE.md) |
+
+**Operate / build on it:**
+
 | Doc | Contents |
 |-----|----------|
-| [docs/OFFLINE.md](docs/OFFLINE.md) | Air-gap / offline mode cookbook (warm → offline → prefetch) |
+| [docs/RELEASE.md](docs/RELEASE.md) | Release process, multi-registry secrets, **why CN needs ACR** |
+| [docs/TRUST.md](docs/TRUST.md) | Cosign / apt GPG / Helm `.prov` / dep-confusion cookbook + oracles |
 | [docs/LIBRARY.md](docs/LIBRARY.md) | Public `pkg/` API, stability, error contract |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Two-plane design, cache, verify, **HA matrix** |
-| [docs/TRUST.md](docs/TRUST.md) | Cosign / apt GPG / Helm `.prov` / dep-confusion cookbook + oracles |
-| [deploy/helm/specula/README.md](deploy/helm/specula/README.md) | Helm install (Bitnami PG/Redis, optional MinIO) |
-| [deploy/helm/specula-bootstrap/README.md](deploy/helm/specula-bootstrap/README.md) | China / air-gapped self-bootstrap |
+| [deploy/helm/specula-bootstrap/README.md](deploy/helm/specula-bootstrap/README.md) | Bootstrap chart (China / air-gapped self-bootstrap) |
+| [deploy/helm/specula/README.md](deploy/helm/specula/README.md) | HA chart (Postgres/Redis, optional MinIO) |
 | [docs/PRD.md](docs/PRD.md) | Product requirements |
 | [CHANGELOG.md](CHANGELOG.md) | Release notes |
 

@@ -267,7 +267,7 @@ test-cluster-install:
 
 ## test-single-host: install/upgrade/rollback on real systemd in a container (needs: docker + go)
 #
-# Gate for docs/SINGLE-HOST.md — the intranet one-VM deployment. Covers what Go
+# Gate for docs/deploy/SINGLE-HOST.md — the intranet one-VM deployment. Covers what Go
 # tests cannot: the ETXTBSY premise, a health-gated upgrade of a LIVE daemon,
 # auto-rollback on a failed gate, --no-restart, and the WebUI-less boot regression.
 # Set SPECULA_E2E_SINGLE_HOST=0 to skip; SPECULA_SYSTEMD_IMAGE=<image> to reuse one.

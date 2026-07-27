@@ -79,7 +79,7 @@ containerd `certs.d` host.toml files:
 ```
 
 China / first-land Specula itself: see
-[`deploy/helm/specula-bootstrap`](../deploy/helm/specula-bootstrap/README.md)
+[`deploy/helm/specula-bootstrap`](../../deploy/helm/specula-bootstrap/README.md)
 and `./scripts/bootstrap-minikube.sh`.
 
 ### 5. Prefetch before cutting the wire
@@ -113,6 +113,6 @@ you need layers offline too.
 ## Related
 
 - README § Offline / air-gap
-- [`deploy/helm/specula-bootstrap`](../deploy/helm/specula-bootstrap/README.md)
+- [`deploy/helm/specula-bootstrap`](../../deploy/helm/specula-bootstrap/README.md)
 - `scripts/realclient-offline.sh`
 - ARCHITECTURE § cache + verify-on-write

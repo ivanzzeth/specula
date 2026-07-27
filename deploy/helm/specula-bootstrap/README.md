@@ -20,7 +20,7 @@ specula cluster uninstall
 `--cn` applies [`values-cn.yaml`](values-cn.yaml) and embeds `registry.k8s.io` /
 `k8s.gcr.io` remote_registries with `layout: huawei-ddn` (Huawei SWR nested path).
 
-Minikube gate: [`scripts/cluster-install-minikube.sh`](../../scripts/cluster-install-minikube.sh)
+Minikube gate: [`scripts/cluster-install-minikube.sh`](../../../scripts/cluster-install-minikube.sh)
 (`make test-cluster-install`).
 
 ## Phases
@@ -48,7 +48,7 @@ helm upgrade --install boot deploy/helm/specula-bootstrap \
   --set integrate.enabled=true
 ```
 
-Legacy smoke: [`scripts/bootstrap-minikube.sh`](../../scripts/bootstrap-minikube.sh).
+Legacy smoke: [`scripts/bootstrap-minikube.sh`](../../../scripts/bootstrap-minikube.sh).
 
 ## China upstreams
 

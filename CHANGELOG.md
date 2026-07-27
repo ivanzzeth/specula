@@ -46,7 +46,7 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
   Specula's own image.
 - **`specula upgrade` / `specula rollback`**: single-host ops path — rename-swap of
   a live binary (Linux refuses to write into a running executable), restart,
-  `/healthz` gate, automatic rollback to `<binary>.prev`. `docs/SINGLE-HOST.md`
+  `/healthz` gate, automatic rollback to `<binary>.prev`. `docs/deploy/SINGLE-HOST.md`
   covers the intranet one-VM deployment.
 - **`make test-single-host`**: install/upgrade/rollback verified against real
   systemd in a throwaway container, including the ETXTBSY premise and the

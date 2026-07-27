@@ -2,7 +2,7 @@
 # Single-host deployment gate: `specula install` + `specula upgrade` + rollback
 # on REAL systemd, in a throwaway container.
 #
-# This is the acceptance test for docs/SINGLE-HOST.md — the intranet one-VM
+# This is the acceptance test for docs/deploy/SINGLE-HOST.md — the intranet one-VM
 # deployment where ops work is `scp` + one command. The upgrade path cannot be
 # covered by Go unit tests: it needs root, a live systemd unit, and a running
 # daemon whose executable is being replaced underneath it. So it runs here.

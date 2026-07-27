@@ -84,7 +84,7 @@ ssh host 'sudo /tmp/specula upgrade'        # 回退：sudo specula rollback
 ```
 
 单台内网机器服务整个集群（TLS、私有 DNS、磁盘上限、兜底镜像）见
-[docs/SINGLE-HOST.md](docs/SINGLE-HOST.md)。
+[docs/deploy/SINGLE-HOST.md](docs/deploy/SINGLE-HOST.md)。
 
 打版本 tag 后 GitHub Actions 会发布**多架构二进制**与**容器镜像**：
 
@@ -543,17 +543,30 @@ specula cluster install --cn --image specula:local --load-image --wait
 ```
 
 Chart：[`deploy/helm/specula-bootstrap`](deploy/helm/specula-bootstrap)。说明：
-[docs/CLUSTER-INSTALL.md](docs/CLUSTER-INSTALL.md)。
+[docs/deploy/CLUSTER.md](docs/deploy/CLUSTER.md)。
 
 ## 文档
 
+分类总索引：**[docs/README.md](docs/README.md)**。
+
+**部署** —— 先选形态，它决定了 TLS、磁盘和故障域：
+
+| 形态 | 文档 |
+|------|------|
+| 单机 + systemd（内网一台，`scp` + `specula upgrade` 更新） | [docs/deploy/SINGLE-HOST.md](docs/deploy/SINGLE-HOST.md) |
+| 装进集群（`specula cluster install --cn`，有 kubeconfig 就一条命令） | [docs/deploy/CLUSTER.md](docs/deploy/CLUSTER.md) |
+| 离线 / 气隙 | [docs/deploy/OFFLINE.md](docs/deploy/OFFLINE.md) |
+
+**运维 / 二次开发：**
+
 | 文档 | 内容 |
 |------|------|
+| [docs/RELEASE.md](docs/RELEASE.md) | 发布流程、多 registry secrets、**为什么国内必须用 ACR** |
+| [docs/TRUST.md](docs/TRUST.md) | cosign / apt GPG / Helm `.prov` / 依赖混淆一页纸 + oracle |
 | [docs/LIBRARY.md](docs/LIBRARY.md) | 公开 `pkg/` API、稳定性、错误契约 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 双平面、缓存、验证、**HA 矩阵** |
-| [docs/TRUST.md](docs/TRUST.md) | cosign / apt GPG / Helm `.prov` / 依赖混淆一页纸 + oracle |
-| [deploy/helm/specula/README.md](deploy/helm/specula/README.md) | Helm 安装（Bitnami PG/Redis，可选 MinIO） |
-| [deploy/helm/specula-bootstrap/README.md](deploy/helm/specula-bootstrap/README.md) | 中国 / 离线自举 |
+| [deploy/helm/specula-bootstrap/README.md](deploy/helm/specula-bootstrap/README.md) | 自举 chart（中国 / 离线） |
+| [deploy/helm/specula/README.md](deploy/helm/specula/README.md) | HA chart（PG/Redis，可选 MinIO） |
 | [docs/PRD.md](docs/PRD.md) | 产品需求 |
 | [CHANGELOG.md](CHANGELOG.md) | 变更记录 |
 

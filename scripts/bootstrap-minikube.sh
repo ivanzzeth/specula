@@ -265,5 +265,5 @@ Phase 3 (manual): promote to HA when dependency images are available through the
     -f ${ROOT}/deploy/helm/specula/values-minikube.yaml \\
     --set image.repository=${IMAGE_REPO} --set image.tag=${IMAGE_TAG}
 
-Docs: deploy/helm/specula-bootstrap/README.md  docs/CLUSTER-INSTALL.md
+Docs: deploy/helm/specula-bootstrap/README.md  docs/deploy/CLUSTER.md
 EOF
