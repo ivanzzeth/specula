@@ -37,3 +37,18 @@ func TestValidateMetaAcceptsDefaults(t *testing.T) {
 		}
 	}
 }
+
+// A typo in --values must fail before any cluster call, not after helm has created
+// a release. Ordering matters: the pin-node lookup used to run first and masked it.
+func TestValidateInputsRejectsMissingValuesFile(t *testing.T) {
+	err := validateInputs(InstallOptions{ValuesFiles: []string{"/definitely/not/here.yaml"}})
+	if err == nil || !strings.Contains(err.Error(), "values file") {
+		t.Fatalf("want a values-file error, got %v", err)
+	}
+}
+
+func TestValidateInputsSkipsEmptyEntries(t *testing.T) {
+	if err := validateInputs(InstallOptions{ValuesFiles: []string{"", "   "}}); err != nil {
+		t.Fatalf("blank entries must be ignored: %v", err)
+	}
+}

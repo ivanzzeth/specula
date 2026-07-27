@@ -14,7 +14,7 @@ func Install(opts InstallOptions) (*Result, error) {
 	// Validate inputs BEFORE touching the cluster. An invalid combination that only
 	// helm rejects has already created a release, pulled images and possibly run the
 	// mirror DaemonSet — side effects for a typo.
-	if err := validateMeta(opts); err != nil {
+	if err := validateInputs(opts); err != nil {
 		return nil, err
 	}
 	if err := needBins("kubectl", "helm"); err != nil {
@@ -104,6 +104,15 @@ func Install(opts InstallOptions) (*Result, error) {
 	if pin != "" {
 		args = append(args, "--set", "nodeSelector.kubernetes\\.io/hostname="+pin)
 	}
+	// Profile files first, flags after: helm honours the last --set/-f in order, and
+	// an explicit flag must beat the file it is overriding. Existence was checked
+	// up front (validateInputs).
+	for _, f := range opts.ValuesFiles {
+		if strings.TrimSpace(f) != "" {
+			args = append(args, "-f", f)
+		}
+	}
+
 	if opts.CN {
 		cnValues := filepath.Join(chart, "values-cn.yaml")
 		if _, err := os.Stat(cnValues); err == nil {
@@ -341,6 +350,21 @@ func formatDuration(d time.Duration) string {
 		return strconv.Itoa(s/60) + "m"
 	}
 	return strconv.Itoa(s) + "s"
+}
+
+// validateInputs rejects bad inputs before ANY cluster call — a missing values file
+// or an impossible meta combination must not first create a helm release, pull
+// images and start the mirror DaemonSet.
+func validateInputs(opts InstallOptions) error {
+	for _, f := range opts.ValuesFiles {
+		if strings.TrimSpace(f) == "" {
+			continue
+		}
+		if _, err := os.Stat(f); err != nil {
+			return fmt.Errorf("values file %s: %w", f, err)
+		}
+	}
+	return validateMeta(opts)
 }
 
 // validateMeta rejects a bad metadata-store combination up front.

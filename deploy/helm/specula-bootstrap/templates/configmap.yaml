@@ -10,19 +10,42 @@ data:
     server:
       data_plane_addr: ":{{ .Values.service.dataPort }}"
       control_plane_addr: ":{{ .Values.service.controlPort }}"
-      # Bootstrap is single-replica: no cross-replica stampede lock needed.
-      ha: false
+      ha: {{ .Values.ha }}
       {{- if .Values.tls.enabled }}
       tls:
         cert_file: /etc/specula/tls/tls.crt
         key_file: /etc/specula/tls/tls.key
       {{- end }}
 
+    {{- if .Values.ha }}
+    coalesce:
+      # postgres advisory locks on the meta pool — Redis-free HA.
+      lock_driver: {{ .Values.lockDriver | quote }}
+      {{- if eq .Values.lockDriver "redis" }}
+      redis:
+        addr: {{ required "redisAddr is required when ha=true and lockDriver=redis" .Values.redisAddr | quote }}
+        db: 0
+        key_prefix: "specula:lock:"
+      {{- end }}
+    {{- end }}
+
     storage:
       blob:
-        driver: local
+        driver: {{ .Values.blob.driver | quote }}
+        {{- if eq .Values.blob.driver "s3" }}
+        s3:
+          bucket: {{ required "blob.s3.bucket is required when blob.driver=s3" .Values.blob.s3.bucket | quote }}
+          endpoint: {{ .Values.blob.s3.endpoint | quote }}
+          region: {{ .Values.blob.s3.region | quote }}
+          use_path_style: {{ .Values.blob.s3.usePathStyle }}
+        {{- else }}
         local:
-          root: /var/lib/specula/blobs
+          root: {{ .Values.blob.local.root | quote }}
+          {{- if .Values.ha }}
+          # Operator attestation that this root is a shared RWX volume.
+          shared: true
+          {{- end }}
+        {{- end }}
       # Data volume, not the container's ephemeral layer: a large pull would
       # otherwise burn ephemeral-storage and get the Pod evicted.
       quarantine_dir: /var/lib/specula/quarantine

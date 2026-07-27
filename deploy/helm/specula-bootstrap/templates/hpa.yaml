@@ -1,0 +1,41 @@
+{{- if .Values.autoscaling.enabled }}
+# HPA only makes sense on the stateless shape: with sqlite/local the Pod owns a RWO
+# volume, so a second replica cannot even schedule. Fail at render time rather than
+# ship a Deployment that silently never scales.
+{{- if or (ne .Values.meta.driver "postgres") (ne .Values.blob.driver "s3") }}
+{{- fail "autoscaling.enabled requires meta.driver=postgres AND blob.driver=s3 (a replica cannot share a RWO volume)" }}
+{{- end }}
+{{- if not .Values.ha }}
+{{- fail "autoscaling.enabled requires ha=true (multiple replicas need a cross-replica stampede lock)" }}
+{{- end }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "specula-bootstrap.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    {{- with .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ . }}
+    {{- end }}
+    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

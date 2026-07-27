@@ -41,6 +41,13 @@ type InstallOptions struct {
 	BinaryPath string
 	HA         bool // reserved: Phase 3 promote (not default)
 
+	// ValuesFiles are extra helm values files, applied in order AFTER the chart's
+	// own values and after --cn's values-cn.yaml, so a deployment profile can carry
+	// the whole hosted shape (postgres meta + S3 blob + ha + HPA + ingress) in one
+	// file instead of a dozen flags. Explicit flags still win, because they are
+	// translated to --set, which helm applies last.
+	ValuesFiles []string
+
 	// MetaDriver is "sqlite" (default) or "postgres". Postgres needs
 	// MetaSecret — the DSN carries credentials and never goes in a ConfigMap.
 	// Independent of HA: a single replica with external meta is supported, and is
@@ -55,14 +62,14 @@ type InstallOptions struct {
 
 	// Persistence: existingClaim > hostPath > created PVC when Persist is true.
 	// Persist defaults to true when unset via PersistSet; see ResolvePersistence.
-	Persist         bool
-	PersistSet      bool // if false, default Persist=true then StorageClass probe may disable
-	ExistingClaim   string
-	HostPath        string
-	StorageClass    string
-	PVCSize         string
-	PinHostname     string // empty = auto-pick Ready worker
-	SkipPinNode     bool
+	Persist       bool
+	PersistSet    bool // if false, default Persist=true then StorageClass probe may disable
+	ExistingClaim string
+	HostPath      string
+	StorageClass  string
+	PVCSize       string
+	PinHostname   string // empty = auto-pick Ready worker
+	SkipPinNode   bool
 }
 
 // Result is a short install outcome.

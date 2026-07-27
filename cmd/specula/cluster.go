@@ -93,6 +93,8 @@ func runClusterInstall(args []string) error {
 	persist := fs.Bool("persist", true, "create a PVC when --pvc/--host-path unset (falls back if no StorageClass)")
 	pin := fs.String("pin-node", "", "kubernetes.io/hostname to pin Specula (default: auto-pick Ready worker)")
 	skipPin := fs.Bool("skip-pin-node", false, "do not set nodeSelector on Specula Deployment")
+	valuesFiles := newStringList(fs, "values", "deployment profile (helm values file); repeatable. "+
+		"Carries the whole hosted shape — postgres meta, S3 blob, ha, HPA — in one file")
 	metaDriver := fs.String("meta-driver", "sqlite", "metadata store: sqlite (on the data volume) or postgres (external)")
 	metaSecret := fs.String("meta-secret", "", "k8s Secret holding the postgres DSN (required for --meta-driver postgres)")
 	metaDSNKey := fs.String("meta-dsn-key", "dsn", "key inside --meta-secret holding the DSN")
@@ -130,6 +132,7 @@ Flags:
 		PVCSize:       *pvcSize,
 		PinHostname:   *pin,
 		SkipPinNode:   *skipPin,
+		ValuesFiles:   *valuesFiles,
 		MetaDriver:    *metaDriver,
 		MetaSecret:    *metaSecret,
 		MetaDSNKey:    *metaDSNKey,
@@ -189,4 +192,14 @@ func runClusterUninstall(args []string) error {
 		Release:         *release,
 		SkipNodeCleanup: *skipNodeCleanup,
 	})
+}
+
+// newStringList registers a repeatable string flag (--values a --values b).
+func newStringList(fs *flag.FlagSet, name, usage string) *[]string {
+	var vals []string
+	fs.Func(name, usage, func(v string) error {
+		vals = append(vals, v)
+		return nil
+	})
+	return &vals
 }

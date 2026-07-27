@@ -6,7 +6,10 @@ metadata:
     {{- include "specula-bootstrap.labels" . | nindent 4 }}
 spec:
   # Single replica: SQLite + local blob are node-local and not shared.
-  replicas: 1
+  {{- if not .Values.autoscaling.enabled }}
+  # HPA owns the count when enabled; leaving replicas set fights it every reconcile.
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
   strategy:
     type: Recreate
   selector:
@@ -44,16 +47,32 @@ spec:
           args:
             - --config
             - /etc/specula/specula.yaml
-          {{- if eq .Values.meta.driver "postgres" }}
-          # The DSN carries credentials, so it comes from a Secret as an env var.
-          # SPECULA_ env vars override the config file, and the strict loader means a
-          # missing Secret key fails fast at startup rather than silently falling back.
+          {{- $pgMeta := eq .Values.meta.driver "postgres" }}
+          {{- $s3Creds := and (eq .Values.blob.driver "s3") .Values.blob.s3.existingSecret }}
+          {{- if or $pgMeta $s3Creds }}
+          # Credentials come from Secrets as env vars: SPECULA_ env overrides the
+          # config file, so nothing sensitive lands in a ConfigMap. The strict loader
+          # means a missing key fails fast at startup instead of degrading silently.
           env:
+            {{- if $pgMeta }}
             - name: SPECULA_STORAGE__META__DSN
               valueFrom:
                 secretKeyRef:
                   name: {{ required "meta.existingSecret is required when meta.driver=postgres" .Values.meta.existingSecret }}
                   key: {{ .Values.meta.dsnKey | default "dsn" }}
+            {{- end }}
+            {{- if $s3Creds }}
+            - name: SPECULA_STORAGE__BLOB__S3__ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.blob.s3.existingSecret }}
+                  key: {{ .Values.blob.s3.accessKeyIDKey | default "access-key-id" }}
+            - name: SPECULA_STORAGE__BLOB__S3__SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.blob.s3.existingSecret }}
+                  key: {{ .Values.blob.s3.secretAccessKeyKey | default "secret-access-key" }}
+            {{- end }}
           {{- end }}
           ports:
             - name: data

@@ -84,6 +84,51 @@ remoteRegistries: []
 # (Huawei SWR layout:huawei-ddn → DaoCloud → 1ms) for registry.k8s.io / k8s.gcr.io.
 regionProfile: ""
 
+# ── Replicas / HA ─────────────────────────────────────────────────────────────
+# Stateless shape (meta.driver=postgres AND blob.driver=s3) is the only one that can
+# run more than one replica or move between nodes. With sqlite/local the Pod owns a
+# RWO volume and MUST stay at replicaCount 1, pinned.
+#
+# ha=true additionally needs a cross-replica stampede lock. lock_driver=postgres uses
+# advisory locks on the meta pool, so no Redis is required — size the pool for
+# concurrent cold misses.
+replicaCount: 1
+ha: false
+lockDriver: postgres # postgres | redis | local (only read when ha=true)
+redisAddr: ""        # required when ha=true and lockDriver=redis
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 0
+
+# ── Blob store (CAS) ──────────────────────────────────────────────────────────
+# local: content-addressed tree on the data volume. Ties the Pod to that volume's
+#        node; fine for a per-cluster mirror.
+# s3:    any S3-compatible object store (Aliyun OSS, Tencent COS, Huawei OBS, MinIO,
+#        AWS). Combined with meta.driver=postgres the Pod becomes stateless — which
+#        is what a centrally hosted Specula needs.
+#
+# Credentials come from a Secret, never values. Leave existingSecret empty to use the
+# SDK credential chain (instance role / RRSA), which is preferable where available.
+blob:
+  driver: local
+  local:
+    root: /var/lib/specula/blobs
+  s3:
+    bucket: ""
+    # Use the INTERNAL/VPC endpoint from inside the same cloud: same bytes, no public
+    # egress bill. Aliyun OSS: https://oss-<region>-internal.aliyuncs.com
+    endpoint: ""
+    region: ""
+    # OSS/COS/OBS are virtual-host style (false). MinIO needs true.
+    usePathStyle: false
+    existingSecret: ""
+    accessKeyIDKey: access-key-id
+    secretAccessKeyKey: secret-access-key
+
 # ── Metadata store ────────────────────────────────────────────────────────────
 # sqlite (default) keeps everything on the data volume — simplest, but the Pod is
 # then pinned to that volume's node and `helm uninstall` discards the DB along with
