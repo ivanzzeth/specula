@@ -242,6 +242,31 @@ echo "${CFG}" | grep -q 'huawei-ddn' || {
 }
 echo "    CN remote_registries (huawei-ddn) OK"
 
+# ── Volume-permission regression guard ────────────────────────────────────────
+# This gate CANNOT catch the permission class of bug behaviourally: minikube's
+# hostpath provisioner hands out 0777 volumes, while every cloud CSI driver mounts
+# a fresh disk root:root 0755. That difference hid a crash loop on ACK —
+# "mkdir /var/lib/specula/quarantine: permission denied" — through a fully green
+# run of this script. So assert the fix is PRESENT, which at least stops a silent
+# removal, and keep the real check in the release checklist (docs/RELEASE.md).
+echo "==> asserting fsGroup on the live Deployment (cloud-CSI regression guard)"
+FSG="$(kubectl --context "${MINIKUBE_PROFILE}" -n "${NAMESPACE}" get deploy \
+  "${RELEASE}-specula-bootstrap" -o jsonpath='{.spec.template.spec.securityContext.fsGroup}' 2>/dev/null || true)"
+if [[ "${FSG}" != "65532" ]]; then
+  echo "cluster-install-minikube: Deployment securityContext.fsGroup=${FSG:-<unset>}, want 65532" >&2
+  echo "  Without it, a CSI-provisioned PVC mounts root-owned and the nonroot image" >&2
+  echo "  cannot create /var/lib/specula/{blobs,quarantine} — broken on every cloud." >&2
+  exit 1
+fi
+echo "    fsGroup 65532 OK"
+
+echo "${CFG}" | grep -q 'quarantine_dir' || {
+  echo "cluster-install-minikube: ConfigMap missing storage.quarantine_dir — cache fills" >&2
+  echo "  would stream through /tmp (tmpfs / ephemeral layer), not the data volume." >&2
+  exit 1
+}
+echo "    quarantine_dir OK"
+
 cat <<EOF
 
 ==> cluster install smoke passed
