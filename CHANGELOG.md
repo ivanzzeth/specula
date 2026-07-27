@@ -15,6 +15,45 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
   daocloud→1ms; PyPI +USTC/Tencent; apt +USTC/Huawei; Cargo prefers rsproxy;
   conda +USTC cloud.
 
+## [0.11.2] — S3-compatible stores actually work; hosted profile — 2026-07-27
+
+### Fixed
+
+- **`blob.driver: s3` could not write to any non-AWS store.** aws-sdk-go-v2 defaults to
+  `aws-chunked` PutObject with a trailing checksum over an unsigned payload; Alibaba
+  Cloud OSS answers `400 NotImplemented: Aws MultiChunkedEncoding
+  STREAMING-UNSIGNED-PAYLOAD-TRAILER is not supported`, and R2 / older MinIO reject it
+  too. Checksum calculation is now pinned to `WhenRequired`. Reads, listing and HEAD
+  had all worked, so this presented as "cache stays empty".
+- **`bootstrap-prefetch` stripped the registry host**, turning
+  `registry.k8s.io/pause:3.10` into the Hub repo `pause` — so it could never warm a
+  non-Hub registry, which is most of what matters in CN, and the chart's prefetch Job
+  inherited that.
+- **A `--values` profile was overridden by defaulted flags**: `--image` defaults to
+  `specula:local`, and helm ranks `--set` above every `-f`, so the profile's registry
+  coordinate was replaced and auto-pinning added a nodeSelector to a stateless
+  multi-replica Deployment. Only flags actually typed now become `--set`.
+- **Changing config or credentials did not restart anything** — a `helm upgrade`
+  altering only the ConfigMap/Secret left the Pod template byte-identical. Added
+  `checksum/config` and `checksum/creds`.
+
+### Added
+
+- **Hosted shape**: `blob.driver=s3` + `meta.driver=postgres` + `ha` + HPA in the
+  bootstrap chart, so one stateless Specula can serve many clusters. Credentials come
+  from the profile and the chart creates the Secret — one file, one command, no
+  `kubectl create secret`.
+- `deployment.enabled=false` for a client cluster that only needs the mirror
+  DaemonSet, plus `service.type`/`annotations` for an internal LoadBalancer.
+- Two tracked profiles under `deploy/profiles/`, and
+  [docs/deploy/HOSTED.md](docs/deploy/HOSTED.md) — the runbook with the nine pitfalls
+  hit deploying it on ACK + RDS + OSS.
+- `cluster uninstall` removes the node `hosts.toml` it wrote
+  (`bootstrap-mirror remove`); pin selection refuses up front when no node has room;
+  `--wait` fails fast on `Unschedulable`.
+- Gated live diagnostics: `TestLiveS3Diagnose` (HEAD has no body, so only
+  GET/List reveal whether a 403 is authorization or signing) and `TestAutoPinNodeLive`.
+
 ## [0.11.1] — Real-cluster fixes: fsGroup, capacity-aware pin, uninstall cleanup — 2026-07-27
 
 Everything here was found by installing v0.11.0 onto a real Alibaba Cloud ACK
