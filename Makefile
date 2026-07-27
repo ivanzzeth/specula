@@ -40,8 +40,11 @@ ui:
 build: ui
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) $(PKG)
 
-## build-go: only the Go binary; assumes web/dist already exists (needs: nothing)
+## build-go: only the Go binary; WebUI falls back to a placeholder page if web/dist is unbuilt (needs: nothing)
 build-go:
+	@if [ ! -f web/dist/index.html ]; then \
+	  printf '\033[33mwarning:\033[0m web/dist/index.html is missing — this binary serves the WebUI placeholder page.\n         Run `make ui` (or `make build`) for the real SPA. API and protocols are unaffected.\n' >&2; \
+	fi
 	go build -ldflags "$(LDFLAGS)" -o bin/$(BINARY) $(PKG)
 
 ## bench: throughput table against a running data plane (needs: daemon on --addr)

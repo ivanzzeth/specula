@@ -570,7 +570,15 @@ func run() error {
 	// /metrics patterns win under ServeMux longest-prefix matching.
 	devMode := os.Getenv("APP_ENV") == "dev"
 	ctrlMux.Handle("/", webui.Handler(devMode))
-	log.Info("specula: mounted embedded WebUI", "path", "/", "dev_mode", devMode)
+	if webui.Built() {
+		log.Info("specula: mounted embedded WebUI", "path", "/", "dev_mode", devMode)
+	} else {
+		// Serving the committed fallback page. Everything else works, so this is
+		// a warning, not a fatal — but an operator must not have to discover it
+		// in a browser.
+		log.Warn("specula: WebUI bundle is NOT embedded in this binary — serving a placeholder page. " +
+			"Rebuild with `make ui && make build-go` (or `make build`). API and protocol handlers are unaffected.")
+	}
 
 	dataSrv := &http.Server{Addr: cfg.Server.DataPlaneAddr, Handler: dataMux, ReadHeaderTimeout: 15 * time.Second}
 	ctrlSrv := &http.Server{Addr: cfg.Server.ControlPlaneAddr, Handler: ctrlMux, ReadHeaderTimeout: 15 * time.Second}
