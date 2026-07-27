@@ -3,9 +3,9 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
-## [Unreleased]
+## [0.12.2] — Push works behind an Ingress with more than one replica — 2026-07-28
 
-### Fixed — `docker`/`crane push` behind an Ingress with replicas > 1
+### Fixed
 
 A blob push is a stateful three-request protocol — POST opens an upload session,
 PATCH streams chunks, PUT finalises — and upload sessions lived in one process's
