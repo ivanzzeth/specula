@@ -3,9 +3,9 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
-## [Unreleased]
+## [0.12.1] — Every protocol is served unless you switch it off — 2026-07-28
 
-### Every protocol is served unless you switch it off
+### Fixed
 
 A config that named only `protocols.oci` served OCI and answered `/npm`, `/pypi`,
 `/go`, `/apt`, `/helm`, `/cargo`, `/conda` and `/hf` with **404**. Handler
