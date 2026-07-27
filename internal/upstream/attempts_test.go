@@ -62,3 +62,23 @@ func TestSummaryToleratesANilError(t *testing.T) {
 		t.Errorf("summary = %q", got)
 	}
 }
+
+// The reported production failure: a CN cluster's Hub chain was DaoCloud → Docker
+// Hub. DaoCloud tripped its circuit breaker, so every request skipped it silently
+// and fell to the official origin, which CN cannot reach. The error said only
+// "dial registry-1.docker.io: i/o timeout", which reads as "Docker Hub is down"
+// and hides both the real cause (a broken mirror) and the structural one (nothing
+// else to fall through to).
+func TestSkippedCircuitBrokenUpstreamAppearsInTheError(t *testing.T) {
+	err := resolveFetchError(nil, errors.New("dial tcp 31.13.95.34:443: i/o timeout"),
+		[]attemptNote{
+			{Upstream: "daocloud", Err: errCircuitOpen},
+			{Upstream: "dockerhub", Err: errors.New("dial tcp 31.13.95.34:443: i/o timeout")},
+		})
+	msg := err.Error()
+	for _, want := range []string{"daocloud", "circuit breaker open", "dockerhub", "i/o timeout"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not mention %q", msg, want)
+		}
+	}
+}

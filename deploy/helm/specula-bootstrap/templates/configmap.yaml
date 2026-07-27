@@ -1,4 +1,3 @@
-{{- $cn := or (eq .Values.regionProfile "cn") (eq .Values.regionProfile "CN") -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -74,32 +73,39 @@ data:
       config_secret: {{ .Values.auth.configSecret | quote }}
       cookie_secure: {{ .Values.auth.cookieSecure | default .Values.tls.enabled }}
 
-    # Only OCI is spelled out, because only OCI has knobs this chart exposes
-    # (upstreams.oci, remoteRegistries). Every other protocol Specula implements —
-    # npm, pypi, go, apt, helm, cargo, conda, hf — is served from the binary's
-    # built-in China-first upstream chain without appearing here. Re-listing that
-    # table in the chart is how it drifts from the one in internal/config/example.yaml.
+    # NOTHING about protocols is written here by default.
     #
-    # To retune or switch one off, set protocolOverrides in values (a raw passthrough
-    # merged below), e.g. protocolOverrides.hf.enabled: false.
+    # Specula serves every protocol it implements — oci, npm, pypi, go, apt, helm,
+    # cargo, conda, hf — from the binary's built-in China-first table
+    # (internal/config/example.yaml): mirror chains, per-protocol TTLs, verification
+    # tiers, and the OCI remote_registries allowlist for ghcr.io, quay.io,
+    # registry.k8s.io, gcr.io, k8s.gcr.io, mcr.microsoft.com and codeberg.org.
+    #
+    # This chart used to restate all of it. Two things came of that: the copy was
+    # already missing mirrors the binary had, and its Hub chain was DaoCloud + Docker
+    # Hub only — so when DaoCloud tripped its circuit breaker the sole remaining
+    # fallback was the official origin, unreachable from CN, and every Hub blob GET
+    # became `502 upstream fetch failed`.
+    #
+    # What appears below is only what an operator explicitly asked for:
+    #   upstreams.oci       → replaces the Hub chain
+    #   remoteRegistries    → replaces the path-style registry allowlist
+    #   protocolOverrides   → anything else, merged verbatim
+{{- if or .Values.protocolOverrides .Values.upstreams.oci .Values.remoteRegistries }}
     protocols:
       {{- with .Values.protocolOverrides }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
+      {{- if or .Values.upstreams.oci .Values.remoteRegistries }}
       oci:
-        mutable_ttl_seconds: 300
+        {{- with .Values.upstreams.oci }}
         upstreams:
-          {{- toYaml .Values.upstreams.oci | nindent 10 }}
-        verification:
-          tiers: [tofu, checksum]
-          quorum: 1
-          tofu: enforce
-        {{- if .Values.remoteRegistries }}
-        oci:
-          remote_registries:
-            {{- toYaml .Values.remoteRegistries | nindent 12 }}
-        {{- else if $cn }}
-        oci:
-          remote_registries:
-            {{- include "specula-bootstrap.cnRemoteRegistries" . | nindent 12 }}
+          {{- toYaml . | nindent 10 }}
         {{- end }}
+        {{- with .Values.remoteRegistries }}
+        oci:
+          remote_registries:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+      {{- end }}
+{{- end }}

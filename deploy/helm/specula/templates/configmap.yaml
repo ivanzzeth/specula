@@ -53,88 +53,18 @@ data:
       {{- with .Values.protocolOverrides }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
-{{- if eq .Values.regionProfile "cn" }}
-      oci:
-        mutable_ttl_seconds: 300
-        upstreams:
-          - name: daocloud
-            base_url: https://docker.m.daocloud.io
-            priority: 1
-            official: false
-          - name: 1ms
-            base_url: https://docker.1ms.run
-            priority: 2
-            official: false
-          - name: aliyun
-            base_url: https://registry.aliyuncs.com
-            priority: 3
-            official: false
-          - name: docker-hub
-            base_url: https://registry-1.docker.io
-            priority: 4
-            official: true
-        verification:
-          tiers: [tofu, checksum]
-          quorum: 2
-        oci:
-          remote_registries:
-            - host: quay.io
-              upstreams:
-                - name: daocloud
-                  base_url: https://quay.m.daocloud.io
-                  priority: 1
-                - name: 1ms
-                  base_url: https://quay.1ms.run
-                  priority: 2
-            - host: ghcr.io
-              upstreams:
-                - name: daocloud
-                  base_url: https://ghcr.m.daocloud.io
-                  priority: 1
-                - name: 1ms
-                  base_url: https://ghcr.1ms.run
-                  priority: 2
-            - host: registry.k8s.io
-              upstreams:
-                - name: daocloud
-                  base_url: https://k8s.m.daocloud.io
-                  priority: 1
-                - name: 1ms
-                  base_url: https://k8s.1ms.run
-                  priority: 2
-            - host: gcr.io
-              upstreams:
-                - name: daocloud
-                  base_url: https://gcr.m.daocloud.io
-                  priority: 1
-                - name: 1ms
-                  base_url: https://gcr.1ms.run
-                  priority: 2
-            - host: k8s.gcr.io
-              upstreams:
-                - name: daocloud
-                  base_url: https://k8s-gcr.m.daocloud.io
-                  priority: 1
-                - name: 1ms
-                  base_url: https://k8s.1ms.run
-                  priority: 2
-            - host: mcr.microsoft.com
-              upstreams:
-                - name: daocloud
-                  base_url: https://mcr.m.daocloud.io
-                  priority: 1
-                - name: 1ms
-                  base_url: https://mcr.1ms.run
-                  priority: 2
-            - host: codeberg.org
-      # npm, pypi, go, apt, cargo, conda and hf are NOT listed here on purpose.
-      # Specula serves every protocol it implements from a built-in China-first
-      # upstream chain (parsed from internal/config/example.yaml), so restating that
-      # table in the chart only gave it a second copy to drift from — this one was
-      # already missing the USTC/Tencent/Huawei mirrors the binary now defaults to.
-      # Override or disable one via protocolOverrides; `enabled: false` switches a
-      # protocol off. Only OCI stays spelled out, for its remote_registries allowlist.
-{{- else }}
+      # regionProfile=cn writes NOTHING here: the binary already defaults to the
+      # China-first table in internal/config/example.yaml — mirror chains for oci,
+      # npm, pypi, go, apt, cargo, conda and hf, per-protocol TTLs, verification
+      # tiers, and the OCI remote_registries allowlist. Restating it in the chart
+      # only produced a second copy to drift from, and the copy was already behind.
+      #
+      # Anything else goes through protocolOverrides (a raw passthrough);
+      # `enabled: false` switches a protocol off.
+{{- if ne .Values.regionProfile "cn" }}
+      # Outside China the defaults are wrong in one specific way: they try CN mirrors
+      # first. These entries are therefore a deliberate override, not a copy of a
+      # default — they pin the official upstreams.
       oci:
         mutable_ttl_seconds: 300
         upstreams:

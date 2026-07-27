@@ -179,6 +179,16 @@ func (c *fallbackClient) Fetch(
 		}
 		if c.blocker.isBlocked(up.Name) {
 			c.syncBlocked(ref.Protocol, up.Name)
+			// Record the skip. A mirror whose breaker is open never produces an
+			// error of its own, so without this the summary shows only the origin's
+			// timeout and reads as "the origin is down" — when the actual story is
+			// "the mirror we rely on is circuit-broken and the origin is the only
+			// path left". That is exactly how a CN cluster ends up with every Hub
+			// blob GET returning 502.
+			attempts = append(attempts, attemptNote{
+				Upstream: up.Name,
+				Err:      errCircuitOpen,
+			})
 			continue
 		}
 		tried++
@@ -316,6 +326,9 @@ func rememberStatusErr(dst **StatusError, err error) {
 //
 // The StatusError is wrapped (fmt.Errorf %w) so errors.As recovers it while the
 // message stays consistent with the transport case.
+// errCircuitOpen marks an upstream the chain skipped because its breaker is open.
+var errCircuitOpen = errors.New("skipped: circuit breaker open")
+
 // attemptNote records why one upstream in the chain failed.
 type attemptNote struct {
 	Upstream string
@@ -377,6 +390,7 @@ func (c *fallbackClient) Revalidate(
 	for i, up := range sorted {
 		if c.blocker.isBlocked(up.Name) {
 			c.syncBlocked(ref.Protocol, up.Name)
+			attempts = append(attempts, attemptNote{Upstream: up.Name, Err: errCircuitOpen})
 			continue
 		}
 		tried++

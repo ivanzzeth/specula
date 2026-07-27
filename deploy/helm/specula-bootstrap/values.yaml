@@ -3,8 +3,9 @@
 # China-reachable registry (Aliyun ACR, etc.). Every other image then flows
 # THROUGH this instance once the mirror DaemonSet runs.
 #
-# Critical: OCI upstreams must be REACHABLE from the cluster. In China do NOT
-# point at registry-1.docker.io — use a domestic mirror (DaoCloud default below).
+# Critical: OCI upstreams must be REACHABLE from the cluster. The built-in chain is
+# already China-first (DaoCloud → 1ms → Aliyun → Docker Hub); if you override
+# upstreams.oci, do NOT leave registry-1.docker.io as the only fallback.
 
 image:
   repository: ivanzz/specula
@@ -96,18 +97,21 @@ persistence:
   accessModes:
     - ReadWriteOnce
 
-# Upstreams the bootstrap mirror proxies. Defaults target China-reachable
-# endpoints (DaoCloud). Override for other regions. See values-cn.yaml.
+# Docker Hub upstreams. EMPTY MEANS the binary's built-in China-first chain:
+# DaoCloud → 1ms → Aliyun → Docker Hub, the same list every other protocol now
+# inherits (internal/config/example.yaml).
+#
+# Do not pin a short chain here without a reason. This used to default to
+# DaoCloud + Docker Hub only, which looks fine until DaoCloud trips its circuit
+# breaker: the single remaining fallback is the official origin, unreachable from
+# CN, so every Hub blob GET turns into `502 upstream fetch failed`. Extra mirrors
+# are what makes fallthrough mean anything.
+#
+# Set this to replace the chain entirely (e.g. an in-house registry). Priority is
+# ascending — lower is tried first — and exactly one entry should carry
+# official: true.
 upstreams:
-  oci:
-    - name: daocloud
-      base_url: https://docker.m.daocloud.io
-      priority: 1
-      official: false
-    - name: dockerhub
-      base_url: https://registry-1.docker.io
-      priority: 10
-      official: true
+  oci: []
 
 # Path-style multi-registry allowlist (SSRF). Empty = Hub-only.
 # CN overlay (values-cn / regionProfile=cn via CLI --cn) fills these.

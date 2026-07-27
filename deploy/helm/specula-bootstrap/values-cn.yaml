@@ -1,23 +1,22 @@
 # China / GFW overlay for bootstrap Specula.
 # Use with: helm upgrade --install … -f values.yaml -f values-cn.yaml
+# (`specula cluster install --cn` applies it for you.)
 #
-# Aligns OCI remote_registries with specula.example.yaml (Huawei SWR nested
-# layout first for registry.k8s.io / k8s.gcr.io).
+# There is deliberately nothing to override here any more.
+#
+# Specula's built-in protocol table IS the China-first one — DaoCloud → 1ms →
+# Aliyun → Docker Hub for the Hub, the Huawei-SWR-first chain for registry.k8s.io
+# and k8s.gcr.io, plus goproxy.cn / npmmirror / tuna / rsproxy / hf-mirror for the
+# other protocols — so a CN deployment needs no overlay to get it. See
+# internal/config/example.yaml.
+#
+# This file used to pin `upstreams.oci` to DaoCloud + 1ms + Docker Hub. That looked
+# equivalent and was not: it dropped the Aliyun mirror the binary defaults to, so
+# with DaoCloud circuit-broken the only path left was the official origin —
+# unreachable from CN, and every Hub blob GET came back
+# `502 upstream fetch failed`. A shorter chain is not a safe simplification.
+#
+# Put real CN-specific overrides here if you have them (an in-house registry, a
+# private mirror). Do not restate a default.
 
 regionProfile: cn
-
-# Prefer CN-reachable Hub mirrors (DaoCloud + 1ms); keep origin last.
-upstreams:
-  oci:
-    - name: daocloud
-      base_url: https://docker.m.daocloud.io
-      priority: 1
-      official: false
-    - name: 1ms
-      base_url: https://docker.1ms.run
-      priority: 2
-      official: false
-    - name: dockerhub
-      base_url: https://registry-1.docker.io
-      priority: 10
-      official: true

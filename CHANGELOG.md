@@ -3,7 +3,37 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
-## [Unreleased]
+## [0.12.3] — Charts stop restating the built-in upstream table — 2026-07-28
+
+### Fixed — `502 upstream fetch failed` pulling from Docker Hub in CN
+
+A node pulling `redis:7-alpine` through Specula got, on every retry:
+
+```
+GET .../v2/library/redis/blobs/sha256:2a5181…?ns=docker.io: 502 Bad Gateway
+unknown: upstream fetch failed
+```
+
+The cause was not the pull path. The chart's `upstreams.oci` pinned **DaoCloud +
+Docker Hub only**, while the binary's built-in chain is DaoCloud → 1ms → Aliyun →
+Docker Hub. `specula_upstream_blocked{upstream="daocloud"} 1` — DaoCloud had tripped
+its circuit breaker on dial/header timeouts — so the one remaining path was the
+official origin, which CN cannot reach. Two mirrors is not a chain; it is a mirror
+and a cliff.
+
+Neither chart writes a protocol table any more. Everything — mirror chains,
+per-protocol TTLs, verification tiers, the OCI `remote_registries` allowlist for
+ghcr.io / quay.io / registry.k8s.io / gcr.io / k8s.gcr.io / mcr.microsoft.com /
+codeberg.org — comes from the binary, and the chart emits only what an operator
+explicitly set (`upstreams.oci`, `remoteRegistries`, `protocolOverrides`). Deleted
+with it: the bootstrap chart's 64-line `_remote_registries.tpl` (a byte-for-byte
+duplicate of the built-in host set), the main chart's 81-line `regionProfile=cn`
+branch, and `values-cn.yaml`'s three-entry Hub chain. The one table that remains is
+the non-CN override, which pins official upstreams *because* the defaults are
+China-first.
+
+`regionProfile=cn` is now a no-op for the bootstrap chart's protocol config: the
+built-in defaults already are the CN ones.
 
 ### Changed — a failed upstream chain names every mirror, not just the last hop
 
@@ -18,6 +48,11 @@ The message now carries a per-upstream summary, e.g.
 `[tried daocloud: 403 Forbidden; dockerhub: dial tcp …: i/o timeout]`. Which error is
 *wrapped* is unchanged, so a definitive 404 still wins over a later transport failure
 and does not turn into a 502.
+
+An upstream **skipped because its circuit breaker is open** is listed too
+(`daocloud: skipped: circuit breaker open`). It produces no error of its own, so
+without that line the message showed only the origin's timeout and read as "the
+origin is down" — while the real story was a broken mirror and no fallback left.
 
 ## [0.12.2] — Push works behind an Ingress with more than one replica — 2026-07-28
 
