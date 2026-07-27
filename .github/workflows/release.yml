@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  packages: write # GHCR push uses GITHUB_TOKEN — no extra secret needed
 
 jobs:
   release:
@@ -95,10 +96,21 @@ jobs:
           append_body: true
           body: |
             ### Container image
+
+            Multi-arch (`linux/amd64`, `linux/arm64`), pushed to every registry configured
+            in repo secrets. The exact coordinates for this release are in the
+            **image** job's run summary.
+
             ```
-            docker pull ivanzz/specula:${{ steps.ver.outputs.version }}
+            docker pull ivanzz/specula:${{ steps.ver.outputs.version }}                       # Docker Hub
+            docker pull ghcr.io/ivanzzeth/specula:${{ steps.ver.outputs.version }}            # GHCR
+            docker pull <ACR_REGISTRY>/<ACR_NAMESPACE>/specula:${{ steps.ver.outputs.version }}  # Aliyun ACR
             ```
-            Multi-arch (`linux/amd64`, `linux/arm64`) — published when Docker Hub secrets are configured.
+
+            **Inside China, use the cloud-region registry (ACR/SWR).** Measured from an
+            Alibaba Cloud ACK cluster in cn-chengdu: `registry-1.docker.io` unreachable,
+            `docker.m.daocloud.io` 403, `docker.1ms.run` and `docker.xuanyuan.me` both
+            timed out. Only the cloud's own registry pulled.
           files: |
             dist/specula_*
             dist/SHA256SUMS
@@ -132,28 +144,87 @@ jobs:
           npm ci
           npm run build
 
-      - name: Resolve version from tag
+      # Multi-registry fan-out. Every CN-reachable mirror of Docker Hub failed from
+      # a real Alibaba Cloud ACK cluster in cn-chengdu — registry-1.docker.io
+      # unreachable, docker.m.daocloud.io 403, docker.1ms.run and
+      # docker.xuanyuan.me both timed out — while the cloud's own registry pulled
+      # fine. So a CN-region registry is not a nice-to-have alternative to Docker
+      # Hub, it is the ONLY way a CN cluster can bootstrap Specula's own image.
+      #
+      # Each target is skipped silently when its secrets are absent, so a fork
+      # with no credentials still releases binaries and passes.
+      #
+      #   Docker Hub  DOCKERHUB_USERNAME  DOCKERHUB_TOKEN
+      #   Aliyun ACR  ACR_REGISTRY (e.g. registry.cn-chengdu.aliyuncs.com)
+      #               ACR_NAMESPACE  ACR_USERNAME  ACR_PASSWORD
+      #   Huawei SWR  SWR_REGISTRY (e.g. swr.cn-north-4.myhuaweicloud.com)
+      #               SWR_NAMESPACE  SWR_USERNAME  SWR_PASSWORD
+      #   GHCR        none (GITHUB_TOKEN); blocked in CN but free everywhere else
+      - name: Resolve version and registry targets
         id: ver
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          ACR_REGISTRY: ${{ secrets.ACR_REGISTRY }}
+          ACR_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+          SWR_REGISTRY: ${{ secrets.SWR_REGISTRY }}
+          SWR_NAMESPACE: ${{ secrets.SWR_NAMESPACE }}
+          SWR_PASSWORD: ${{ secrets.SWR_PASSWORD }}
         run: |
+          set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           echo "version=${TAG}" >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           # latest only for stable vX.Y.Z (no -rc / -beta / -alpha suffix)
-          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "latest=true" >> "$GITHUB_OUTPUT"
+          stable=false
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then stable=true; fi
+          echo "latest=${stable}" >> "$GITHUB_OUTPUT"
+
+          tags=""
+          coords=""
+          add_repo() {   # add_repo <repo> — appends :TAG and, when stable, :latest
+            local repo="$1"
+            tags="${tags}${repo}:${TAG}"$'\n'
+            if [ "$stable" = true ]; then tags="${tags}${repo}:latest"$'\n'; fi
+            coords="${coords}${repo}:${TAG}"$'\n'
+          }
+
+          if [ -n "${DOCKERHUB_TOKEN}" ]; then
+            add_repo "ivanzz/specula"; echo "push_hub=true" >> "$GITHUB_OUTPUT"
           else
-            echo "latest=false" >> "$GITHUB_OUTPUT"
+            echo "push_hub=false" >> "$GITHUB_OUTPUT"
+            echo "DOCKERHUB_TOKEN unset — skipping Docker Hub."
           fi
-          tags="ivanzz/specula:${TAG}"
-          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            tags="${tags}"$'\n'"ivanzz/specula:latest"
+
+          if [ -n "${ACR_REGISTRY}" ] && [ -n "${ACR_NAMESPACE}" ] && [ -n "${ACR_PASSWORD}" ]; then
+            add_repo "${ACR_REGISTRY}/${ACR_NAMESPACE}/specula"
+            echo "push_acr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push_acr=false" >> "$GITHUB_OUTPUT"
+            echo "ACR_* secrets unset — skipping Aliyun ACR (CN clusters will have no reachable image)."
+          fi
+
+          if [ -n "${SWR_REGISTRY}" ] && [ -n "${SWR_NAMESPACE}" ] && [ -n "${SWR_PASSWORD}" ]; then
+            add_repo "${SWR_REGISTRY}/${SWR_NAMESPACE}/specula"
+            echo "push_swr=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push_swr=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # GHCR always: no secret to configure, and it costs nothing.
+          ghcr_repo="ghcr.io/$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/specula"
+          add_repo "${ghcr_repo}"
+          echo "push_ghcr=true" >> "$GITHUB_OUTPUT"
+
+          if [ -z "${tags}" ]; then
+            echo "no registry configured — nothing to push" >&2
           fi
           {
-            echo "tags<<EOF"
-            echo "$tags"
-            echo "EOF"
+            echo "tags<<EOF"; printf '%s' "$tags"; echo "EOF"
+            echo "coords<<EOF"; printf '%s' "$coords"; echo "EOF"
           } >> "$GITHUB_OUTPUT"
+          echo "will push:"; printf '  %s\n' ${tags}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -182,27 +253,42 @@ jobs:
           HOSTED_TAG: ${{ steps.ver.outputs.version }}
         run: bash scripts/publish-image-smoke.sh
 
-      - name: Detect Docker Hub credentials
-        id: hub
-        env:
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          if [ -n "${DOCKERHUB_TOKEN}" ]; then
-            echo "push=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "push=false" >> "$GITHUB_OUTPUT"
-            echo "DOCKERHUB_TOKEN not set — smoke passed; skipping Hub push."
-          fi
-
       - name: Log in to Docker Hub
-        if: steps.hub.outputs.push == 'true'
+        if: steps.ver.outputs.push_hub == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push multi-arch to Docker Hub
-        if: steps.hub.outputs.push == 'true'
+      - name: Log in to Aliyun ACR
+        if: steps.ver.outputs.push_acr == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_REGISTRY }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Log in to Huawei SWR
+        if: steps.ver.outputs.push_swr == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.SWR_REGISTRY }}
+          username: ${{ secrets.SWR_USERNAME }}
+          password: ${{ secrets.SWR_PASSWORD }}
+
+      - name: Log in to GHCR
+        if: steps.ver.outputs.push_ghcr == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ONE build, pushed to every configured registry: buildx accepts tags across
+      # different hosts, so the multi-arch image is built and verified once instead
+      # of per-registry.
+      - name: Build and push multi-arch to all configured registries
+        if: steps.ver.outputs.tags != ''
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -213,3 +299,15 @@ jobs:
             VERSION=${{ steps.ver.outputs.version }}
             COMMIT=${{ steps.ver.outputs.commit }}
             DATE=${{ steps.ver.outputs.date }}
+
+      - name: Summarise published coordinates
+        if: steps.ver.outputs.tags != ''
+        run: |
+          {
+            echo "## Published image coordinates"
+            echo '```'
+            printf '%s\n' "${{ steps.ver.outputs.coords }}"
+            echo '```'
+            echo "CN clusters: pull through the cloud-region registry (ACR/SWR); Docker Hub"
+            echo "and GHCR are not reliably reachable from inside CN."
+          } >> "$GITHUB_STEP_SUMMARY"

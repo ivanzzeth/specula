@@ -99,9 +99,26 @@ Push a version tag to publish multi-arch binaries **and** the container image vi
 git tag v0.4.0 && git push origin v0.4.0    # triggers .github/workflows/release.yml
 ```
 
-Configure repo secrets `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` to publish
-`ivanzz/specula` (multi-arch). The image job always runs a **hosted OCI smoke**
-first (build → push into an ephemeral Specula → pull back) before Hub.
+One build is pushed to **every registry whose secrets are set**; targets with no
+credentials are skipped silently. The image job always runs a **hosted OCI smoke**
+first (build → push into an ephemeral Specula → pull back) before any push.
+
+| Registry | Repo secrets | Notes |
+|----------|--------------|-------|
+| Docker Hub | `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` | `ivanzz/specula` |
+| **Aliyun ACR** | `ACR_REGISTRY`, `ACR_NAMESPACE`, `ACR_USERNAME`, `ACR_PASSWORD` | **required for CN clusters** — e.g. `registry.cn-chengdu.aliyuncs.com` |
+| Huawei SWR | `SWR_REGISTRY`, `SWR_NAMESPACE`, `SWR_USERNAME`, `SWR_PASSWORD` | second CN option |
+| GHCR | none (`GITHUB_TOKEN`) | always on; not reachable from CN |
+
+**Inside China a cloud-region registry is the only working source, not a
+preference.** Measured from an Alibaba Cloud ACK cluster in cn-chengdu:
+`registry-1.docker.io` unreachable, `docker.m.daocloud.io` → 403,
+`docker.1ms.run` and `docker.xuanyuan.me` → timeout. Only the cloud's own
+registry pulled. Without `ACR_*` (or `SWR_*`) set, a CN cluster cannot bootstrap
+Specula's own image — every other layer of the CN story depends on this one.
+
+Pull the image over the **VPC** endpoint from inside the cluster
+(`registry-<region>-vpc.aliyuncs.com`): same bytes, no public egress charge.
 
 ### Container image
 

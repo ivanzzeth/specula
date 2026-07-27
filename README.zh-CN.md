@@ -92,9 +92,24 @@ ssh host 'sudo /tmp/specula upgrade'        # 回退：sudo specula rollback
 git tag v0.4.0 && git push origin v0.4.0    # 触发 .github/workflows/release.yml
 ```
 
-配置仓库 secrets `DOCKERHUB_USERNAME` + `DOCKERHUB_TOKEN` 后会推送
-`ivanzz/specula`（多架构）。镜像 job 会先跑 **hosted OCI 冒烟**
-（构建 → 推进临时 Specula → 拉回校验），再推 Docker Hub。
+一次构建会推送到**所有配好 secrets 的 registry**，没配凭证的目标静默跳过。镜像 job
+会先跑 **hosted OCI 冒烟**（构建 → 推进临时 Specula → 拉回校验），再推任何 registry。
+
+| Registry | 仓库 secrets | 说明 |
+|----------|-------------|------|
+| Docker Hub | `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN` | `ivanzz/specula` |
+| **阿里云 ACR** | `ACR_REGISTRY`、`ACR_NAMESPACE`、`ACR_USERNAME`、`ACR_PASSWORD` | **国内集群必需** —— 例如 `registry.cn-chengdu.aliyuncs.com` |
+| 华为 SWR | `SWR_REGISTRY`、`SWR_NAMESPACE`、`SWR_USERNAME`、`SWR_PASSWORD` | 国内第二选择 |
+| GHCR | 无（用 `GITHUB_TOKEN`） | 默认开启；国内不可达 |
+
+**国内用云厂商 region registry 不是偏好问题，是唯一可行来源。** 在阿里云 ACK
+（cn-chengdu）实测：`registry-1.docker.io` 不可达、`docker.m.daocloud.io` 返回
+403、`docker.1ms.run` 与 `docker.xuanyuan.me` 全部超时，只有云自己的 registry
+能拉。不配 `ACR_*`（或 `SWR_*`）的话，国内集群根本没法拉起 Specula 自己的镜像
+—— 国内方案的其余每一层都压在这一层上。
+
+集群内部用 **VPC 端点**拉（`registry-<region>-vpc.aliyuncs.com`）：同样的字节，
+不走公网、不计流量费。
 
 ### 容器镜像
 
