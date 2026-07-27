@@ -44,9 +44,34 @@ autoscaling:
 # Schema migrations run automatically at startup (embedded goose).
 # This DB is NOT only a cache: it holds TOFU pins and user accounts too, so back it
 # up like a database, not like a cache.
+#
+# The account needs CREATE on the target schema. On PostgreSQL 15+ (Aliyun RDS PG
+# 15/16/17 included) the `public` schema no longer grants CREATE to ordinary users,
+# so a plain account fails at startup with:
+#   create version table "goose_db_version": permission denied for schema public
+# Fix it once, as a privileged account:
+#   GRANT ALL ON SCHEMA public TO <user>;      -- or ALTER SCHEMA public OWNER TO <user>;
+# (Aliyun console: make the account a 高权限账号, or set it as the database owner.)
+#
+# TLS: sslmode=require needs SSL enabled on the instance — Aliyun RDS ships it OFF,
+# and a disabled server answers "tls error: server refused TLS connection". Enable it
+# under 数据安全性 → SSL, or use sslmode=disable for VPC-internal traffic.
 meta:
   driver: postgres
   dsn: postgres://<user>:<password>@<host>:5432/specula?sslmode=require
+
+# ── Cache capacity ────────────────────────────────────────────────────────────
+# 0 (the default) means NEVER evict — object storage then grows without bound.
+# Specula evicts oldest-first, unpinned, cached-origin entries only; pinned entries
+# and content pushed into Specula are never touched.
+#
+# Do NOT add an OSS lifecycle rule that deletes objects: capacity accounting comes
+# from the metadata store, not from listing the bucket, so objects deleted behind
+# Specula's back stay "present" in metadata and reads fail. A rule that only aborts
+# INCOMPLETE multipart uploads (say after 7 days) is safe and worth having — an
+# interrupted multi-GB layer upload otherwise leaves billable fragments.
+cache:
+  maxBytes: 500000000000 # 500 GB
 
 # ── Blobs: OSS (S3-compatible) ────────────────────────────────────────────────
 # Create a private Standard bucket in the SAME region as the cluster and use the
