@@ -16,9 +16,36 @@ releases binaries and passes.
 | Huawei SWR | `SWR_REGISTRY`, `SWR_NAMESPACE`, `SWR_USERNAME`, `SWR_PASSWORD` | second CN option |
 | GHCR | none — uses `GITHUB_TOKEN` | always on; unreachable from CN |
 
-`ACR_REGISTRY` is the **public** endpoint (`registry.cn-<region>.aliyuncs.com`)
-because CI pushes from GitHub runners. Clusters *pull* over the VPC endpoint
-(`registry-cn-<region>-vpc.aliyuncs.com`) — same bytes, no public egress charge.
+### `ACR_REGISTRY` must be the instance domain, not the shared one
+
+An ACR **instance** (personal or enterprise edition) has its own hostname, and its
+credentials do **not** work against the old shared `registry.cn-<region>.aliyuncs.com`
+domain — you get `403 Forbidden` on `docker login`, which reads like a bad password:
+
+```
+Error response from daemon: login attempt to https://.../v2/ failed with status: 403 Forbidden
+```
+
+| Edition | Push (CI, public) | Pull (in-cluster, VPC) |
+|---------|-------------------|------------------------|
+| Personal | `crpi-<id>.cn-<region>.personal.cr.aliyuncs.com` | `crpi-<id>-vpc.cn-<region>.personal.cr.aliyuncs.com` |
+| Enterprise | `<name>-registry.cn-<region>.cr.aliyuncs.com` | `<name>-registry-vpc.cn-<region>.cr.aliyuncs.com` |
+| Shared (legacy) | `registry.cn-<region>.aliyuncs.com` | `registry-cn-<region>-vpc.aliyuncs.com` |
+
+Copy the exact hostname from the ACR console (**访问凭证** / access credentials
+page) rather than composing it. Verify before wiring it into CI — a valid registry
+answers `401`, a wrong hostname fails DNS or answers something else:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://<ACR_REGISTRY>/v2/     # want: 401
+```
+
+`ACR_REGISTRY` is the **public** endpoint because CI pushes from GitHub runners.
+Clusters *pull* over the **VPC** endpoint — same bytes, no public egress charge —
+so the deploy command uses a different hostname than the one in CI.
+
+Use the ACR **fixed** password (访问凭证 → 设置固定密码), not the 1-hour temporary
+one, or releases start failing an hour after you set the secret.
 
 ### Why a CN registry is mandatory, not preferred
 
@@ -83,11 +110,12 @@ gh run watch <run-id> --exit-status          # or: gh run list --workflow=releas
 
 # Pull each coordinate you care about
 docker pull ivanzz/specula:v0.11.0
-docker pull registry.cn-<region>.aliyuncs.com/<ns>/specula:v0.11.0
+docker pull <ACR_REGISTRY>/<ns>/specula:v0.11.0             # public endpoint
 
-# Then deploy it — see docs/deploy/CLUSTER.md
+# Then deploy it — see docs/deploy/CLUSTER.md. Note the VPC hostname here:
+# the cluster pulls over VPC, CI pushed over public.
 specula cluster install --cn --wait \
-  --image registry-cn-<region>-vpc.aliyuncs.com/<ns>/specula:v0.11.0 \
+  --image <ACR_VPC_REGISTRY>/<ns>/specula:v0.11.0 \
   --storage-class alicloud-disk-essd
 ```
 

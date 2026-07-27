@@ -50,9 +50,13 @@ Cloud Linux 3, containerd 2.1.9):
 | `docker.1ms.run/...`, `docker.xuanyuan.me/...` | timeout |
 | `registry-cn-chengdu.ack.aliyuncs.com/...` | **pulled fine** |
 
-So inside China: publish to your own cloud-region registry and pull over the
-**VPC** endpoint (`registry-cn-<region>-vpc.aliyuncs.com`) — same bytes, no public
-egress charge. [RELEASE.md](../RELEASE.md) wires that into CI; the repo secrets are
+So inside China: publish to your own cloud-region registry and pull over its
+**VPC** endpoint — same bytes, no public egress charge. For an ACR personal-edition
+instance that is
+`crpi-<id>-vpc.cn-<region>.personal.cr.aliyuncs.com`; copy the exact hostname from
+the ACR console rather than composing it (the shared
+`registry.cn-<region>.aliyuncs.com` domain rejects instance credentials with a
+403 that looks like a bad password). [RELEASE.md](../RELEASE.md) wires that into CI; the repo secrets are
 a one-time setup.
 
 Outside a cloud, or for a local cluster, `--load-image` side-loads into
