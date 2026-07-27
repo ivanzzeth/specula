@@ -47,13 +47,14 @@ Produce the layout with a tool that preserves the registry's digests:
   # or
   skopeo copy docker://docker.io/library/redis:7-alpine oci-archive:redis.tar
 
-Then, anywhere Specula's stores are reachable — most simply the Pod itself, which
-already has the binary, the config and the credentials:
+Then, anywhere Specula's stores are reachable. The Pod itself is usually simplest —
+it already has the binary, the config and the credentials — and the archive goes in
+over stdin, because kubectl cp shells out to tar inside the container and a
+distroless image has none:
 
-  kubectl cp redis.tar specula-boot/<pod>:/tmp/redis.tar
-  kubectl exec -n specula-boot <pod> -- /specula cache import \
+  kubectl exec -i -n specula-boot <pod> -- /specula cache import \
       --config /etc/specula/specula.yaml \
-      --from /tmp/redis.tar --as docker.io/library/redis:7-alpine
+      --from - --as docker.io/library/redis:7-alpine < redis.tar
 
 A legacy 'docker save' archive is refused: it re-packs layers, so its digests are
 not the ones clients ask for.
@@ -64,7 +65,8 @@ func runCacheImport(args []string) error {
 	fs := flag.NewFlagSet("cache import", flag.ContinueOnError)
 	var (
 		cfgPath = fs.String("config", "", "path to the Specula config (default: SPECULA_CONFIG or specula.yaml)")
-		from    = fs.String("from", "", "OCI layout directory or OCI archive (tar) to import")
+		from    = fs.String("from", "", "OCI layout directory, OCI archive (tar), or - for stdin")
+		spool   = fs.String("spool-dir", "", "where to expand an archive (default: OS temp; use the data volume for large images)")
 		as      = fs.String("as", "", "reference clients will pull, e.g. docker.io/library/redis:7-alpine")
 		ttl     = fs.Int64("tag-ttl-seconds", 0, "TTL for the tag pointer (0 = long-lived default)")
 		dryRun  = fs.Bool("dry-run", false, "report what would be imported without writing")
@@ -116,11 +118,22 @@ func runCacheImport(args []string) error {
 	// instead of being discovered by a client.
 	cm := cache.New(blobs, metaStore, verify.NewChain())
 
+	spoolDir := *spool
+	if spoolDir == "" {
+		// An expanded layout is about the size of the image, and the container's
+		// ephemeral layer is not where a 500 MB one belongs: filling it gets the Pod
+		// evicted, which reads as a crash rather than a full disk. The quarantine
+		// directory is already the configured place for large in-flight content.
+		spoolDir = cfg.EffectiveQuarantineDir()
+	}
+
 	res, err := cacheimport.Run(ctx, cm, metaStore, cacheimport.Options{
 		Source:     *from,
 		Target:     *as,
 		TTLSeconds: *ttl,
 		DryRun:     *dryRun,
+		SpoolDir:   spoolDir,
+		Stdin:      os.Stdin,
 		Logger:     log,
 	})
 	if err != nil {

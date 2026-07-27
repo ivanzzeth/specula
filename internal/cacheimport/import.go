@@ -71,6 +71,15 @@ type Options struct {
 	// DryRun parses and reports without writing anything.
 	DryRun bool
 
+	// SpoolDir is where an archive (or stdin) is expanded. Defaults to the OS temp
+	// dir. Point it at the data volume when importing an image larger than the
+	// container's ephemeral storage — a 500 MB layout on an overlay filesystem
+	// gets the Pod evicted, which looks like a crash rather than a full disk.
+	SpoolDir string
+
+	// Stdin, when non-nil and Source is "-", is the OCI archive to read.
+	Stdin io.Reader
+
 	Logger *slog.Logger
 }
 
@@ -111,7 +120,7 @@ func Run(ctx context.Context, cm cache.CacheManager, metaStore meta.MetadataStor
 		return nil, err
 	}
 
-	src, err := openLayout(opts.Source)
+	src, err := openLayout(opts.Source, opts.SpoolDir, opts.Stdin)
 	if err != nil {
 		return nil, err
 	}
@@ -343,20 +352,31 @@ type manifestDoc struct {
 	Manifests []descriptor `json:"manifests,omitempty"` // when this is an index
 }
 
-// layout reads blobs by digest out of an OCI layout, whether it is a directory
-// or a tar archive.
+// layout reads blobs by digest out of an OCI layout directory. Archives and stdin
+// are expanded into one first, so every read is a plain file open.
 type layout struct {
 	dir string
-	// tarBlobs holds an archive's contents in memory only for the index and
-	// manifests; layer bytes are read on demand from the file.
-	tarPath string
-	entries map[string]int64 // digest → offset is not portable across readers, so
-	// archives are indexed by name instead and re-scanned per read.
+	// cleanup, when set, is a directory this layout created and owns.
+	cleanup string
 }
 
-func openLayout(src string) (*layout, error) {
+func openLayout(src, spoolDir string, stdin io.Reader) (*layout, error) {
 	if src == "" {
 		return nil, errors.New("cacheimport: empty source path")
+	}
+	// "-" reads the archive from stdin, which is how a layout reaches a distroless
+	// Pod: `kubectl exec -i … -- specula cache import --from -`. kubectl cp cannot
+	// do it — copying into a container shells out to tar inside the image, and a
+	// distroless image has none.
+	if src == "-" {
+		if stdin == nil {
+			return nil, errors.New("cacheimport: --from - but no stdin was provided")
+		}
+		dir, err := extractArchiveStream(stdin, spoolDir)
+		if err != nil {
+			return nil, err
+		}
+		return &layout{dir: dir, cleanup: dir}, nil
 	}
 	st, err := os.Stat(src)
 	if err != nil {
@@ -371,46 +391,92 @@ func openLayout(src string) (*layout, error) {
 		}
 		return &layout{dir: src}, nil
 	}
-	l := &layout{tarPath: src}
-	if err := l.checkArchive(); err != nil {
-		return nil, err
-	}
-	return l, nil
-}
-
-func (l *layout) Close() error { return nil }
-
-// checkArchive verifies the tar looks like an OCI archive and not a docker save.
-func (l *layout) checkArchive() error {
-	f, err := os.Open(l.tarPath)
+	// Archives are expanded ONCE. Reading blobs straight out of the tar meant
+	// re-scanning the whole archive per object — 79 objects × a 130 MB layout is
+	// several gigabytes of pointless IO, and it grows with the square of the image.
+	f, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("cacheimport: open %q: %w", l.tarPath, err)
+		return nil, fmt.Errorf("cacheimport: open %q: %w", src, err)
 	}
 	defer f.Close()
-	tr := tar.NewReader(f)
+	dir, err := extractArchiveStream(f, spoolDir)
+	if err != nil {
+		return nil, err
+	}
+	return &layout{dir: dir, cleanup: dir}, nil
+}
+
+// Close removes anything openLayout expanded. A directory the caller supplied is
+// left alone.
+func (l *layout) Close() error {
+	if l.cleanup == "" {
+		return nil
+	}
+	return os.RemoveAll(l.cleanup)
+}
+
+// extractArchiveStream expands an OCI archive into a fresh directory, refusing a
+// legacy docker-save archive and anything that is not a layout at all.
+func extractArchiveStream(r io.Reader, spoolDir string) (string, error) {
+	dir, err := os.MkdirTemp(spoolDir, "specula-layout-*")
+	if err != nil {
+		return "", fmt.Errorf("cacheimport: spool dir: %w", err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
 	var hasIndex, hasDockerManifest bool
+	tr := tar.NewReader(r)
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("cacheimport: read %q: %w", l.tarPath, err)
+			return "", fmt.Errorf("cacheimport: read archive: %w", err)
 		}
-		switch path.Clean(hdr.Name) {
+		clean := path.Clean(hdr.Name)
+		switch clean {
 		case "index.json":
 			hasIndex = true
 		case "manifest.json":
 			hasDockerManifest = true
 		}
+		if hdr.Typeflag == tar.TypeDir {
+			continue
+		}
+		// Path traversal: a member named ../../etc/x must not escape the spool dir.
+		if clean == ".." || strings.HasPrefix(clean, "../") || filepath.IsAbs(clean) {
+			return "", fmt.Errorf("cacheimport: archive member %q escapes the spool directory", hdr.Name)
+		}
+		dst := filepath.Join(dir, filepath.FromSlash(clean))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return "", fmt.Errorf("cacheimport: mkdir %q: %w", filepath.Dir(dst), err)
+		}
+		out, err := os.Create(dst)
+		if err != nil {
+			return "", fmt.Errorf("cacheimport: create %q: %w", dst, err)
+		}
+		if _, err := io.Copy(out, tr); err != nil {
+			_ = out.Close()
+			return "", fmt.Errorf("cacheimport: extract %q: %w", clean, err)
+		}
+		if err := out.Close(); err != nil {
+			return "", fmt.Errorf("cacheimport: close %q: %w", dst, err)
+		}
 	}
-	if hasIndex {
-		return nil
+	if !hasIndex {
+		if hasDockerManifest {
+			return "", ErrLegacyDockerSave
+		}
+		return "", errors.New("cacheimport: the archive contains no index.json — not an OCI archive")
 	}
-	if hasDockerManifest {
-		return ErrLegacyDockerSave
-	}
-	return fmt.Errorf("cacheimport: %q contains no index.json — not an OCI archive", l.tarPath)
+	ok = true
+	return dir, nil
 }
 
 func (l *layout) index() (*indexDoc, error) {
@@ -437,27 +503,7 @@ func (l *layout) blob(digest string) ([]byte, error) {
 }
 
 func (l *layout) read(name string) ([]byte, error) {
-	if l.dir != "" {
-		return os.ReadFile(filepath.Join(l.dir, filepath.FromSlash(name)))
-	}
-	f, err := os.Open(l.tarPath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	tr := tar.NewReader(f)
-	for {
-		hdr, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("cacheimport: %q not found in %s", name, l.tarPath)
-		}
-		if err != nil {
-			return nil, err
-		}
-		if path.Clean(hdr.Name) == path.Clean(name) {
-			return io.ReadAll(tr)
-		}
-	}
+	return os.ReadFile(filepath.Join(l.dir, filepath.FromSlash(name)))
 }
 
 // pickManifest chooses which index entry to import.

@@ -19,6 +19,16 @@ specula cache import --config specula.yaml \
     --from redis.tar --as docker.io/library/redis:7-alpine
 ```
 
+`--from -` reads the archive from stdin, which is how a layout reaches a distroless
+Pod — `kubectl cp` cannot, because copying into a container shells out to `tar` inside
+the image:
+
+```bash
+kubectl exec -i -n specula-boot <pod> -- /specula cache import \
+    --config /etc/specula/specula.yaml \
+    --from - --as docker.io/library/redis:7-alpine < redis.tar
+```
+
 Afterwards a pull of `redis:7-alpine` is served entirely from cache. Verified with a
 real 133 MB multi-arch image against a Specula whose only upstream pointed at the
 discard port: 17 manifests and 79 blobs imported, `crane pull` returned the identical
@@ -33,6 +43,13 @@ A legacy `docker save` archive is **refused**, with the command that produces a 
 layout. That format re-packs layers as uncompressed tars whose digests differ from the
 registry's, so importing one would fill the cache under digests no client ever asks
 for — a silent no-op that looks like it worked.
+
+An archive is expanded once rather than re-scanned per object: reading blobs straight
+out of the tar cost several gigabytes of IO for a 130 MB image, growing with the square
+of the layer count. It expands into the quarantine directory by default, not the
+container's ephemeral layer, where a large layout would get the Pod evicted and look
+like a crash rather than a full disk. Archive members that try to escape that directory
+are refused.
 
 Other things the implementation is careful about: bytes already in the store (a shared
 base layer, a re-import) cost a metadata row rather than a second copy; a layout with

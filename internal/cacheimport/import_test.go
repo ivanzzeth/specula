@@ -585,3 +585,119 @@ func TestResultCountsAreReported(t *testing.T) {
 	}
 	_ = fmt.Sprint(res)
 }
+
+// Reading the archive from stdin is how a layout reaches a distroless Pod:
+// `kubectl exec -i … -- specula cache import --from -`. kubectl cp cannot do it,
+// because copying into a container shells out to tar inside the image.
+func TestImportFromStdin(t *testing.T) {
+	f := newFixture(t)
+	img := buildLayout(t, "7-alpine", []byte("layer from stdin"))
+	tarPath := tarUp(t, img.dir)
+
+	body, err := os.Open(tarPath)
+	if err != nil {
+		t.Fatalf("open tar: %v", err)
+	}
+	defer body.Close()
+
+	res, err := Run(context.Background(), f.cm, f.meta, Options{
+		Source: "-",
+		Stdin:  body,
+		Target: "docker.io/library/redis:7-alpine",
+	})
+	if err != nil {
+		t.Fatalf("import from stdin: %v", err)
+	}
+	if res.Name != "library/redis" {
+		t.Errorf("Name = %q", res.Name)
+	}
+	if r := get(t, f.srv.URL+"/v2/library/redis/manifests/7-alpine", ""); r.code != http.StatusOK {
+		t.Fatalf("GET manifest by tag after a stdin import = %d, want 200", r.code)
+	}
+}
+
+func TestStdinWithoutAReaderIsAnError(t *testing.T) {
+	f := newFixture(t)
+	_, err := Run(context.Background(), f.cm, f.meta, Options{Source: "-", Target: "redis:7"})
+	if err == nil {
+		t.Fatal("--from - with no stdin accepted")
+	}
+}
+
+// A legacy docker-save archive must be refused on the stdin path too, not only
+// when it arrives as a file.
+func TestLegacyDockerSaveFromStdinIsRefused(t *testing.T) {
+	dir := t.TempDir()
+	tarPath := filepath.Join(dir, "save.tar")
+	fh, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	tw := tar.NewWriter(fh)
+	body := []byte(`[{"Config":"c.json"}]`)
+	_ = tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o644, Size: int64(len(body))})
+	_, _ = tw.Write(body)
+	_ = tw.Close()
+	_ = fh.Close()
+
+	in, err := os.Open(tarPath)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer in.Close()
+
+	f := newFixture(t)
+	_, err = Run(context.Background(), f.cm, f.meta,
+		Options{Source: "-", Stdin: in, Target: "redis:7"})
+	if !errors.Is(err, ErrLegacyDockerSave) {
+		t.Fatalf("error = %v, want ErrLegacyDockerSave", err)
+	}
+}
+
+// An archive member naming ../ must not write outside the spool directory.
+func TestArchiveMemberCannotEscapeTheSpoolDir(t *testing.T) {
+	dir := t.TempDir()
+	tarPath := filepath.Join(dir, "evil.tar")
+	fh, err := os.Create(tarPath)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	tw := tar.NewWriter(fh)
+	body := []byte("pwned")
+	_ = tw.WriteHeader(&tar.Header{Name: "../escaped.txt", Mode: 0o644, Size: int64(len(body))})
+	_, _ = tw.Write(body)
+	_ = tw.Close()
+	_ = fh.Close()
+
+	f := newFixture(t)
+	_, err = Run(context.Background(), f.cm, f.meta,
+		Options{Source: tarPath, Target: "redis:7"})
+	if err == nil {
+		t.Fatal("an archive escaping the spool dir was accepted")
+	}
+	if !strings.Contains(err.Error(), "escapes") {
+		t.Errorf("error should name the traversal: %v", err)
+	}
+}
+
+// The expanded copy must not be left behind: a 500 MB layout leaked per import
+// fills the volume the cache itself needs.
+func TestArchiveSpoolIsCleanedUp(t *testing.T) {
+	f := newFixture(t)
+	img := buildLayout(t, "v1", []byte("layer"))
+	tarPath := tarUp(t, img.dir)
+	spool := t.TempDir()
+
+	if _, err := Run(context.Background(), f.cm, f.meta, Options{
+		Source: tarPath, Target: "docker.io/library/app:v1", SpoolDir: spool,
+	}); err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	left, err := os.ReadDir(spool)
+	if err != nil {
+		t.Fatalf("read spool: %v", err)
+	}
+	if len(left) != 0 {
+		t.Errorf("spool dir still holds %d entries after the import", len(left))
+	}
+}
