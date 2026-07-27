@@ -226,6 +226,14 @@ if [[ "${SUCCEEDED}" != "1" ]]; then
 fi
 echo "    prefetch Job succeeded"
 
+echo "==> crictl pull registry.k8s.io/pause:3.9 (through Specula hosts.toml)"
+sleep 2
+minikube ssh -p "${MINIKUBE_PROFILE}" -- \
+  'sudo crictl pull registry.k8s.io/pause:3.9' 2>&1 | tee /tmp/boot-crictl-pause.log || {
+  echo "bootstrap-minikube: WARN crictl pull pause failed (hosts.toml / CN upstreams?)" >&2
+  cat /tmp/boot-crictl-pause.log >&2 || true
+}
+
 echo "==> re-prefetch via CLI (second hit should be warm / still OK)"
 kubectl -n "${NAMESPACE}" run boot-prefetch-check --rm -i --restart=Never \
   --image="${IMAGE_REPO}:${IMAGE_TAG}" \
@@ -245,6 +253,11 @@ cat <<EOF
 
 ==> bootstrap smoke passed (Phases 0–2)
 
+Prefer the one-command path next time:
+
+  ./scripts/cluster-install-minikube.sh
+  # or: make test-cluster-install
+
 Phase 3 (manual): promote to HA when dependency images are available through the mirror:
 
   helm upgrade --install specula ${ROOT}/deploy/helm/specula \\
@@ -252,5 +265,5 @@ Phase 3 (manual): promote to HA when dependency images are available through the
     -f ${ROOT}/deploy/helm/specula/values-minikube.yaml \\
     --set image.repository=${IMAGE_REPO} --set image.tag=${IMAGE_TAG}
 
-Docs: deploy/helm/specula-bootstrap/README.md
+Docs: deploy/helm/specula-bootstrap/README.md  docs/CLUSTER-INSTALL.md
 EOF

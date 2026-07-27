@@ -113,6 +113,18 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "bootstrap-node":
+			if err := runBootstrapNode(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula bootstrap-node: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "cluster":
+			if err := runCluster(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula cluster: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "service":
 			if err := runService(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "specula service: %v\n", err)

@@ -1,0 +1,23 @@
+# China / GFW overlay for bootstrap Specula.
+# Use with: helm upgrade --install … -f values.yaml -f values-cn.yaml
+#
+# Aligns OCI remote_registries with specula.example.yaml (Huawei SWR nested
+# layout first for registry.k8s.io / k8s.gcr.io).
+
+regionProfile: cn
+
+# Prefer CN-reachable Hub mirrors (DaoCloud + 1ms); keep origin last.
+upstreams:
+  oci:
+    - name: daocloud
+      base_url: https://docker.m.daocloud.io
+      priority: 1
+      official: false
+    - name: 1ms
+      base_url: https://docker.1ms.run
+      priority: 2
+      official: false
+    - name: dockerhub
+      base_url: https://registry-1.docker.io
+      priority: 10
+      official: true

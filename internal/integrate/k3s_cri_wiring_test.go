@@ -51,7 +51,7 @@ version = 3
 	// 2) CRI config_path still broken until we rewrite
 	raw, err := os.ReadFile(cfgPath)
 	require.NoError(t, err)
-	needs, reason := criConfigPathNeedsFix(string(raw))
+	needs, reason := criConfigPathNeedsFix(string(raw), certs)
 	require.True(t, needs, reason)
 
 	r := fixOneContainerdConfigPath(cfgPath, certs, false, false)

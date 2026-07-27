@@ -122,20 +122,28 @@ func enableCRI(content string) (string, bool) {
 }
 
 // criConfigPathNeedsFix reports whether content lacks an explicit single-root
-// io.containerd.cri.v1.images.registry config_path (so 2.2 defaults still apply).
-func criConfigPathNeedsFix(content string) (needs bool, reason string) {
+// io.containerd.cri.v1.images.registry config_path matching preferred
+// (so 2.2 defaults / wrong stub roots still apply).
+func criConfigPathNeedsFix(content, preferred string) (needs bool, reason string) {
+	preferred = strings.TrimRight(strings.TrimSpace(preferred), "/")
+	if preferred == "" {
+		preferred = systemContainerdCerts
+	}
 	body, ok := criV1ImagesRegistryBody(content)
 	if !ok {
 		// Legacy-only or bare configs inherit containerd 2.2's broken default.
 		return true, "missing io.containerd.cri.v1.images.registry config_path"
 	}
 	for _, m := range reConfigPathAssign.FindAllStringSubmatch(body, -1) {
-		val := m[3]
+		val := strings.TrimSpace(m[3])
 		if !strings.Contains(val, "certs.d") {
 			continue
 		}
 		if isColonSeparatedCertsPath(val) {
 			return true, "colon-separated config_path"
+		}
+		if val != preferred {
+			return true, "CRI config_path mismatch"
 		}
 		return false, "already single-root"
 	}
@@ -175,7 +183,7 @@ func containerdHostsConfigNeedsFix(content, preferred string) (needs bool, reaso
 	if criDisabled(content) {
 		return true, "cri listed in disabled_plugins"
 	}
-	if cri, r := criConfigPathNeedsFix(content); cri {
+	if cri, r := criConfigPathNeedsFix(content, preferred); cri {
 		return true, r
 	}
 	if xfer, r := transferConfigPathNeedsFix(content, preferred); xfer {
@@ -243,7 +251,7 @@ func rewriteCRIConfigPath(content, preferred string) (string, bool) {
 `, preferred)
 		out += block
 		changed = true
-	} else if needs, reason := criConfigPathNeedsFix(out); needs && strings.Contains(reason, "missing config_path in") {
+	} else if needs, reason := criConfigPathNeedsFix(out, preferred); needs && strings.Contains(reason, "missing config_path in") {
 		loc := reCRIV1ImagesReg.FindStringIndex(out)
 		if loc != nil {
 			insert := fmt.Sprintf("  config_path = %q\n", preferred)
@@ -253,7 +261,7 @@ func rewriteCRIConfigPath(content, preferred string) (string, bool) {
 		}
 	}
 	if !changed {
-		if needs, _ := criConfigPathNeedsFix(out); !needs {
+		if needs, _ := criConfigPathNeedsFix(out, preferred); !needs {
 			return content, false
 		}
 	}

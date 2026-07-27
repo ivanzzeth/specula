@@ -538,10 +538,17 @@ Local smoke: `./scripts/ha-minikube.sh`. Details: [ARCHITECTURE §12](docs/ARCHI
 ## Bootstrap (China / air-gapped)
 
 When `docker.io` / `registry.k8s.io` are unreachable, land Specula first (offline tar /
-ACR / `docker load`), then pull **everything else through Specula**. Chart:
-[`deploy/helm/specula-bootstrap`](deploy/helm/specula-bootstrap) (SQLite + local blob,
-NodePort, containerd `certs.d` DaemonSet — no busybox). Local smoke (containerd):
-`./scripts/bootstrap-minikube.sh`.
+ACR / `docker load`), then pull **everything else through Specula**.
+
+**One command** (local chart + node integrate DaemonSet — no remote OCI charts):
+
+```bash
+specula cluster install --cn --image specula:local --load-image --wait
+# smoke: ./scripts/cluster-install-minikube.sh  or  make test-cluster-install
+```
+
+Chart: [`deploy/helm/specula-bootstrap`](deploy/helm/specula-bootstrap). Details:
+[docs/CLUSTER-INSTALL.md](docs/CLUSTER-INSTALL.md).
 
 ## Docs
 

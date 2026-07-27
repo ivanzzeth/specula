@@ -507,10 +507,17 @@ docker pull 127.0.0.1:7732/registry.k8s.io/pause:3.9
 ## 自举（中国 / 离线）
 
 当 `docker.io` / `registry.k8s.io` 不可达时：先落地 Specula（离线 tar / ACR /
-`docker load`），再让其它镜像**透过 Specula** 进来。Chart：
-[`deploy/helm/specula-bootstrap`](deploy/helm/specula-bootstrap)（SQLite + 本地盘、
-NodePort、containerd `certs.d` DaemonSet，无 busybox）。本机验收（containerd）：
-`./scripts/bootstrap-minikube.sh`。
+`docker load`），再让其它镜像**透过 Specula** 进来。
+
+**推荐一条命令**（本地 chart + 节点 integrate DaemonSet，不拉 ghcr chart）：
+
+```bash
+specula cluster install --cn --image specula:local --load-image --wait
+# 本机验收：./scripts/cluster-install-minikube.sh  或  make test-cluster-install
+```
+
+Chart：[`deploy/helm/specula-bootstrap`](deploy/helm/specula-bootstrap)。说明：
+[docs/CLUSTER-INSTALL.md](docs/CLUSTER-INSTALL.md)。
 
 ## 文档
 

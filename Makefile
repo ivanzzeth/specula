@@ -22,7 +22,7 @@ export CGO_ENABLED := 0
         test-trust-oracle test-trust-oracle-mutations test-trust-oracle-signed \
         test-groundtruth test-groundtruth-meta \
         test-mutation \
-        test-realclient test-cri test-e2e test-ui test-all
+        test-realclient test-cri test-e2e test-ui test-all test-cluster-install
 
 # Container image (Docker Hub: ivanzz/specula)
 IMAGE_NAME ?= specula
@@ -252,6 +252,15 @@ test-realclient:
 ## test-cri: containerd CRI + k8s/k3s hosts.toml / config_path gate (needs: sudo + containerd + crictl)
 test-cri:
 	bash scripts/realclient-cri-k8s.sh
+
+## test-cluster-install: one-command CN bootstrap on minikube (needs: minikube + helm + docker)
+#
+# Gate for `specula cluster install --cn`: local chart only, integrate DaemonSet,
+# crictl pull registry.k8s.io/pause through Specula. Set SPECULA_E2E_CLUSTER=0 to skip.
+test-cluster-install:
+	@if [ "$${SPECULA_E2E_CLUSTER:-1}" = "0" ] || [ "$${SPECULA_E2E_CLUSTER:-}" = "false" ]; then \
+	  echo "SKIP: SPECULA_E2E_CLUSTER=0"; exit 0; fi
+	bash scripts/cluster-install-minikube.sh
 
 ## test-e2e: the dimensions needing a real binary + real infra (needs: network + docker + clients)
 test-e2e: test-conformance test-realclient

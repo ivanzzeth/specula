@@ -1,3 +1,4 @@
+{{- $cn := or (eq .Values.regionProfile "cn") (eq .Values.regionProfile "CN") -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -11,6 +12,11 @@ data:
       control_plane_addr: ":{{ .Values.service.controlPort }}"
       # Bootstrap is single-replica: no cross-replica stampede lock needed.
       ha: false
+      {{- if .Values.tls.enabled }}
+      tls:
+        cert_file: /etc/specula/tls/tls.crt
+        key_file: /etc/specula/tls/tls.key
+      {{- end }}
 
     storage:
       blob:
@@ -31,7 +37,7 @@ data:
       # Anonymous pull-through of public upstream repos still works (that is the
       # whole point of a bootstrap mirror).
       config_secret: ""
-      cookie_secure: false
+      cookie_secure: {{ .Values.tls.enabled }}
 
     protocols:
       oci:
@@ -42,3 +48,12 @@ data:
           tiers: [tofu, checksum]
           quorum: 1
           tofu: enforce
+        {{- if .Values.remoteRegistries }}
+        oci:
+          remote_registries:
+            {{- toYaml .Values.remoteRegistries | nindent 12 }}
+        {{- else if $cn }}
+        oci:
+          remote_registries:
+            {{- include "specula-bootstrap.cnRemoteRegistries" . | nindent 12 }}
+        {{- end }}

@@ -33,7 +33,7 @@ func TestCriConfigPathNeedsFix_Colon(t *testing.T) {
 [plugins.'io.containerd.cri.v1.images'.registry]
   config_path = '/etc/containerd/certs.d:/etc/docker/certs.d'
 `
-	needs, reason := criConfigPathNeedsFix(content)
+	needs, reason := criConfigPathNeedsFix(content, systemContainerdCerts)
 	assert.True(t, needs)
 	assert.Contains(t, reason, "colon")
 }
@@ -42,7 +42,7 @@ func TestCriConfigPathNeedsFix_Missing(t *testing.T) {
 	content := `# bare kubeadm node — inherits 2.2 default colon path
 version = 2
 `
-	needs, reason := criConfigPathNeedsFix(content)
+	needs, reason := criConfigPathNeedsFix(content, systemContainerdCerts)
 	assert.True(t, needs)
 	assert.Contains(t, reason, "missing")
 }
@@ -52,7 +52,7 @@ func TestCriConfigPathNeedsFix_DisabledCRI(t *testing.T) {
 	// still write the single-root stanza (and enableCRI clears the disable).
 	content := `disabled_plugins = ["cri"]
 `
-	needs, reason := criConfigPathNeedsFix(content)
+	needs, reason := criConfigPathNeedsFix(content, systemContainerdCerts)
 	assert.True(t, needs)
 	assert.Contains(t, reason, "missing io.containerd.cri.v1.images")
 	assert.True(t, criDisabled(content))
@@ -72,14 +72,28 @@ func TestCriConfigPathNeedsFix_LegacyOnly_NeedsV1Images(t *testing.T) {
 [plugins.'io.containerd.transfer.v1.local']
   config_path = "/etc/containerd/certs.d"
 `
-	needs, reason := criConfigPathNeedsFix(content)
+	needs, reason := criConfigPathNeedsFix(content, systemContainerdCerts)
 	assert.True(t, needs)
 	assert.Contains(t, reason, "cri.v1.images")
 	out, changed := rewriteContainerdHostsConfigPaths(content, "/etc/containerd/certs.d")
 	require.True(t, changed)
 	assert.Contains(t, out, `io.containerd.cri.v1.images`)
-	needs2, _ := criConfigPathNeedsFix(out)
+	needs2, _ := criConfigPathNeedsFix(out, systemContainerdCerts)
 	assert.False(t, needs2)
+}
+
+func TestCriConfigPathNeedsFix_MismatchStubK3s(t *testing.T) {
+	// Prior bug wrote k3s agent path into minikube /etc/containerd/config.toml.
+	content := `
+[plugins.'io.containerd.cri.v1.images'.registry]
+  config_path = '/var/lib/rancher/k3s/agent/etc/containerd/certs.d'
+`
+	needs, reason := criConfigPathNeedsFix(content, systemContainerdCerts)
+	assert.True(t, needs)
+	assert.Contains(t, reason, "mismatch")
+	out, changed := rewriteContainerdHostsConfigPaths(content, systemContainerdCerts)
+	require.True(t, changed)
+	assert.Contains(t, out, `config_path = '/etc/containerd/certs.d'`)
 }
 
 func TestCriConfigPathNeedsFix_AlreadySingle(t *testing.T) {
@@ -87,7 +101,7 @@ func TestCriConfigPathNeedsFix_AlreadySingle(t *testing.T) {
 [plugins.'io.containerd.cri.v1.images'.registry]
   config_path = '/etc/containerd/certs.d'
 `
-	needs, reason := criConfigPathNeedsFix(content)
+	needs, reason := criConfigPathNeedsFix(content, systemContainerdCerts)
 	assert.False(t, needs)
 	assert.Contains(t, reason, "single-root")
 }

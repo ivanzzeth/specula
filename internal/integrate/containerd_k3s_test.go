@@ -30,3 +30,27 @@ func TestK3sAgentPathConstant(t *testing.T) {
 		t.Fatalf("k3s certs.d constant drifted: %s", k3sAgentContainerdCerts)
 	}
 }
+
+func TestDetectK3sNode_IgnoresStubCertsDir(t *testing.T) {
+	// Specula bootstrap DS creates this path via hostPath DirectoryOrCreate on
+	// non-k3s nodes — must NOT flip detection. A prior bug also wrote
+	// config.toml under the stub tree; that must not count either.
+	stubOnly := func(path string) bool {
+		switch path {
+		case k3sAgentContainerdCerts, "/var/lib/rancher/k3s",
+			"/var/lib/rancher/k3s/agent/etc/containerd/config.toml":
+			return true
+		default:
+			return false
+		}
+	}
+	if detectK3sNode(stubOnly, stubOnly) {
+		t.Fatal("stub certs.d / rancher tree / stub config.toml must not count as k3s")
+	}
+	if !detectK3sNode(func(p string) bool { return p == "/usr/local/bin/k3s" }, func(string) bool { return false }) {
+		t.Fatal("k3s binary must count as k3s")
+	}
+	if !detectK3sNode(func(string) bool { return false }, func(p string) bool { return p == "/var/lib/rancher/k3s/server" }) {
+		t.Fatal("k3s server data dir must count as k3s")
+	}
+}

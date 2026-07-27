@@ -41,15 +41,22 @@ service:
   dataNodePort: 30732
   controlNodePort: 30733
 
+# Data volume for Specula blob/SQLite cache. Modes (priority):
+#   existingClaim > hostPath > created PVC (enabled=true) > emptyDir
+# cluster install defaults enabled=true; falls back to emptyDir without StorageClass.
 persistence:
   enabled: true
+  # Mount an already-provisioned PVC (skips creating one).
+  existingClaim: ""
+  # Node-local dir when there is no provisioner (single-node / air-gap).
+  hostPath: ""
   size: 20Gi
   storageClass: ""
   accessModes:
     - ReadWriteOnce
 
 # Upstreams the bootstrap mirror proxies. Defaults target China-reachable
-# endpoints (DaoCloud). Override for other regions.
+# endpoints (DaoCloud). Override for other regions. See values-cn.yaml.
 upstreams:
   oci:
     - name: daocloud
@@ -60,6 +67,14 @@ upstreams:
       base_url: https://registry-1.docker.io
       priority: 10
       official: true
+
+# Path-style multi-registry allowlist (SSRF). Empty = Hub-only.
+# CN overlay (values-cn / regionProfile=cn via CLI --cn) fills these.
+remoteRegistries: []
+
+# When true (or regionProfile=cn), ConfigMap embeds the CN k8s mirror chain
+# (Huawei SWR layout:huawei-ddn → DaoCloud → 1ms) for registry.k8s.io / k8s.gcr.io.
+regionProfile: ""
 
 cache:
   defaultMutableTTLSeconds: 300
@@ -74,9 +89,12 @@ mirror:
   enabled: true
   # containerd certs.d root. k3s: /var/lib/rancher/k3s/agent/etc/containerd/certs.d
   certsDir: /etc/containerd/certs.d
+  # Also write k3s agent certs.d when that path exists on the node (integrate DS).
+  k3sCertsDir: /var/lib/rancher/k3s/agent/etc/containerd/certs.d
   registries:
     - docker.io
     - registry.k8s.io
+    - k8s.gcr.io
     - ghcr.io
     - quay.io
     - gcr.io
@@ -84,6 +102,32 @@ mirror:
   # The mirror endpoint the node dials. Defaults to the host's own NodePort.
   endpoint: "http://127.0.0.1:30732"
   skipVerify: true
+
+# ── Phase 1b: full-protocol integrate DaemonSet ───────────────────────────────
+# Runs `specula integrate` on every node (OCI + optional helm/apt). Same image.
+integrate:
+  enabled: true
+  protocols: "oci"
+  # When true, also wire helm + apt drop-ins (needs host paths mounted).
+  includeClientProtocols: false
+  # Hold the container so the DS stays Ready (re-run by deleting the pod).
+  hold: true
+  # Re-run hosts.toml + integrate while holding (drift repair).
+  reconcileInterval: 5m
+  # false | true | once — "once" restarts containerd only when CRI config hash
+  # changes AND Specula /healthz is up (stamp: /var/lib/specula/.cri-reload-hash).
+  restartContainerd: once
+  # Host path for reload stamp (and optional shared state).
+  stampHostPath: /var/lib/specula
+
+# ── TLS (optional): mint CA+server cert into a Secret; mount on Specula ───────
+# Disabled by default for chicken-egg bootstrap (HTTP NodePort + skip_verify).
+# `specula cluster install` can enable and push a Secret from the client.
+tls:
+  enabled: false
+  secretName: ""
+  # Host path where integrate DS seeds ca.crt for --ca-file.
+  caHostPath: /etc/specula/ca.crt
 
 # ── Phase 2: warm HA dependency manifests through the mirror ──────────────────
 # Runs `specula bootstrap-prefetch` from the SAME Specula image.
@@ -93,9 +137,11 @@ prefetch:
     - docker.io/bitnami/postgresql:latest
     - docker.io/bitnami/redis:latest
     - registry.k8s.io/metrics-server/metrics-server:v0.8.1
+    - registry.k8s.io/pause:3.9
 
 # ── Phase 3: upgrade to the full HA Specula (installer Job) ────────────────────
-# Opt-in. Needs a reachable Helm chart (OCI / packaged). Defaults off.
+# Opt-in. Chart MUST be a local path mounted into the Job (CN: no oci://ghcr).
+# Default chart path is the sibling chart under /charts/specula (see volume).
 installer:
   enabled: false
   image:
@@ -104,7 +150,10 @@ installer:
     pullPolicy: IfNotPresent
   clusterRole: cluster-admin
   release: specula
-  chart: oci://ghcr.io/ivanzzeth/charts/specula
+  # Local path inside the Job pod — never default to oci://ghcr.io.
+  chart: /charts/specula
   targetNamespace: specula
   timeout: 15m
   extraArgs: []
+  # Host path or emptyDir source for the packaged HA chart (operator fills).
+  chartHostPath: ""

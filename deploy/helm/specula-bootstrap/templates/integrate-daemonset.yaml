@@ -1,0 +1,115 @@
+{{- if .Values.integrate.enabled }}
+# Phase 1b — node-level bootstrap-node (hosts.toml + integrate + doctor).
+# Distroless-safe: no shell. Privileged + hostPID for config.toml rewrite.
+# restartContainerd=once: reload only when CRI hash changes and Specula is healthy.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "specula-bootstrap.fullname" . }}-integrate
+  labels:
+    {{- include "specula-bootstrap.labels" . | nindent 4 }}
+    app.kubernetes.io/component: integrate
+spec:
+  selector:
+    matchLabels:
+      {{- include "specula-bootstrap.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: integrate
+  template:
+    metadata:
+      labels:
+        {{- include "specula-bootstrap.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: integrate
+    spec:
+      enableServiceLinks: false
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: integrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsNonRoot: false
+          args:
+            - bootstrap-node
+            - --endpoint={{ .Values.mirror.endpoint }}
+            - --certs-dir={{ .Values.mirror.certsDir }}
+            - --k3s-certs-dir={{ .Values.mirror.k3sCertsDir | default "/var/lib/rancher/k3s/agent/etc/containerd/certs.d" }}
+            - --registries={{ .Values.mirror.registries | join "," }}
+            {{- if .Values.mirror.skipVerify }}
+            - --skip-verify
+            {{- else }}
+            - --skip-verify=false
+            {{- end }}
+            - --protocols={{ .Values.integrate.protocols }}{{ if .Values.integrate.includeClientProtocols }},helm,apt{{ end }}
+            - --config=/etc/specula/specula.yaml
+            - --skip-scheme-probe
+            - --restart-containerd={{ .Values.integrate.restartContainerd | default "once" }}
+            - --stamp-dir={{ .Values.integrate.stampHostPath | default "/var/lib/specula" }}
+            - --doctor
+            {{- if .Values.tls.enabled }}
+            - --ca-file=/etc/specula/tls/ca.crt
+            {{- end }}
+            {{- if .Values.integrate.hold }}
+            - --hold
+            - --reconcile-interval={{ .Values.integrate.reconcileInterval | default "5m" }}
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/specula/specula.yaml
+              subPath: specula.yaml
+              readOnly: true
+            - name: host-certs-d
+              mountPath: {{ .Values.mirror.certsDir }}
+            - name: host-k3s-certs-d
+              mountPath: {{ .Values.mirror.k3sCertsDir | default "/var/lib/rancher/k3s/agent/etc/containerd/certs.d" }}
+            - name: host-etc-containerd
+              mountPath: /etc/containerd
+            - name: host-etc-docker
+              mountPath: /etc/docker
+            - name: host-var-rancher
+              mountPath: /var/lib/rancher
+            - name: host-stamp
+              mountPath: {{ .Values.integrate.stampHostPath | default "/var/lib/specula" }}
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /etc/specula/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "specula-bootstrap.fullname" . }}
+        - name: host-certs-d
+          hostPath:
+            path: {{ .Values.mirror.certsDir }}
+            type: DirectoryOrCreate
+        - name: host-k3s-certs-d
+          hostPath:
+            path: {{ .Values.mirror.k3sCertsDir | default "/var/lib/rancher/k3s/agent/etc/containerd/certs.d" }}
+            type: DirectoryOrCreate
+        - name: host-etc-containerd
+          hostPath:
+            path: /etc/containerd
+            type: DirectoryOrCreate
+        - name: host-etc-docker
+          hostPath:
+            path: /etc/docker
+            type: DirectoryOrCreate
+        - name: host-var-rancher
+          hostPath:
+            path: /var/lib/rancher
+            type: DirectoryOrCreate
+        - name: host-stamp
+          hostPath:
+            path: {{ .Values.integrate.stampHostPath | default "/var/lib/specula" }}
+            type: DirectoryOrCreate
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.secretName | default (printf "%s-tls" (include "specula-bootstrap.fullname" .)) }}
+        {{- end }}
+{{- end }}

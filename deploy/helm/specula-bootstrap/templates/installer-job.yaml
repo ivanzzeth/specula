@@ -55,7 +55,19 @@ spec:
             - |
               set -eu
               echo "Phase 3: helm upgrade --install {{ .Values.installer.release }} -> HA Specula"
-              helm upgrade --install "{{ .Values.installer.release }}" "{{ .Values.installer.chart }}" \
+              CHART="{{ .Values.installer.chart }}"
+              case "${CHART}" in
+                oci://*|https://*|http://*)
+                  echo "ERROR: remote chart refs are disabled for CN-safe installs (got ${CHART})" >&2
+                  echo "Mount a local chart at /charts/specula or set installer.chart to a filesystem path." >&2
+                  exit 1
+                  ;;
+              esac
+              if [ ! -e "${CHART}" ]; then
+                echo "ERROR: local chart path ${CHART} not found in Job pod" >&2
+                exit 1
+              fi
+              helm upgrade --install "{{ .Values.installer.release }}" "${CHART}" \
                 --namespace "{{ .Values.installer.targetNamespace }}" --create-namespace \
                 {{- range .Values.installer.extraArgs }}
                 {{ . }} \

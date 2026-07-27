@@ -28,11 +28,21 @@ func resolveContainerdCertsDirs() []string {
 }
 
 func isK3sNode() bool {
-	if fileExists(k3sAgentContainerdCerts) || dirExists(k3sAgentContainerdCerts) {
+	return detectK3sNode(fileExists, dirExists)
+}
+
+// detectK3sNode decides whether to prefer the k3s agent certs.d root.
+// IMPORTANT: do NOT treat mere existence of
+// /var/lib/rancher/k3s/agent/etc/containerd/certs.d (or a Specula-written
+// stub config.toml there) as k3s — the bootstrap integrate DaemonSet mounts
+// that path with DirectoryOrCreate on every cluster (minikube included), and
+// a previous buggy isK3sNode wrote config.toml into the stub tree, which then
+// self-perpetuated the wrong CRI config_path.
+func detectK3sNode(fileExists, dirExists func(string) bool) bool {
+	if fileExists("/usr/local/bin/k3s") || fileExists("/usr/bin/k3s") {
 		return true
 	}
-	// Fresh node: certs.d may not exist yet, but the k3s tree does.
-	if dirExists("/var/lib/rancher/k3s") || fileExists("/usr/local/bin/k3s") || fileExists("/usr/bin/k3s") {
+	if dirExists("/run/k3s") || dirExists("/var/lib/rancher/k3s/server") {
 		return true
 	}
 	return false

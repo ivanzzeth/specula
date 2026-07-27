@@ -1,4 +1,5 @@
-{{- if .Values.persistence.enabled }}
+{{- /* Create a PVC only when enabled and not using existingClaim/hostPath. */ -}}
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) (not .Values.persistence.hostPath) }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
