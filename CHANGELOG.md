@@ -3,6 +3,35 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [Unreleased]
+
+### Fixed — CAS dedup could delete bytes another entry still referenced
+
+Blob storage is content-addressed: the key is `blobs/<algo>/<hex>` with no
+protocol, repo, org or tag in it, so identical bytes are ONE object shared across
+images, repositories, protocols and — in the hosted shape — clusters. `Put`
+head-checks first and returns early when the object is there, so a second reference
+uploads nothing. That is the storage saving, and it was doing its job.
+
+Deletion did not respect it. `enforceCapacity` deleted the metadata row and then
+deleted the blob unconditionally, so evicting one of several entries sharing a
+digest destroyed the bytes for all of them and left the survivors pointing at
+nothing. Two tags of one image share base layers; that is the normal case, not a
+corner one. (`BlobStore.Delete`'s doc comment promised "or decrements its refcount
+for CAS dedup" — no driver ever did.)
+
+Eviction now asks the metadata store whether anything else still references the
+digest, via a new `EntryFilter.Digest`, and keeps the object when it does. On any
+error it keeps the object: an unreferenced blob is space the next pass reclaims,
+whereas a deleted-but-referenced blob is a pull that fails for content the cache
+still advertises.
+
+A metadata row whose blob has gone missing anyway — an S3 lifecycle rule, a bucket
+sweep, an older build's eviction — now reads as a **cache miss** so the caller
+re-fetches, instead of surfacing as a 502 for content the upstream still has. Only
+"not found" errors are treated this way; `AccessDenied` and timeouts stay hard
+failures rather than becoming a silent re-fetch storm that hides an outage.
+
 ## [0.12.3] — Charts stop restating the built-in upstream table — 2026-07-28
 
 ### Fixed — `502 upstream fetch failed` pulling from Docker Hub in CN

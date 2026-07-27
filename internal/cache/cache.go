@@ -23,10 +23,13 @@ package cache
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -497,9 +500,36 @@ func (m *manager) ServeEntry(ctx context.Context, entry *artifact.CacheEntry, of
 	}
 	rc, _, err := m.blobs.Get(ctx, entry.Digest, offset, length)
 	if err != nil {
+		// A metadata row whose blob is gone is a MISS, not a server error. The two
+		// can drift apart for reasons outside this process — an S3 lifecycle rule,
+		// an operator sweeping the bucket, an eviction that removed shared bytes —
+		// and reporting a hard failure turns a re-fetchable gap into a 502 for
+		// content the upstream still has. Callers treat ErrCacheMiss as "go get it".
+		if isBlobMissing(err) {
+			m.log.Warn("cache: entry present but blob is gone; treating as a miss",
+				"digest", entry.Digest, "protocol", entry.Ref.Protocol,
+				"name", entry.Ref.Name, "err", err)
+			return nil, ErrCacheMiss
+		}
 		return nil, fmt.Errorf("cache: blob get: %w", err)
 	}
 	return rc, nil
+}
+
+// isBlobMissing reports whether err means "the object is not there" rather than
+// "the store failed". Drivers surface it as fs.ErrNotExist (local disk) or an S3
+// NoSuchKey/NotFound, both of which the SDK maps onto a 404-shaped error; the
+// string check catches drivers that wrap without preserving a sentinel.
+func isBlobMissing(err error) bool {
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrCacheMiss) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such key") ||
+		strings.Contains(msg, "nosuchkey") ||
+		strings.Contains(msg, "not found") ||
+		strings.Contains(msg, "notfound") ||
+		strings.Contains(msg, "no such file")
 }
 
 // serveMutablePayload serves the Payload bytes of a MutableEntry (no CAS blob)

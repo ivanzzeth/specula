@@ -79,7 +79,14 @@ func (m *manager) enforceCapacity(ctx context.Context, protect artifact.Artifact
 				return fmt.Errorf("evict meta %s/%s@%s: %w",
 					e.Ref.Protocol, e.Ref.Name, e.Ref.Version, delErr)
 			}
-			if digest != "" {
+			// The CAS deduplicates by digest: one object serves every image, repo,
+			// protocol and cluster whose content is identical. So the meta row we
+			// just deleted may not have been the only claim on these bytes —
+			// two tags of one image share base layers, and in the hosted shape two
+			// CLUSTERS share them. Deleting the object regardless would strip the
+			// bytes out from under the survivors and leave their rows pointing at
+			// nothing.
+			if digest != "" && m.blobIsUnreferenced(ctx, digest) {
 				if blobErr := m.blobs.Delete(ctx, digest); blobErr != nil {
 					m.log.Warn("cache: evict blob", "digest", digest, "err", blobErr)
 				}
@@ -132,4 +139,25 @@ func (m *manager) totalCachedBytes(ctx context.Context) (int64, error) {
 
 func sameRef(a, b artifact.ArtifactRef) bool {
 	return a.Protocol == b.Protocol && a.Name == b.Name && a.Version == b.Version
+}
+
+// blobIsUnreferenced reports whether NO remaining cache entry points at digest.
+//
+// Called after the evicted row is already gone, so a non-zero count means some
+// other entry still shares these bytes. On any error it answers false: keeping an
+// unreferenced object wastes space that the next eviction pass reclaims, whereas
+// deleting a referenced one breaks a pull for content the cache still advertises.
+func (m *manager) blobIsUnreferenced(ctx context.Context, digest string) bool {
+	page, err := m.meta.ListEntries(ctx, "", meta.EntryFilter{Digest: digest}, meta.Page{Limit: 1})
+	if err != nil {
+		m.log.Warn("cache: cannot count blob references; keeping the object",
+			"digest", digest, "err", err)
+		return false
+	}
+	if page.Total > 0 {
+		m.log.Debug("cache: blob still shared, keeping it",
+			"digest", digest, "other_entries", page.Total)
+		return false
+	}
+	return true
 }

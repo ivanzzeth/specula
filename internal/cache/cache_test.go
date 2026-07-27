@@ -257,6 +257,9 @@ func (f *fakeMetaStore) ListEntries(_ context.Context, protocol string, filter m
 		if filter.Tier != nil && e.Tier != *filter.Tier {
 			continue
 		}
+		if filter.Digest != "" && e.Digest != filter.Digest {
+			continue
+		}
 		if filter.Upstream != "" && e.Upstream != filter.Upstream {
 			continue
 		}

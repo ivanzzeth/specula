@@ -50,6 +50,10 @@ func listWhere(protocol string, f meta.EntryFilter) (string, []any) {
 		conds = append(conds, "origin = ?")
 		args = append(args, artifact.NormalizeOrigin(f.Origin))
 	}
+	if f.Digest != "" {
+		conds = append(conds, "digest = ?")
+		args = append(args, f.Digest)
+	}
 	if len(conds) == 0 {
 		return "", nil
 	}

@@ -71,6 +71,14 @@ type EntryFilter struct {
 	Pinned *bool
 	// Origin, when non-empty, matches only that origin (hosted|cached).
 	Origin string
+	// Digest, when non-empty, matches only entries whose blob digest equals it.
+	//
+	// This exists so a caller about to delete a CAS blob can ask whether anything
+	// ELSE still points at those bytes. The CAS deduplicates by digest — one
+	// object serves every image, repo, protocol and cluster with identical
+	// content — which means deleting the object on behalf of one entry destroys
+	// the bytes for every other entry sharing it.
+	Digest string
 }
 
 // SortField names a ListEntries ordering column. Unknown values fall back to
