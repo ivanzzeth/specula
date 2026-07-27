@@ -65,6 +65,24 @@ Known production constraints (do not regress):
 - Gate: `make test-cri` / `scripts/realclient-cri-k8s.sh` (hermetic colon-bypass + single-path Specula + live pause/etcd via CRI). Set `SPECULA_E2E_CRI=0` to skip.
 - OCI install overwrite only when config is still single-`base_url` / one-upstream (or `SPECULA_FORCE_CN_OCI=1`).
 
+## Agent working rules
+
+- **Run anything slow in the background.** CI polling (`gh run watch`, status
+  loops), `docker buildx` builds, `make test-cluster-install`, `make
+  test-single-host`, cluster installs, `minikube start` — all of it goes to a
+  background task, and you report from its output when it finishes. Never chain
+  sleeps or poll in the foreground: a blocked session cannot be redirected while a
+  15-minute build runs. Single quick checks (`gh run view`, a file read) are fine.
+- **Never mutate a live cluster to make a test easier.** Do not delete images the
+  cluster depends on (`crictl rmi …/pause`), restart node components, or drain
+  nodes to force a cache miss. Pull something the node does not have instead, and
+  read `specula stats` / `/metrics` for the evidence.
+- **Verify a value before wiring it into CI or a cluster.** Registry hostnames,
+  endpoints and credentials: probe first (`curl https://<registry>/v2/` must answer
+  401), then set the secret. Guessing a hostname costs a full CI round trip.
+- **Keep prose short.** Lead with the result or the blocker. Enumerating options,
+  restating context, or narrating what you are about to do reads as stalling.
+
 ## Commit & review
 
 - Conventional commits: `feat|fix|refactor|docs|test|chore|perf|ci: …`
