@@ -32,6 +32,13 @@ spec:
       # strict config loader rejects them as unknown keys (CrashLoopBackOff).
       # Disable service links — Specula addresses backends via DNS, not env.
       enableServiceLinks: {{ .Values.enableServiceLinks }}
+      # Same reason as the bootstrap chart: the image runs as nonroot (65532) and a
+      # CSI-provisioned volume mounts root-owned, so without fsGroup the daemon
+      # cannot create its data dirs. Applies to the quarantine emptyDir too.
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

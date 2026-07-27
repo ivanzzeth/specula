@@ -19,6 +19,14 @@ fullnameOverride: ""
 # config prefix. Always keep off.
 enableServiceLinks: false
 
+# Pod-level securityContext. fsGroup must match the image's runtime GID (distroless
+# nonroot = 65532): without it a CSI-provisioned PVC mounts root:root 0755 and the
+# non-root daemon cannot create its data dirs. Set to {} only if you run a custom
+# image as root.
+podSecurityContext:
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+
 podAnnotations: {}
 podLabels: {}
 nodeSelector: {}

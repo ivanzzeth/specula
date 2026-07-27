@@ -90,6 +90,12 @@ blob:
 
 # Local per-replica scratch for verify-on-write streaming (and resumable partials).
 # Keep on a writable volume with room for the largest artifact; never /tmp.
+# Must match the image's runtime GID (distroless nonroot = 65532) or a CSI PVC
+# mounts root-owned and the non-root daemon cannot create its data dirs.
+podSecurityContext:
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+
 quarantineDir: /var/lib/specula/quarantine
 # emptyDir sizeLimit for the quarantine mount (e.g. 20Gi). Empty = node default.
 # Must exceed the largest single artifact you expect to cache.

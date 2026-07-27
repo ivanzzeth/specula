@@ -27,6 +27,16 @@ spec:
         {{- end }}
     spec:
       enableServiceLinks: {{ .Values.enableServiceLinks }}
+      # fsGroup is REQUIRED, not cosmetic. The image runs as nonroot (uid 65532)
+      # while a freshly provisioned CSI volume mounts as root:root 0755, so the
+      # daemon cannot create /var/lib/specula/{blobs,quarantine} and dies with
+      # "mkdir: permission denied" on EVERY cloud CSI driver. minikube's hostpath
+      # provisioner hands out 0777 and hides this completely.
+      # fsGroup makes kubelet chgrp+setgid the volume to this GID before start.
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: specula
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
