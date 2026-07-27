@@ -22,25 +22,48 @@ var ErrSessionNotFound = errors.New("registry: upload session not found")
 // the streamed content and atomically promotes it into CAS (blob dedup by
 // digest means an already-present blob is a no-op).
 type UploadSession struct {
-	ID        string    // upload UUID (the <uuid> path segment)
-	Repo      string    // target repository "<org>/<repo>"
-	Path      string    // on-disk chunk-accumulation file (quarantine area)
+	ID   string // upload UUID (the <uuid> path segment)
+	Repo string // target repository "<org>/<repo>"
+	Path string // MemorySessions only: on-disk chunk file. Empty for a
+	//                     shared store, whose bytes are not on any one replica's
+	//                     disk — read through UploadSessionStore.Open instead.
 	Offset    int64     // bytes written so far (next Content-Range start)
 	StartedAt time.Time // creation time (for idle-session expiry / GC)
 }
 
-// UploadSessionStore persists in-progress upload sessions. The in-memory
-// implementation is single-node; HA (R4) will back this with shared storage +
-// the distributed lock so a session survives being resumed on another replica.
+// UploadSessionStore persists in-progress upload sessions.
+//
+// MemorySessions is single-node. SharedSessions backs the same interface with the
+// mutable metadata tier plus the blob store, so a session opened on one replica
+// can be continued and finalised on another — required behind a Service or
+// Ingress with replicas > 1, where a push's POST, PATCH and PUT routinely land on
+// different Pods.
 type UploadSessionStore interface {
-	// Create opens a new session for repoName, allocating its chunk file.
+	// Create opens a new session for repoName, allocating its chunk storage.
 	Create(ctx context.Context, repoName string) (*UploadSession, error)
 	// Get returns the session by id, or ErrSessionNotFound.
 	Get(ctx context.Context, id string) (*UploadSession, error)
 	// Append writes r at the current offset and returns the new total offset.
 	Append(ctx context.Context, id string, r io.Reader) (int64, error)
-	// Delete discards a session and removes its chunk file (no-op if absent).
+	// Open returns the bytes accumulated so far, in write order.
+	//
+	// Callers MUST finalise through this rather than opening UploadSession.Path:
+	// with a shared store the chunks are not on the finalising replica's disk, and
+	// a handler that reaches for Path works on one replica and 404s on the next.
+	Open(ctx context.Context, id string) (io.ReadCloser, error)
+	// Delete discards a session and removes its chunk storage (no-op if absent).
+	// Used when an upload is ABANDONED — bad digest, failed store, client gone.
 	Delete(ctx context.Context, id string) error
+	// Complete discards a session whose content was successfully promoted into
+	// the CAS under promotedDigest.
+	//
+	// It is separate from Delete because a shared store stages chunks in the CAS,
+	// content-addressed, and a monolithic upload's single chunk therefore has the
+	// SAME digest as the finished blob — the staged object and the promoted object
+	// are one object. Cleaning up such a session via Delete would evict the blob
+	// that was just pushed. Naming the promoted digest lets the store keep it and
+	// drop everything else.
+	Complete(ctx context.Context, id, promotedDigest string) error
 }
 
 // MemorySessions is the single-node in-memory UploadSessionStore. Chunk bytes
@@ -116,6 +139,28 @@ func (m *MemorySessions) Append(_ context.Context, id string, r io.Reader) (int6
 	}
 	s.Offset += n
 	return s.Offset, nil
+}
+
+// Open returns the session's accumulated bytes from its chunk file.
+func (m *MemorySessions) Open(_ context.Context, id string) (io.ReadCloser, error) {
+	m.mu.Lock()
+	s, ok := m.sessions[id]
+	m.mu.Unlock()
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	f, err := os.Open(s.Path)
+	if err != nil {
+		return nil, fmt.Errorf("registry: open upload chunk file: %w", err)
+	}
+	return f, nil
+}
+
+// Complete removes a session whose content was promoted. The in-memory store
+// keeps chunk bytes in its own temp file rather than in the CAS, so there is
+// nothing shared with the promoted blob and this is exactly Delete.
+func (m *MemorySessions) Complete(ctx context.Context, id, _ string) error {
+	return m.Delete(ctx, id)
 }
 
 // Delete removes a session and its chunk file.

@@ -3,6 +3,47 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [Unreleased]
+
+### Fixed — `docker`/`crane push` behind an Ingress with replicas > 1
+
+A blob push is a stateful three-request protocol — POST opens an upload session,
+PATCH streams chunks, PUT finalises — and upload sessions lived in one process's
+memory with their bytes in that process's temp dir. Behind a Service or Ingress with
+more than one replica the PATCH/PUT lands on a Pod that never saw the POST, so a
+push that had authenticated fine died at the blob stage:
+
+```
+BLOB_UPLOAD_UNKNOWN: upload session not found
+```
+
+Scaling the Deployment to one replica made the identical push succeed, which is what
+made it look like a networking problem. Cookie affinity does not fix it either: crane
+and docker do not carry an Ingress's affinity cookie.
+
+Sessions are now shared, so any replica can continue and finalise an upload another
+one started:
+
+- **Metadata** (repo, offset, chunk list) goes in the mutable metadata tier — shared
+  already, implemented by both the sqlite and postgres drivers, and postgres in HA.
+- **Chunk bytes** go in the blob store, which is S3 in HA and therefore readable by
+  every replica.
+
+Wired unconditionally, not only under `ha: true`: `replicaCount` is an independent
+knob, and "works until someone scales the Deployment" is not a property worth having.
+
+Two details that the implementation had to get right, both covered by tests:
+
+- The blob store is a strict CAS — `Put` hashes what it receives — so chunks are
+  staged under their own content digest rather than an opaque key. A monolithic
+  upload's single chunk therefore has the **same digest as the finished blob**, so
+  finishing a session now goes through `Complete(id, promotedDigest)`; cleaning up
+  via `Delete` would have evicted the blob that was just pushed.
+- A staged chunk whose bytes were already in the store is not ours to remove, or an
+  abandoned push would evict a blob someone else depends on.
+
+No new operational requirement: no `sessionAffinity`, no pinned `replicas: 1`.
+
 ## [0.12.1] — Every protocol is served unless you switch it off — 2026-07-28
 
 ### Fixed

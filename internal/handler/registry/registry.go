@@ -37,7 +37,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -436,21 +435,25 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 		return
 	}
 
-	// Open the quarantine file and compute the digest of the full content using
-	// the algorithm the client declared.
-	f, err := os.Open(sess.Path)
+	// Read the accumulated bytes through the session store and compute the digest
+	// using the algorithm the client declared.
+	//
+	// Through the store, not os.Open(sess.Path): with a shared store the chunks
+	// were received by other replicas and are not on this one's disk. Reaching for
+	// the path is what made a push behind an Ingress work on one replica and fail
+	// on the next.
+	f, err := h.sessions.Open(r.Context(), uuid)
 	if err != nil {
-		h.log.Error("registry: open upload file", "path", sess.Path, "err", err)
-		writeError(w, http.StatusInternalServerError, "BLOB_UPLOAD_INVALID", "failed to open upload file")
+		h.log.Error("registry: open upload content", "uuid", uuid, "err", err)
+		writeError(w, http.StatusInternalServerError, "BLOB_UPLOAD_INVALID", "failed to open upload content")
 		_ = h.sessions.Delete(r.Context(), uuid)
 		return
 	}
-	defer f.Close()
-
 	hw := declaredDgst.Algorithm().Hash() // algorithm was validated by Parse above
 	size, err := io.Copy(hw, f)
+	_ = f.Close()
 	if err != nil {
-		h.log.Error("registry: hash upload file", "err", err)
+		h.log.Error("registry: hash upload content", "err", err)
 		writeError(w, http.StatusInternalServerError, "BLOB_UPLOAD_INVALID", "failed to hash upload")
 		_ = h.sessions.Delete(r.Context(), uuid)
 		return
@@ -472,14 +475,19 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 		return
 	}
 
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		h.log.Error("registry: seek upload file", "err", err)
-		writeError(w, http.StatusInternalServerError, "BLOB_UPLOAD_INVALID", "seek failed")
+	// Second pass over the same content. A shared store returns a stream rather
+	// than a seekable file — the chunks may live in S3 — so rewinding means asking
+	// the store again, not Seek(0).
+	content, err := h.sessions.Open(r.Context(), uuid)
+	if err != nil {
+		h.log.Error("registry: reopen upload content", "uuid", uuid, "err", err)
+		writeError(w, http.StatusInternalServerError, "BLOB_UPLOAD_INVALID", "failed to reopen upload content")
 		_ = h.sessions.Delete(r.Context(), uuid)
 		return
 	}
+	defer content.Close()
 
-	if err := h.blobs.Put(r.Context(), actualDigest, f, size); err != nil {
+	if err := h.blobs.Put(r.Context(), actualDigest, content, size); err != nil {
 		h.log.Error("registry: blob put", "digest", actualDigest, "err", err)
 		writeError(w, http.StatusInternalServerError, "BLOB_UPLOAD_INVALID", "failed to store blob")
 		_ = h.sessions.Delete(r.Context(), uuid)
@@ -492,7 +500,14 @@ func (h *Handler) completeUpload(w http.ResponseWriter, r *http.Request, name, u
 	// manager, so this metadata row is what makes them discoverable on pull.
 	h.recordHostedBlob(r.Context(), name, actualDigest, size)
 
-	_ = h.sessions.Delete(r.Context(), uuid)
+	// Complete, not Delete: a shared store stages chunks in the CAS by content
+	// digest, so a monolithic upload's staged chunk IS the blob just promoted.
+	// Deleting the session blindly would evict it.
+	if err := h.sessions.Complete(r.Context(), uuid, actualDigest); err != nil {
+		// The blob is stored and recorded; a session row we failed to clean up is
+		// not a reason to tell the client the push failed.
+		h.log.Warn("registry: complete upload session", "uuid", uuid, "err", err)
+	}
 
 	location := fmt.Sprintf("/v2/%s/blobs/%s", name, actualDigest)
 	w.Header().Set("Location", location)

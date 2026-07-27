@@ -820,11 +820,22 @@ func mountOCI(mux *http.ServeMux, cfg *config.Config, cm cache.CacheManager, met
 	)
 	ociRead := oci.NewHandler(cm, opts...)
 
+	// Upload sessions go in the shared metadata tier + blob store, never in this
+	// process's memory. A blob push is POST → PATCH → PUT, and behind a Service or
+	// Ingress with more than one replica those land on different Pods; with
+	// per-process sessions the PUT hits a replica that never saw the POST and the
+	// push dies with BLOB_UPLOAD_UNKNOWN. This is wired unconditionally rather than
+	// only under `ha: true`, because replicaCount is an independent knob and
+	// "works until someone scales the Deployment" is not a property worth having.
+	sessions := registry.NewSharedSessions(metaStore, blobs, cfg.EffectiveQuarantineDir(),
+		log.With("protocol", "oci", "component", "upload-sessions"))
+
 	// Write path over the shared CAS; non-write requests fall through to the
 	// pull-through read handler above.
 	writeHandler := registry.NewHandler(cm, repoStore, repoStore, authz,
 		registry.WithBlobStore(blobs),
 		registry.WithMeta(metaStore),
+		registry.WithSessions(sessions),
 		registry.WithReadHandler(ociRead),
 		registry.WithLogger(log.With("protocol", "oci", "component", "registry")),
 	)

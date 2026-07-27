@@ -151,8 +151,14 @@ func (e *errSessionStore) Get(_ context.Context, _ string) (*registry.UploadSess
 func (e *errSessionStore) Append(ctx context.Context, id string, r io.Reader) (int64, error) {
 	return e.real.Append(ctx, id, r)
 }
+func (e *errSessionStore) Open(ctx context.Context, id string) (io.ReadCloser, error) {
+	return e.real.Open(ctx, id)
+}
 func (e *errSessionStore) Delete(ctx context.Context, id string) error {
 	return e.real.Delete(ctx, id)
+}
+func (e *errSessionStore) Complete(ctx context.Context, id, promoted string) error {
+	return e.real.Complete(ctx, id, promoted)
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────────
