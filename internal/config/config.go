@@ -511,6 +511,19 @@ type UpstreamConfig struct {
 	//   huawei-ddn → ddn-k8s/<registry-host> (Hub: ddn-k8s/docker.io)
 	// Ignored when PathPrefix is non-empty. Unknown layouts fail Validate.
 	Layout string `koanf:"layout"`
+
+	// Proxy routes THIS upstream through an HTTP/HTTPS/SOCKS5 proxy:
+	//   proxy: http://10.0.0.5:3128
+	//   proxy: socks5://127.0.0.1:1080
+	//
+	// Per-upstream on purpose. HTTPS_PROXY in the environment also works and applies
+	// to every upstream at once — which sends the CN mirror traffic, the bulk of the
+	// bytes, through a metered proxy as well. Put the proxy on the upstream that
+	// needs it, normally the official origin: it sits last in the chain, so it is
+	// reached only after every mirror has failed and the proxy is paid for only then.
+	//
+	// Empty keeps http.ProxyFromEnvironment behaviour.
+	Proxy string `koanf:"proxy"`
 }
 
 // VerificationConfig configures the verification chain for one protocol

@@ -65,6 +65,18 @@ type Upstream struct {
 	// layouts (Huawei SWR: ddn-k8s/registry.k8s.io/…). Transparent mirrors
 	// leave this empty.
 	PathPrefix string
+
+	// Proxy, when set, is the HTTP/HTTPS/SOCKS5 proxy this ONE upstream is fetched
+	// through ("http://10.0.0.5:3128", "socks5://127.0.0.1:1080").
+	//
+	// Per-upstream rather than global on purpose. Specula's job is that CN mirrors
+	// carry the bulk of the bytes; sending those through a metered proxy as well
+	// (which is what HTTPS_PROXY does) pays for traffic the mirrors exist to make
+	// free. Put the proxy on the official origin only: it sits last in the chain,
+	// so it is reached solely after every mirror has failed.
+	//
+	// Empty keeps the previous behaviour, including http.ProxyFromEnvironment.
+	Proxy string
 }
 
 // RequestOption configures an individual upstream HTTP request.

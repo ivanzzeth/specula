@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -223,6 +224,12 @@ func Validate(cfg *Config) error {
 			if strings.TrimSpace(up.BaseURL) == "" {
 				add("protocols.%s.upstreams[%d].base_url: must not be empty", name, i)
 			}
+			// A proxy that cannot be parsed must fail here. Accepting it and dialling
+			// direct instead would quietly undo the operator's intent, and an origin
+			// only reachable through the proxy would then fail as if it were down.
+			if reason := upstreamProxyProblem(up.Proxy); reason != "" {
+				add("protocols.%s.upstreams[%d].proxy: %s", name, i, reason)
+			}
 		}
 
 		// Verification tiers.
@@ -423,4 +430,33 @@ func Validate(cfg *Config) error {
 	}
 	return fmt.Errorf("config validation failed (%d error(s)):\n  %s",
 		len(errs), strings.Join(errs, "\n  "))
+}
+
+// upstreamProxyProblem returns a human reason when proxy is set but unusable, or
+// "" when it is empty or valid. Accepted: http, https, socks5 (and socks5h).
+func upstreamProxyProblem(proxy string) string {
+	p := strings.TrimSpace(proxy)
+	if p == "" {
+		return ""
+	}
+	u, err := url.Parse(p)
+	if err != nil {
+		// The usual mistake is a bare host:port, which url.Parse reports as a path
+		// segment problem — unhelpful unless we say what is actually missing.
+		if !strings.Contains(p, "://") {
+			return fmt.Sprintf("%q has no scheme; want http://host:port, https://host:port or socks5://host:port", proxy)
+		}
+		return fmt.Sprintf("%q is not a URL (%v); want http://host:port, https://host:port or socks5://host:port", proxy, err)
+	}
+	if !strings.Contains(p, "://") {
+		return fmt.Sprintf("%q has no scheme; want http://host:port, https://host:port or socks5://host:port", proxy)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return fmt.Sprintf("%q needs a scheme and host; want http://host:port, https://host:port or socks5://host:port", proxy)
+	}
+	switch u.Scheme {
+	case "http", "https", "socks5", "socks5h":
+		return ""
+	}
+	return fmt.Sprintf("unsupported scheme %q; want http, https or socks5", u.Scheme)
 }

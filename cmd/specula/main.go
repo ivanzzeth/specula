@@ -1722,6 +1722,7 @@ func toUpstreamsForHost(in []config.UpstreamConfig, registryHost string) []upstr
 			Priority:   u.Priority,
 			Official:   u.Official,
 			PathPrefix: prefix,
+			Proxy:      u.Proxy,
 		})
 	}
 	return out

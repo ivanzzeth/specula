@@ -173,6 +173,12 @@ protocols:
 
   # ── OCI ───────────────────────────────────────────────────────────────────
   oci:
+    # Last-resort proxy: put `proxy:` on the OFFICIAL upstream only. It sits last in
+    # the chain, so the proxy is reached solely after every CN mirror has failed —
+    # the mirrors keep dialling direct, which is why they are there. HTTPS_PROXY in
+    # the environment works too, but applies to EVERY upstream, so it sends the
+    # mirror traffic (the bulk of the bytes) through a metered proxy as well.
+    #
     # Mutable TTL for tag→digest mappings.
     # Harbor lesson (#19429): a long TTL here serves stale manifests.
     # Use HEAD probing (no pull quota consumed) to keep tags fresh.
@@ -194,6 +200,9 @@ protocols:
         priority: 3
         official: false
       - name: docker-hub
+        # Only reachable through a proxy? Uncomment — this entry alone uses it, so
+        # mirror traffic stays direct and off the metered link.
+        # proxy: http://10.0.0.5:3128     # or socks5://127.0.0.1:1080
         base_url: https://registry-1.docker.io
         priority: 4
         official: true

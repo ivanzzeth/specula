@@ -59,6 +59,11 @@ type fallbackClient struct {
 	maxAttempts int
 	backoffBase time.Duration
 
+	// proxyClients caches one client per (proxy, fast?) so a proxied origin keeps
+	// its connection pool instead of re-dialling per layer.
+	proxyMu      sync.Mutex
+	proxyClients map[string]*http.Client
+
 	// idleBodyTimeout / maxResumeAttempts configure transparent Range resume
 	// on the body returned by Fetch. Zero means package defaults.
 	idleBodyTimeout   time.Duration
@@ -455,7 +460,11 @@ func (c *fallbackClient) tryFetch(
 	maxAttempts int,
 	remainingAfter int,
 ) (io.ReadCloser, artifact.UpstreamMeta, time.Duration, bool, error) {
-	hc := c.httpFor(remainingAfter)
+	// Per-upstream: a proxy configured on THIS upstream (typically the official
+	// origin, which the chain reaches only after every mirror has failed) is used
+	// for it alone. Mirrors keep dialling direct — see proxy.go for why that
+	// matters on a metered proxy.
+	hc := c.httpForUpstream(up, remainingAfter)
 	failFastDial := remainingAfter > 0
 	attempt, transient, err := c.blocker.hub.runFetchAttempt(
 		ctx, up.Name, maxAttempts, c.backoffBase, failFastDial,

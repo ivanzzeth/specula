@@ -5,6 +5,40 @@ is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
 ## [Unreleased]
 
+### Added — per-upstream proxy, so the origin can be a paid last resort
+
+`HTTPS_PROXY` already worked — the upstream transport has always used
+`http.ProxyFromEnvironment` — but it applies to **every** upstream at once, which
+sends the CN mirror traffic through the proxy too. The mirrors carry the bulk of the
+bytes and exist precisely so that traffic is free, so on a metered proxy that is the
+expensive mistake.
+
+A proxy is therefore configured per upstream:
+
+```yaml
+protocols:
+  oci:
+    upstreams:
+      - name: daocloud
+        base_url: https://docker.m.daocloud.io   # direct, as before
+        priority: 1
+      - name: docker-hub
+        base_url: https://registry-1.docker.io
+        priority: 10
+        official: true
+        proxy: http://10.0.0.5:3128              # or socks5://127.0.0.1:1080
+```
+
+The official origin sits last in the chain, so its proxy is reached only after every
+mirror has failed: a genuine fallback, paid for only when it is used. `http`, `https`
+and `socks5` are accepted.
+
+Details that matter in practice: clients are cached per (proxy, hop budget) so a
+proxied origin keeps its connection pool instead of re-dialling per layer; the
+fast-fail budget for non-final hops still applies through a proxy; a malformed proxy
+is a **config error at load**, naming the exact key, rather than a silent fall back to
+a direct dial that would make a proxy-only origin look like a dead origin.
+
 ### Changed — doctor says which consumers hosts.toml cannot govern
 
 A node reported all-green — hosts.toml written for every registry, CRI *and*
