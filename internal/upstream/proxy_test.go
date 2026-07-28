@@ -124,8 +124,8 @@ func TestProxiedClientsAreReusedPerProxy(t *testing.T) {
 func TestProxiedClientKeepsTheFastAndPatientDistinction(t *testing.T) {
 	c := newFallbackClient()
 	up := Upstream{Name: "m", Proxy: "http://127.0.0.1:3128"}
-	fast := c.httpForUpstream(up, 2)   // mirrors remain after this one
-	last := c.httpForUpstream(up, 0)   // final hop
+	fast := c.httpForUpstream(up, 2) // mirrors remain after this one
+	last := c.httpForUpstream(up, 0) // final hop
 	if fast == last {
 		t.Error("the same client served a non-final and a final hop; one of the two budgets is wrong")
 	}
