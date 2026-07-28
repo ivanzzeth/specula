@@ -3,7 +3,7 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
-## [Unreleased]
+## [0.12.5] — Per-upstream proxy; doctor states the hosts.toml scope — 2026-07-28
 
 ### Added — per-upstream proxy, so the origin can be a paid last resort
 
