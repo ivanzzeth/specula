@@ -3,6 +3,37 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [Unreleased]
+
+### Changed — doctor says which consumers hosts.toml cannot govern
+
+A node reported all-green — hosts.toml written for every registry, CRI *and*
+`transfer.v1.local` `config_path` both `/etc/containerd/certs.d`, Specula answering
+401 on `/v2/` — and a consumer on it still failed to pull. It called
+`containerd.Client.Pull` directly, and that path builds its own resolver: it bypasses
+hosts.toml entirely and dials `registry-1.docker.io`, which in CN times out and reads
+as "Specula is broken" when the truth is "this client never asked Specula".
+
+Doctor was not wrong, it was answering a narrower question than operators heard.
+Green meant "the paths I check are wired", and nothing said which those are. It now
+states the scope on every run:
+
+| governed by certs.d/hosts.toml | not governed |
+|---|---|
+| kubelet, crictl (CRI `config_path`) | `containerd.Client.Pull` from Go |
+| `ctr images pull` and other transfer-service clients (`transfer.v1.local config_path`) | any client building a `docker.Resolver` without hosts config |
+| `ctr --hosts-dir <dir>` | |
+
+with the fix for the caller: a resolver from
+`docker.ConfigureDefaultRegistries(docker.WithHostsDir(…))` passed via
+`containerd.WithResolver`, or pulling through the transfer service.
+
+Reported as `advice`, not `risk`: it is a property of the containerd API rather than
+a misconfiguration, and a red line on every correctly wired node is how operators
+learn to ignore doctor. The cases an operator *can* fix — colon `config_path`, empty
+transfer `config_path`, residual `server=`, wrong certs.d root — remain risks and
+still exit 1.
+
 ## [0.12.4] — Cache import, cross-name CAS reuse, dedup-safe eviction — 2026-07-28
 
 ### Added — `specula cache import`: seed the cache from an image pulled elsewhere

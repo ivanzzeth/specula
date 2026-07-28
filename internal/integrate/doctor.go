@@ -123,6 +123,11 @@ func auditOCIRisks(opts DoctorOptions, addr string) []Result {
 	out = append(out, auditHostsTOMLRisks(certsDirs)...)
 	out = append(out, auditK3sCertsDirMismatch(certsDirs)...)
 	out = append(out, auditCriticalHostsPresent(certsDirs, addr)...)
+	// Always: name the consumers hosts.toml cannot govern. Every risk above is
+	// something the operator can fix; this one is a property of the containerd API,
+	// and leaving it unsaid is how "doctor OK" gets read as "every pull on this node
+	// goes through Specula".
+	out = append(out, barePullAdvisory())
 	return out
 }
 
