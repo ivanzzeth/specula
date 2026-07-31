@@ -249,6 +249,50 @@ func TestRealClient_CloneThroughProxy(t *testing.T) {
 	}
 }
 
+// TestRealClient_GzippedUploadPackClone reproduces the live `git submodule add`
+// 502: a real client that gzips its git-upload-pack POST body.
+//
+// Under protocol v0 the git client buffers the whole want/have request and sends
+// it `Content-Encoding: gzip` (protocol v2's stateless-connect streams the body
+// and does NOT gzip — which is why every other test in this file, running on
+// modern git's default v2, never exercised this path and never caught the bug).
+//
+// git http-backend only inflates the request body when the CGI environment
+// carries HTTP_CONTENT_ENCODING=gzip. serveGitHTTPBackend dropped that header, so
+// http-backend fed the raw gzip bytes to the pkt-line parser ("bad line length
+// character" on the 0x1f 0x8b magic), the mirror serve failed, and the fallback
+// passthrough could not replay the already-consumed body → 502. This clone must
+// succeed against the mirror without ever falling through to upstream.
+func TestRealClient_GzippedUploadPackClone(t *testing.T) {
+	f := newGitProxyFixture(t, time.Minute)
+
+	// Grow the ref advertisement so the clone's buffered want-list crosses git's
+	// gzip threshold — a 1-ref repo's request is too small to be gzipped, which is
+	// exactly the blind spot that let this bug ship. The real repo that hit the
+	// 502 (trust-proxy) had enough refs to gzip; reproduce that here.
+	for i := 0; i < 80; i++ {
+		gitCmd(t, f.work, "tag", "probe-"+strconv.Itoa(i))
+	}
+	gitCmd(t, f.work, "push", "--tags", "--quiet", f.bare)
+
+	dst := filepath.Join(t.TempDir(), "clone")
+	// -c protocol.version=0 forces the buffered, gzipped upload-pack request.
+	gitCmd(t, t.TempDir(), "-c", "protocol.version=0",
+		"clone", "--quiet", "--", f.cloneURL(), dst)
+
+	body, err := os.ReadFile(filepath.Join(dst, "README"))
+	require.NoError(t, err)
+	assert.Equal(t, "v1\n", string(body),
+		"a gzipped upload-pack request must clone from the mirror, not 502")
+	assert.Contains(t, gitCmd(t, dst, "tag", "--list"), "v1.0.0")
+
+	// The request was served by the mirror (the intended path), so the mirror
+	// exists and holds the real refs — it did not silently fall through upstream.
+	refs := mirrorRefs(t, filepath.Join(f.mirrorDir, f.host, f.project+gitSuffix))
+	assert.Contains(t, refs, "refs/heads/master")
+	assert.Contains(t, refs, "refs/tags/v1.0.0")
+}
+
 // TestRealClient_WarmCloneServesUpdatedRefs proves the refresh path end to end:
 // a new upstream commit reaches a second real client after the staleness window.
 func TestRealClient_WarmCloneServesUpdatedRefs(t *testing.T) {

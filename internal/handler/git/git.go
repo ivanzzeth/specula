@@ -39,7 +39,9 @@
 package git
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -461,11 +463,41 @@ func (h *Handler) serveMirror(w http.ResponseWriter, r *http.Request, ref repoRe
 	}
 
 	// 4. Serve the request from the mirror.
+	//
+	// Buffer the request body first so the serve-fail fallback below can replay
+	// it: serveGitHTTPBackend consumes r.Body to EOF (cmd.Stdin = r.Body), so
+	// without this the passthrough would forward an empty body against the
+	// original Content-Length → "Body length 0" → 502. Setting GetBody also lets
+	// the reverse proxy retry safely over HTTP/2 (a drained body with no GetBody
+	// is un-replayable — the other half of the observed 502). Only the upload-pack
+	// pull path reaches here (push is passed through earlier, never buffered), and
+	// its want-list body is small (KB), so buffering is cheap.
+	if r.Body != nil && r.Body != http.NoBody {
+		body, err := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		if err != nil {
+			h.log.Warn("git: reading request body failed",
+				slog.String("repo", ref.mirrorRelPath()),
+				slog.Any("err", err))
+			h.passthrough(w, r, ref, "body-read-fail")
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
+	}
+
 	pathInfo := "/" + ref.mirrorRelPath() + ref.Tail
 	if err := serveGitHTTPBackend(w, r, h.mirrorDir, pathInfo); err != nil {
 		h.log.Warn("git: http-backend serve failed",
 			slog.String("repo", ref.mirrorRelPath()),
 			slog.Any("err", err))
+		if r.GetBody != nil {
+			if rc, gErr := r.GetBody(); gErr == nil {
+				r.Body = rc
+			}
+		}
 		h.passthrough(w, r, ref, "serve-fail")
 	}
 }

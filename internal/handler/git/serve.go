@@ -49,6 +49,16 @@ func serveGitHTTPBackend(w http.ResponseWriter, r *http.Request, projectRoot, pa
 	if gitProto := r.Header.Get("Git-Protocol"); gitProto != "" {
 		cmd.Env = append(cmd.Env, "GIT_PROTOCOL="+gitProto)
 	}
+	// Propagate Content-Encoding so git-http-backend inflates a gzipped request
+	// body. Under protocol v0 the client buffers and gzips the upload-pack POST
+	// (`Content-Encoding: gzip`); http-backend only inflates when the CGI env
+	// carries HTTP_CONTENT_ENCODING=gzip. Omitting it fed raw gzip bytes to the
+	// pkt-line parser ("bad line length character" on the 0x1f 0x8b magic) → the
+	// serve failed and the whole request 502'd. (Protocol v2 streams the body
+	// uncompressed, which is why v2 clients never tripped this.)
+	if enc := r.Header.Get("Content-Encoding"); enc != "" {
+		cmd.Env = append(cmd.Env, "HTTP_CONTENT_ENCODING="+enc)
+	}
 	cmd.Stdin = r.Body
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
