@@ -287,11 +287,14 @@ mirror:
   skipVerify: true
 
 # ── Phase 1b: full-protocol integrate DaemonSet ───────────────────────────────
-# Runs `specula integrate` on every node (OCI + optional helm/apt). Same image.
+# Runs `specula bootstrap-node` → integrate on every node. Same image.
+# protocols MUST default to integrate.DefaultProtocols (all) — never "oci" alone
+# (chorei iron law #23 / Specula delivery contract: do not narrow protocols).
 integrate:
   enabled: true
-  protocols: "oci"
-  # When true, also wire helm + apt drop-ins (needs host paths mounted).
+  protocols: "go,npm,pypi,oci,helm,git,apt,cargo,conda,hf"
+  # When true, appends helm,apt if missing from protocols (legacy escape hatch;
+  # unnecessary when protocols already lists DefaultProtocols).
   includeClientProtocols: false
   # Hold the container so the DS stays Ready (re-run by deleting the pod).
   hold: true

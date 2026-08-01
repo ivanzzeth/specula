@@ -34,7 +34,12 @@ func runBootstrapNode(args []string) error {
 	registries := fs.String("registries", strings.Join(bootstrap.DefaultOCIRegistries, ","), "comma-separated registries")
 	skipVerify := fs.Bool("skip-verify", true, "set skip_verify on mirror host entries (HTTP NodePort)")
 	caFile := fs.String("ca-file", "", "PEM CA on the node for HTTPS Specula")
-	protocols := fs.String("protocols", "oci", "comma-separated integrate protocols")
+	// Default MUST be integrate.DefaultProtocols (all). An "oci"-only default
+	// silently narrowed every DaemonSet-wired node to OCI client config and
+	// violated the Specula delivery contract (chorei iron law #23: never pass
+	// a protocols subset — omit or use DefaultProtocols).
+	protocols := fs.String("protocols", strings.Join(integrate.DefaultProtocols, ","),
+		"comma-separated integrate protocols (default: all DefaultProtocols)")
 	configPath := fs.String("config", "/etc/specula/specula.yaml", "specula.yaml for multi-source wiring")
 	skipSchemeProbe := fs.Bool("skip-scheme-probe", true, "do not auto-upgrade http→https")
 	restartMode := fs.String("restart-containerd", "once",
@@ -173,7 +178,9 @@ func bootstrapNodePass(o bootstrapNodePassOpts) error {
 		}
 	}
 	if len(protos) == 0 {
-		protos = []string{"oci"}
+		// Empty --protocols means "all", matching integrate.Run's own default
+		// when Options.Protocols is nil/empty — never silently fall back to oci.
+		protos = append([]string(nil), integrate.DefaultProtocols...)
 	}
 	cfgPath := strings.TrimSpace(o.ConfigPath)
 	if cfgPath != "" {

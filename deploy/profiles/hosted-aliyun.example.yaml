@@ -162,7 +162,8 @@ mirror:
   skipVerify: false
 integrate:
   enabled: true
-  protocols: oci
+  # Full DefaultProtocols — never narrow to oci alone (chorei #23).
+  protocols: "go,npm,pypi,oci,helm,git,apt,cargo,conda,hf"
   restartContainerd: once
   reconcileInterval: 5m
 
