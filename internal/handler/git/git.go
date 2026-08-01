@@ -9,6 +9,11 @@
 //	GET  /<host>/<project>.git/info/refs?service=git-receive-pack  — push (bypass)
 //	POST /<host>/<project>.git/git-receive-pack                    — push (bypass)
 //
+// The ".git" suffix is optional: GitHub (and many .gitmodules files) omit it
+// (e.g. https://github.com/mbadolato/iTerm2-Color-Schemes). With url.<proxy>.insteadOf
+// rewriting, those bare URLs must still parse or submodule fetches 404 before
+// the mirror is consulted.
+//
 // # bare-mirror model (DESIGN-REVIEW §3 / §9)
 //
 // The cache is an on-disk bare mirror, NOT the CAS blob store: git objects are
@@ -64,6 +69,14 @@ const Protocol = "git"
 // gitSuffix marks the boundary between the repository path and the Smart HTTP
 // tail (e.g. "/info/refs").
 const gitSuffix = ".git"
+
+// smartHTTPMarkers bound the project path when the client omits ".git".
+// Order does not matter; the first match in the request path wins.
+var smartHTTPMarkers = []string{
+	"/info/refs",
+	"/git-upload-pack",
+	"/git-receive-pack",
+}
 
 // Default bare-mirror settings mirroring the ai-sandbox gitproxy Phase-1 values.
 const (
@@ -284,8 +297,13 @@ type repoRef struct {
 	Tail        string // e.g. "/info/refs" or "/git-upload-pack"
 }
 
-// parseProxyPath parses "/<host>/<project>.git/<tail>" and enforces the host
+// parseProxyPath parses "/<host>/<project>[.git]/<tail>" and enforces the host
 // allowlist. Returns ok=false for malformed paths or disallowed hosts.
+//
+// The ".git" suffix is optional: when absent, a known Smart HTTP marker
+// (/info/refs, /git-upload-pack, /git-receive-pack) bounds the project path.
+// This matches GitHub's acceptance of both URL forms and unblocks submodule
+// URLs that omit ".git" after insteadOf rewriting.
 func parseProxyPath(path string, allowed map[string]struct{}) (repoRef, bool) {
 	path = strings.TrimPrefix(path, "/")
 	if path == "" {
@@ -299,22 +317,32 @@ func parseProxyPath(path string, allowed map[string]struct{}) (repoRef, bool) {
 	if _, ok := allowed[host]; !ok {
 		return repoRef{}, false
 	}
-	rest := path[slash+1:]
-	dotGit := strings.Index(rest, gitSuffix)
-	if dotGit < 0 {
-		return repoRef{}, false
-	}
-	project := strings.TrimSuffix(rest[:dotGit], "/")
-	if project == "" || strings.Contains(project, "..") {
-		return repoRef{}, false
-	}
-	tail := rest[dotGit+len(gitSuffix):]
-	if tail == "" {
-		tail = "/"
-	} else if !strings.HasPrefix(tail, "/") {
+	project, tail, ok := splitProjectTail(path[slash+1:])
+	if !ok || project == "" || strings.Contains(project, "..") {
 		return repoRef{}, false
 	}
 	return repoRef{Host: host, ProjectPath: project, Tail: tail}, true
+}
+
+// splitProjectTail splits "<project>[.git]<tail>" into project path and Smart
+// HTTP tail. Prefers an explicit ".git" path-segment boundary; falls back to
+// known Smart HTTP markers when ".git" is omitted.
+func splitProjectTail(rest string) (project, tail string, ok bool) {
+	if i := strings.Index(rest, gitSuffix+"/"); i >= 0 {
+		project = strings.TrimSuffix(rest[:i], "/")
+		return project, rest[i+len(gitSuffix):], true
+	}
+	if strings.HasSuffix(rest, gitSuffix) {
+		project = strings.TrimSuffix(rest[:len(rest)-len(gitSuffix)], "/")
+		return project, "/", true
+	}
+	for _, marker := range smartHTTPMarkers {
+		if i := strings.Index(rest, marker); i > 0 {
+			project = strings.TrimSuffix(rest[:i], "/")
+			return project, rest[i:], true
+		}
+	}
+	return "", "", false
 }
 
 // mirrorRelPath returns the bare-mirror path relative to the mirror root.

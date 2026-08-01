@@ -77,8 +77,32 @@ func TestParseProxyPath(t *testing.T) {
 			wantOK: false,
 		},
 		{
-			name:   "missing .git suffix",
-			path:   "/github.com/owner/repo/info/refs",
+			name:     "missing .git suffix with info/refs (GitHub-style bare URL)",
+			path:     "/github.com/owner/repo/info/refs",
+			wantOK:   true,
+			wantHost: "github.com",
+			wantProj: "owner/repo",
+			wantTail: "/info/refs",
+		},
+		{
+			name:     "missing .git suffix with upload-pack",
+			path:     "/github.com/mbadolato/iTerm2-Color-Schemes/git-upload-pack",
+			wantOK:   true,
+			wantHost: "github.com",
+			wantProj: "mbadolato/iTerm2-Color-Schemes",
+			wantTail: "/git-upload-pack",
+		},
+		{
+			name:     "missing .git suffix with receive-pack",
+			path:     "/github.com/owner/repo/git-receive-pack",
+			wantOK:   true,
+			wantHost: "github.com",
+			wantProj: "owner/repo",
+			wantTail: "/git-receive-pack",
+		},
+		{
+			name:   "missing .git and no Smart HTTP marker",
+			path:   "/github.com/owner/repo",
 			wantOK: false,
 		},
 		{
@@ -100,6 +124,17 @@ func TestParseProxyPath(t *testing.T) {
 			name:   "no host segment",
 			path:   "",
 			wantOK: false,
+		},
+		{
+			// ".git" must be a path-segment boundary, not a substring of the
+			// project name — otherwise owner/my.git-tools without an explicit
+			// .git suffix would mis-split.
+			name:     "project name containing .git substring without suffix",
+			path:     "/github.com/owner/my.git-tools/info/refs",
+			wantOK:   true,
+			wantHost: "github.com",
+			wantProj: "owner/my.git-tools",
+			wantTail: "/info/refs",
 		},
 	}
 

@@ -293,6 +293,28 @@ func TestRealClient_GzippedUploadPackClone(t *testing.T) {
 	assert.Contains(t, refs, "refs/tags/v1.0.0")
 }
 
+// TestRealClient_CloneWithoutGitSuffix reproduces the live trust-proxy submodule
+// failure: .gitmodules often omit the ".git" suffix (GitHub accepts both forms).
+// After url.<proxy>.insteadOf rewriting, the client hits
+// /git/github.com/owner/repo/info/refs — without a ".git" boundary. That path
+// must clone, not 404 before the mirror is consulted.
+func TestRealClient_CloneWithoutGitSuffix(t *testing.T) {
+	f := newGitProxyFixture(t, time.Minute)
+
+	bareURL := f.proxy.URL + "/" + f.host + "/" + f.project // no .git
+	dst := filepath.Join(t.TempDir(), "clone")
+	gitCmd(t, t.TempDir(), "clone", "--quiet", "--", bareURL, dst)
+
+	body, err := os.ReadFile(filepath.Join(dst, "README"))
+	require.NoError(t, err)
+	assert.Equal(t, "v1\n", string(body),
+		"a URL omitting .git must still clone through the mirror")
+	assert.Contains(t, gitCmd(t, dst, "tag", "--list"), "v1.0.0")
+
+	refs := mirrorRefs(t, filepath.Join(f.mirrorDir, f.host, f.project+gitSuffix))
+	assert.Contains(t, refs, "refs/heads/master")
+}
+
 // TestRealClient_WarmCloneServesUpdatedRefs proves the refresh path end to end:
 // a new upstream commit reaches a second real client after the staleness window.
 func TestRealClient_WarmCloneServesUpdatedRefs(t *testing.T) {
