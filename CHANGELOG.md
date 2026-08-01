@@ -3,6 +3,30 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [0.12.6] — Git: serve gzipped upload-pack requests instead of 502 — 2026-08-01
+
+### Fixed — a large `git clone` over protocol v0 no longer 502s
+
+Under git protocol **v0** the client buffers the whole want/have request and,
+once it crosses git's gzip threshold (a large ref advertisement — many tags or
+branches), sends the upload-pack POST with `Content-Encoding: gzip`. Two stacked
+defects turned that into a 502:
+
+1. `serveGitHTTPBackend` never propagated the request's `Content-Encoding` into
+   the CGI environment, so `git-http-backend` fed the raw gzip bytes straight to
+   the pkt-line parser and died with *"bad line length character"* on the gzip
+   magic (`0x1f 0x8b`).
+2. On the serve-fail fallback to the reverse proxy, `r.Body` had already been
+   consumed to EOF with no `GetBody` set, so the proxied request carried an empty
+   body against the original `Content-Length` → *"Body length 0"* → 502.
+
+The upload-pack body is kilobytes, so it is now buffered and `GetBody` is set,
+and `HTTP_CONTENT_ENCODING` is propagated into the CGI env. Modern git defaults
+to protocol **v2** (streams uncompressed, no gzip) so everyday clones never hit
+this; the fix restores correctness for v0 clients and large ref sets. Regression
+test: `TestRealClient_GzippedUploadPackClone` adds 80 tags to cross the gzip
+threshold and clones under `protocol.version=0`.
+
 ## [0.12.5] — Per-upstream proxy; doctor states the hosts.toml scope — 2026-07-28
 
 ### Added — per-upstream proxy, so the origin can be a paid last resort
