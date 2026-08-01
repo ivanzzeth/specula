@@ -138,6 +138,34 @@ remoteRegistries: []
 # `upstreams: []` written here is an error, not a way to disable: use enabled: false.
 protocolOverrides: {}
 
+# ── git clone acceleration (opt-in; OFF by default) ───────────────────────────
+# Serve public `git clone` through Specula bare mirrors (github.com etc). This is
+# the ONE protocol NOT served from the built-in table by default: the git handler
+# keeps node-local bare mirrors on disk, so it is opt-in (see gitIsHAUnsafe in
+# internal/config/protocol_defaults.go — the default table drops git under HA;
+# setting git.enabled here is the explicit escape hatch that survives that drop).
+#
+# It is a READ-ONLY pull-through cache of PUBLIC repos: git objects are content-
+# addressed (immutable), refs carry a short TTL, and private / authenticated
+# requests pass through UNCACHED (publicOnly). Under more than one replica each
+# replica keeps its OWN mirror — independent caches of the same public upstream,
+# which is correct for a read-only cache. If you need a single shared mirror,
+# point mirrorDir at an RWX volume instead of the ephemeral data dir.
+git:
+  enabled: false
+  # Host allowlist. A clone whose host is not listed is refused (404), never proxied.
+  allowedUpstreams: [github.com]
+  # On-disk root for bare mirrors. Defaults to the data volume: ephemeral on an
+  # emptyDir (rebuilt on demand), durable on a PVC.
+  mirrorDir: /var/lib/specula/git
+  # Staleness window before a `git remote update` on the next request (Go duration).
+  syncStaleAfter: 30s
+  # Cache only anonymously-readable repos; pass private/authed through uncached.
+  publicOnly: true
+  # On a public-visibility probe failure, pass through (bypass) rather than serve a
+  # possibly-poisoned stale mirror.
+  failClosed: true
+
 # When true (or regionProfile=cn), ConfigMap embeds the CN k8s mirror chain
 # (Huawei SWR layout:huawei-ddn → DaoCloud → 1ms) for registry.k8s.io / k8s.gcr.io.
 regionProfile: ""

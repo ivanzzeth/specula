@@ -91,8 +91,29 @@ data:
     #   upstreams.oci       → replaces the Hub chain
     #   remoteRegistries    → replaces the path-style registry allowlist
     #   protocolOverrides   → anything else, merged verbatim
-{{- if or .Values.protocolOverrides .Values.upstreams.oci .Values.remoteRegistries }}
+{{- if or .Values.protocolOverrides .Values.upstreams.oci .Values.remoteRegistries .Values.git.enabled }}
     protocols:
+      {{- if .Values.git.enabled }}
+      # git clone acceleration (opt-in): node-local bare mirrors of PUBLIC repos.
+      # Explicit config here is the escape hatch past the HA default-drop
+      # (internal/config/protocol_defaults.go gitIsHAUnsafe). Under >1 replica each
+      # replica keeps its own mirror — fine for a read-only public pull-through cache.
+      git:
+        upstreams:
+          {{- range $i, $h := .Values.git.allowedUpstreams }}
+          - name: {{ $h | quote }}
+            base_url: https://{{ $h }}
+            priority: {{ add $i 1 }}
+            official: {{ eq $i 0 }}
+          {{- end }}
+        git:
+          allowed_upstreams:
+            {{- toYaml .Values.git.allowedUpstreams | nindent 12 }}
+          mirror_dir: {{ .Values.git.mirrorDir | quote }}
+          sync_stale_after: {{ .Values.git.syncStaleAfter | quote }}
+          public_only: {{ .Values.git.publicOnly }}
+          fail_closed: {{ .Values.git.failClosed }}
+      {{- end }}
       {{- with .Values.protocolOverrides }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
