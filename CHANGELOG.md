@@ -3,6 +3,25 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [0.12.8] — Full DefaultProtocols on every node integrate — 2026-08-01
+
+### Fixed — bootstrap-node / chart no longer default to OCI-only
+
+`specula bootstrap-node --protocols` and the `specula-bootstrap` chart's
+`integrate.protocols` previously defaulted to `oci`. Every DaemonSet-wired
+node therefore wrote OCI-only client config even though Specula served all
+protocols — the exact delivery-contract narrowing bug. Both now default to
+`integrate.DefaultProtocols` (`go,npm,pypi,oci,helm,git,apt,cargo,conda,hf`);
+an empty `--protocols` list falls back to that same set, never `oci`.
+Regression: `internal/cluster/chart_integrate_protocols_test.go`.
+
+### Fixed — Smart HTTP git URLs that omit `.git` (landed on main post-0.12.7)
+
+`.gitmodules` often list bare GitHub URLs without a `.git` suffix; after
+`insteadOf` rewriting those 404'd before the mirror was consulted. The git
+handler now accepts those URLs so nested submodule fetches (e.g. trust-proxy
+charts) resolve through Specula.
+
 ## [0.12.7] — Git mirror caching actually works: ship git in the image — 2026-08-01
 
 ### Fixed — the git protocol now caches instead of silently passing through
