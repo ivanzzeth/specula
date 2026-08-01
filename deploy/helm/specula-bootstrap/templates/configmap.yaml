@@ -99,8 +99,16 @@ data:
       # (internal/config/protocol_defaults.go gitIsHAUnsafe). Under >1 replica each
       # replica keeps its own mirror — fine for a read-only public pull-through cache.
       git:
+        {{- /* git has NO built-in upstream chain, so Specula Validate rejects a
+             git block with zero upstreams. Every sub-value is defaulted HERE, at
+             the template, because `helm upgrade --reuse-values` reuses the stored
+             release values and does NOT re-read this chart's values.yaml defaults
+             — so `--set git.enabled=true` alone would otherwise render null
+             upstreams and crashloop the pod. Defaulting in-template keeps the
+             minimal opt-in valid regardless of how values arrive. */}}
+        {{- $ups := .Values.git.allowedUpstreams | default (list "github.com") }}
         upstreams:
-          {{- range $i, $h := .Values.git.allowedUpstreams }}
+          {{- range $i, $h := $ups }}
           - name: {{ $h | quote }}
             base_url: https://{{ $h }}
             priority: {{ add $i 1 }}
@@ -108,11 +116,14 @@ data:
           {{- end }}
         git:
           allowed_upstreams:
-            {{- toYaml .Values.git.allowedUpstreams | nindent 12 }}
-          mirror_dir: {{ .Values.git.mirrorDir | quote }}
-          sync_stale_after: {{ .Values.git.syncStaleAfter | quote }}
-          public_only: {{ .Values.git.publicOnly }}
-          fail_closed: {{ .Values.git.failClosed }}
+            {{- toYaml $ups | nindent 12 }}
+          mirror_dir: {{ .Values.git.mirrorDir | default "/var/lib/specula/git" | quote }}
+          sync_stale_after: {{ .Values.git.syncStaleAfter | default "30s" | quote }}
+          {{- /* booleans: hasKey distinguishes an explicit false from unset, so a
+               deliberate publicOnly=false is respected while an unset value takes
+               the secure default (Helm `default` treats false as empty). */}}
+          public_only: {{ if hasKey .Values.git "publicOnly" }}{{ .Values.git.publicOnly }}{{ else }}true{{ end }}
+          fail_closed: {{ if hasKey .Values.git "failClosed" }}{{ .Values.git.failClosed }}{{ else }}true{{ end }}
       {{- end }}
       {{- with .Values.protocolOverrides }}
       {{- toYaml . | nindent 6 }}

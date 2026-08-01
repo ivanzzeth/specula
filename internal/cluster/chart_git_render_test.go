@@ -80,6 +80,36 @@ func TestChart_GitEnabledRendersProtocolBlock(t *testing.T) {
 	}
 }
 
+// Regression for the `helm upgrade --reuse-values` footgun: --reuse-values
+// reuses the stored release values + --set overrides ONLY, and does NOT re-read
+// the chart's values.yaml defaults. So a release created before the git: value
+// block existed, upgraded with just `--set git.enabled=true`, arrives at the
+// template with NULL git sub-values — which previously rendered zero upstreams
+// and crashlooped the pod on `protocols.git: at least one upstream is required`.
+// The template must default EVERY sub-value itself so the minimal opt-in is
+// valid no matter how the values arrive. Simulate that by nulling the
+// sub-values explicitly and asserting the secure defaults still render.
+func TestChart_GitEnabledNullSubValuesFallsBackToDefaults(t *testing.T) {
+	out := helmTemplate(t,
+		"--set", "git.enabled=true",
+		"--set", "git.allowedUpstreams=null",
+		"--set", "git.mirrorDir=null",
+		"--set", "git.syncStaleAfter=null",
+	)
+	for _, want := range []string{
+		"- github.com",
+		"base_url: https://github.com",
+		`mirror_dir: "/var/lib/specula/git"`,
+		`sync_stale_after: "30s"`,
+		"public_only: true",
+		"fail_closed: true",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("null-subvalue render missing secure default %q:\n%s", want, out)
+		}
+	}
+}
+
 // The allowlist drives BOTH the generic upstreams and the nested allowed_upstreams,
 // so a multi-host list renders both entries without hand-editing two places.
 func TestChart_GitAllowedUpstreamsDrivesUpstreams(t *testing.T) {
