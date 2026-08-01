@@ -3,6 +3,18 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [0.12.9] — Hosted registry manifest probes stay local — 2026-08-01
+
+### Fixed — a first push no longer turns a missing hosted manifest into 502
+
+The writable registry treats a missing manifest in a known hosted namespace as
+local absence and returns OCI `MANIFEST_UNKNOWN` (HTTP 404) before attempting
+any pull-through upstream. This lets `crane push` continue from its initial
+`HEAD /v2/<org>/<repo>/manifests/<tag>` probe to the upload.
+
+The authenticated, end-to-end regression test wires an upstream that always
+returns 502 and proves the probe still returns 404 without contacting it.
+
 ## [0.12.8] — Full DefaultProtocols on every node integrate — 2026-08-01
 
 ### Fixed — bootstrap-node / chart no longer default to OCI-only

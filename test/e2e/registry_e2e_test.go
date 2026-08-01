@@ -19,6 +19,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -368,4 +369,54 @@ func TestRegistryPushWithUpstreamConfigured(t *testing.T) {
 	ptDig, err := pt.Digest()
 	require.NoError(t, err)
 	assert.Equal(t, fakeReg.dig, ptDig)
+}
+
+// TestRegistryPushProbeMissingManifestReturns404 verifies the HEAD probe that
+// crane performs before a first manifest upload stays in the hosted registry.
+// A 502 makes crane abort before it can PUT the manifest.
+func TestRegistryPushProbeMissingManifestReturns404(t *testing.T) {
+	var upstreamRequests int
+	failedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamRequests++
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	t.Cleanup(failedUpstream.Close)
+
+	stack, seeded := newRegistryStackWithOpts(t,
+		[]ocihandler.Option{ocihandler.WithUpstream(upstream.NewClient(), []upstream.Upstream{{
+			Name: "unavailable", BaseURL: failedUpstream.URL, Priority: 1,
+		}})},
+		"org1",
+	)
+
+	const repoName = "org1/new-app"
+	tokenReq, err := http.NewRequest(http.MethodGet,
+		fmt.Sprintf("http://%s/token?service=specula&scope=repository:%s:pull", stack.host, repoName),
+		nil,
+	)
+	require.NoError(t, err)
+	tokenReq.SetBasicAuth("ci@example.com", seeded["org1"].rawKey)
+	tokenResp, err := http.DefaultClient.Do(tokenReq)
+	require.NoError(t, err)
+	defer tokenResp.Body.Close()
+	require.Equal(t, http.StatusOK, tokenResp.StatusCode)
+
+	var token struct {
+		Token string `json:"token"`
+	}
+	require.NoError(t, json.NewDecoder(tokenResp.Body).Decode(&token))
+	require.NotEmpty(t, token.Token)
+
+	probe, err := http.NewRequest(http.MethodHead,
+		fmt.Sprintf("http://%s/v2/%s/manifests/v1", stack.host, repoName), nil)
+	require.NoError(t, err)
+	probe.Header.Set("Authorization", "Bearer "+token.Token)
+	probeResp, err := http.DefaultClient.Do(probe)
+	require.NoError(t, err)
+	defer probeResp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, probeResp.StatusCode,
+		"missing hosted manifest probe must be 404 so crane can upload it")
+	assert.Equal(t, 0, upstreamRequests,
+		"hosted push probe must not attempt pull-through")
 }
