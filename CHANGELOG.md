@@ -3,6 +3,29 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [0.12.7] — Git mirror caching actually works: ship git in the image — 2026-08-01
+
+### Fixed — the git protocol now caches instead of silently passing through
+
+The git handler keeps node-local bare mirrors by shelling out to `git clone
+--bare` (`internal/handler/git` `serveMirror` → `EnsureSynced`). The runtime
+image was `gcr.io/distroless/static-debian12`, which ships **no `git`
+binary**, so every mirror sync failed with `exec: "git": executable file not
+found in $PATH` and the request silently degraded to a live reverse-proxy
+passthrough — correct results, but **zero node-local caching**. Inside CN that
+means every clone hits the upstream directly, defeating the entire point of a
+Specula mirror. The runtime base is now `debian:12-slim` + `git` +
+`ca-certificates`, preserving the nonroot (uid/gid 65532) identity.
+
+### Hardened — `git.enabled=true` alone is a valid opt-in
+
+The `specula-bootstrap` chart now defaults every git sub-value in-template, so
+`helm upgrade --reuse-values --set git.enabled=true` renders a complete,
+Validate-passing `protocols.git` block (github.com upstream, `mirror_dir`,
+`sync_stale_after`, `public_only`, `fail_closed`) even when the stored release
+values predate the git block. Regression tests:
+`internal/cluster/chart_git_render_test.go`.
+
 ## [0.12.6] — Git: serve gzipped upload-pack requests instead of 502 — 2026-08-01
 
 ### Fixed — a large `git clone` over protocol v0 no longer 502s
