@@ -38,7 +38,21 @@ RUN mkdir -p /out/var/lib/specula/blobs /out/var/lib/specula/quarantine \
       -o /out/specula ./cmd/specula
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
-FROM gcr.io/distroless/static-debian12:nonroot
+# NOT distroless/static: the git protocol shells out to the real `git` binary at
+# runtime (internal/handler/git serveMirror → `git clone --bare`) to keep
+# node-local bare mirrors of public repos. A static-distroless image ships no git,
+# so `exec: "git": executable file not found in $PATH` makes every git request
+# silently degrade to live passthrough with zero caching — which in CN means every
+# clone hits the upstream directly (slow/throttled), defeating the mirror. Use
+# debian-slim so we ship a real git + CA bundle while staying small and nonroot
+# (uid/gid 65532, matching the distroless `nonroot` identity the chart expects).
+FROM debian:12-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd -g 65532 nonroot \
+ && useradd -u 65532 -g 65532 -m -d /home/nonroot -s /usr/sbin/nologin nonroot
+ENV HOME=/home/nonroot
 COPY --from=build /out/specula /specula
 COPY --from=build --chown=65532:65532 /out/var/lib/specula /var/lib/specula
 COPY contrib/docker/specula.yaml /etc/specula/specula.yaml
