@@ -95,6 +95,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "git-credential":
+			if err := runGitCredential(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "specula git-credential: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "doctor":
 			if err := runDoctor(os.Args[2:]); err != nil {
 				fmt.Fprintf(os.Stderr, "specula doctor: %v\n", err)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -35,30 +36,43 @@ func integrateGit(home, addr string, dryRun bool) Result {
 		})
 	}
 
-	allAlready := true
-	for _, p := range pairs {
-		cur := gitConfig(home, p.key)
-		if sameProxyURL(strings.TrimSpace(cur), p.insteadOf) || strings.TrimSpace(cur) == p.insteadOf {
-			continue
+	helperValue := speculaGitCredentialHelper()
+	helperMissing := helperValue != "" && !gitHasCredentialHelper(home, helperValue)
+	useHttpPathKey, useHttpPathMissing := speculaUseHttpPathKey(baseAddr, home)
+
+	allAlready := !helperMissing && !useHttpPathMissing
+	if allAlready {
+		for _, p := range pairs {
+			cur := gitConfig(home, p.key)
+			if sameProxyURL(strings.TrimSpace(cur), p.insteadOf) || strings.TrimSpace(cur) == p.insteadOf {
+				continue
+			}
+			if gitHasInsteadOf(home, p.proxyBase, p.insteadOf) {
+				continue
+			}
+			allAlready = false
+			break
 		}
-		if gitHasInsteadOf(home, p.proxyBase, p.insteadOf) {
-			continue
-		}
-		allAlready = false
-		break
 	}
 	if allAlready {
 		return Result{
 			Action: "already",
-			Detail: "insteadOf already set for " + strings.Join(hosts, ","),
+			Detail: "insteadOf + git-credential helper already set for " + strings.Join(hosts, ","),
 			Path:   "git config --global",
 		}
 	}
 
 	if dryRun {
+		detail := "would set insteadOf for " + strings.Join(hosts, ",")
+		if helperMissing {
+			detail += " + credential.helper=!specula git-credential"
+		}
+		if useHttpPathMissing {
+			detail += " + credential.useHttpPath"
+		}
 		return Result{
 			Action: "added",
-			Detail: "would set insteadOf for " + strings.Join(hosts, ","),
+			Detail: detail,
 			Path:   "git config --global",
 		}
 	}
@@ -79,18 +93,108 @@ func integrateGit(home, addr string, dryRun bool) Result {
 		}
 		added = append(added, p.host)
 	}
-	if len(added) == 0 {
+
+	helperAdded := false
+	if helperMissing {
+		cmd := exec.Command("git", "config", "--global", "--add", "credential.helper", helperValue)
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return Result{Action: "error", Err: fmt.Sprintf("credential.helper: %v: %s", err, bytesTrim(out))}
+		}
+		helperAdded = true
+	}
+
+	useHttpPathAdded := false
+	if useHttpPathMissing && useHttpPathKey != "" {
+		cmd := exec.Command("git", "config", "--global", useHttpPathKey, "true")
+		cmd.Env = append(os.Environ(), "HOME="+home)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return Result{Action: "error", Err: fmt.Sprintf("useHttpPath: %v: %s", err, bytesTrim(out))}
+		}
+		useHttpPathAdded = true
+	}
+
+	if len(added) == 0 && !helperAdded && !useHttpPathAdded {
 		return Result{
 			Action: "already",
-			Detail: "insteadOf already set for " + strings.Join(hosts, ","),
+			Detail: "insteadOf + git-credential helper already set for " + strings.Join(hosts, ","),
 			Path:   "git config --global",
 		}
 	}
+	detail := "HTTPS → Specula /git/<host>/"
+	if len(added) > 0 {
+		detail += " for " + strings.Join(added, ",")
+	}
+	if helperAdded {
+		detail += "; credential.helper=!specula git-credential (maps proxy URL → upstream creds)"
+	}
+	if useHttpPathAdded {
+		detail += "; credential.useHttpPath on Specula base (path reaches the helper)"
+	}
 	return Result{
 		Action: "added",
-		Detail: "HTTPS → Specula /git/<host>/ for " + strings.Join(added, ","),
+		Detail: detail,
 		Path:   "~/.gitconfig",
 	}
+}
+
+// speculaUseHttpPathKey returns credential.<specula-origin>.useHttpPath so git
+// includes /git/<host>/… in the helper request. Without it the helper only sees
+// host=127.0.0.1:7732 and cannot map back to github.com.
+func speculaUseHttpPathKey(addr, home string) (key string, missing bool) {
+	u := strings.TrimRight(addr, "/")
+	// addr is like http://127.0.0.1:7732 — strip any path.
+	if i := strings.Index(u, "://"); i >= 0 {
+		rest := u[i+3:]
+		if slash := strings.IndexByte(rest, '/'); slash >= 0 {
+			u = u[:i+3+slash]
+		}
+	}
+	if u == "" {
+		return "", false
+	}
+	key = "credential." + u + ".useHttpPath"
+	cur := gitConfig(home, key)
+	return key, strings.ToLower(strings.TrimSpace(cur)) != "true"
+}
+
+// speculaGitCredentialHelper returns the git credential.helper value that
+// invokes this Specula binary's git-credential subcommand. Empty when the
+// binary path cannot be resolved.
+func speculaGitCredentialHelper() string {
+	exe, err := os.Executable()
+	if err != nil {
+		if p, lookErr := exec.LookPath("specula"); lookErr == nil {
+			exe = p
+		} else {
+			return ""
+		}
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return "!" + exe + " git-credential"
+}
+
+func gitHasCredentialHelper(home, want string) bool {
+	cmd := exec.Command("git", "config", "--global", "--get-all", "credential.helper")
+	cmd.Env = append(os.Environ(), "HOME="+home)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	want = strings.TrimSpace(want)
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+		// Match any "!…/specula git-credential" so reinstalls with a new
+		// absolute path don't duplicate forever when the old path still works.
+		if strings.Contains(line, "specula git-credential") {
+			return true
+		}
+	}
+	return false
 }
 
 func gitConfig(home, key string) string {

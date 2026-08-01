@@ -51,4 +51,16 @@ func TestIntegrateGitWritesInsteadOf(t *testing.T) {
 	if r2.Action != "already" {
 		t.Fatalf("want already, got %+v", r2)
 	}
+	b2, err := os.ReadFile(home + "/.gitconfig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Test binary name is not "specula", but integrate still installs
+	// "!<exe> git-credential" via os.Executable().
+	if !strings.Contains(string(b2), "git-credential") {
+		t.Fatalf("missing credential.helper … git-credential in:\n%s", b2)
+	}
+	if !strings.Contains(strings.ToLower(string(b2)), "usehttppath") {
+		t.Fatalf("missing credential.useHttpPath in:\n%s", b2)
+	}
 }

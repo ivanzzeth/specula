@@ -3,6 +3,30 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [0.12.10] — Git insteadOf private-repo credentials — 2026-08-01
+
+### Fixed — private clones through Specula `insteadOf` no longer ask for Username on the proxy URL
+
+`specula integrate --protocols git` rewrites `https://github.com/` →
+`http(s)://<specula>/git/github.com/`. Git then asks the credential helper for
+credentials on the **Specula** host, so helpers keyed on `github.com` never
+fire — private repos return GitHub's 401 and clients die with
+`could not read Username for 'http://127.0.0.1:7732'`. Specula already
+passthroughs `Authorization` to upstream; the gap was mapping the rewritten
+URL back to the upstream for fill.
+
+Integrate now installs:
+
+1. `credential.helper=!specula git-credential` — rewrites `/git/<host>/…` to
+   `https://<host>/…`, fills via the operator's normal helper chain (or
+   `GH_TOKEN` / `GITHUB_TOKEN` for github.com), and returns username/password
+   bound to the **original Specula URL** (git discards fills whose host does
+   not match the request).
+2. `credential.<specula-origin>.useHttpPath=true` — so the helper receives the
+   `/git/<host>/…` path (without it git only sends `host=127.0.0.1:7732`).
+
+Regression: `internal/gitcred`, `internal/integrate/git_hosts_test.go`.
+
 ## [0.12.9] — Hosted registry manifest probes stay local — 2026-08-01
 
 ### Fixed — a first push no longer turns a missing hosted manifest into 502
