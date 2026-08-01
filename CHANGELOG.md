@@ -24,6 +24,9 @@ Integrate now installs:
    not match the request).
 2. `credential.<specula-origin>.useHttpPath=true` — so the helper receives the
    `/git/<host>/…` path (without it git only sends `host=127.0.0.1:7732`).
+3. `insteadOf` for **HTTPS and SSH** forms (`https://host/`, `git@host:`,
+   `ssh://git@host/`) — submodule URLs are often still SSH, and a parent-repo
+   local SSH→HTTPS rewrite does not apply inside the submodule fetch.
 
 Regression: `internal/gitcred`, `internal/integrate/git_hosts_test.go`.
 

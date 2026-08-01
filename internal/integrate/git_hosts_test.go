@@ -1,7 +1,6 @@
 package integrate
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -41,11 +40,17 @@ func TestIntegrateGitWritesInsteadOf(t *testing.T) {
 	}
 	s := string(b)
 	for _, host := range DefaultGitHosts {
-		needle := fmt.Sprintf("url.http://127.0.0.1:7732/git/%s/.insteadof", host)
 		// git config writes [url "http://..."] / insteadOf = https://host/
 		if !strings.Contains(s, "/git/"+host+"/") || !strings.Contains(s, "https://"+host+"/") {
-			t.Fatalf("missing insteadOf for %s in:\n%s\n(want path %s)", host, s, needle)
+			t.Fatalf("missing HTTPS insteadOf for %s in:\n%s", host, s)
 		}
+	}
+	// SSH forms must also rewrite to Specula (submodule URLs are often git@host:).
+	if !strings.Contains(s, "git@github.com:") {
+		t.Fatalf("missing SSH insteadOf git@github.com: in:\n%s", s)
+	}
+	if !strings.Contains(s, "ssh://git@github.com/") {
+		t.Fatalf("missing SSH insteadOf ssh://git@github.com/ in:\n%s", s)
 	}
 	r2 := integrateGit(home, "http://127.0.0.1:7732", false)
 	if r2.Action != "already" {

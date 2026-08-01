@@ -24,16 +24,23 @@ func integrateGit(home, addr string, dryRun bool) Result {
 	hosts := append([]string(nil), DefaultGitHosts...)
 
 	type pair struct{ host, proxyBase, insteadOf, key string }
-	pairs := make([]pair, 0, len(hosts))
+	pairs := make([]pair, 0, len(hosts)*3)
 	for _, host := range hosts {
 		proxyBase := baseAddr + "/git/" + host + "/"
-		insteadOf := "https://" + host + "/"
-		pairs = append(pairs, pair{
-			host:      host,
-			proxyBase: proxyBase,
-			insteadOf: insteadOf,
-			key:       "url." + proxyBase + ".insteadof",
-		})
+		// HTTPS + both common SSH URL forms so submodules that still use
+		// git@host:owner/repo (and run with only global gitconfig) hit Specula.
+		for _, insteadOf := range []string{
+			"https://" + host + "/",
+			"git@" + host + ":",
+			"ssh://git@" + host + "/",
+		} {
+			pairs = append(pairs, pair{
+				host:      host,
+				proxyBase: proxyBase,
+				insteadOf: insteadOf,
+				key:       "url." + proxyBase + ".insteadof",
+			})
+		}
 	}
 
 	helperValue := speculaGitCredentialHelper()
@@ -43,10 +50,6 @@ func integrateGit(home, addr string, dryRun bool) Result {
 	allAlready := !helperMissing && !useHttpPathMissing
 	if allAlready {
 		for _, p := range pairs {
-			cur := gitConfig(home, p.key)
-			if sameProxyURL(strings.TrimSpace(cur), p.insteadOf) || strings.TrimSpace(cur) == p.insteadOf {
-				continue
-			}
 			if gitHasInsteadOf(home, p.proxyBase, p.insteadOf) {
 				continue
 			}
@@ -63,7 +66,7 @@ func integrateGit(home, addr string, dryRun bool) Result {
 	}
 
 	if dryRun {
-		detail := "would set insteadOf for " + strings.Join(hosts, ",")
+		detail := "would set insteadOf (https+ssh) for " + strings.Join(hosts, ",")
 		if helperMissing {
 			detail += " + credential.helper=!specula git-credential"
 		}
@@ -78,20 +81,21 @@ func integrateGit(home, addr string, dryRun bool) Result {
 	}
 
 	var added []string
+	seenHost := map[string]bool{}
 	for _, p := range pairs {
-		cur := gitConfig(home, p.key)
-		if sameProxyURL(strings.TrimSpace(cur), p.insteadOf) || strings.TrimSpace(cur) == p.insteadOf {
-			continue
-		}
 		if gitHasInsteadOf(home, p.proxyBase, p.insteadOf) {
 			continue
 		}
-		cmd := exec.Command("git", "config", "--global", p.key, p.insteadOf)
+		// --add: one url.<proxy> block may carry https + ssh insteadOf values.
+		cmd := exec.Command("git", "config", "--global", "--add", p.key, p.insteadOf)
 		cmd.Env = append(os.Environ(), "HOME="+home)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			return Result{Action: "error", Err: fmt.Sprintf("%v: %s", err, bytesTrim(out))}
 		}
-		added = append(added, p.host)
+		if !seenHost[p.host] {
+			added = append(added, p.host)
+			seenHost[p.host] = true
+		}
 	}
 
 	helperAdded := false
@@ -121,7 +125,7 @@ func integrateGit(home, addr string, dryRun bool) Result {
 			Path:   "git config --global",
 		}
 	}
-	detail := "HTTPS → Specula /git/<host>/"
+	detail := "HTTPS/SSH → Specula /git/<host>/"
 	if len(added) > 0 {
 		detail += " for " + strings.Join(added, ",")
 	}
