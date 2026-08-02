@@ -209,8 +209,12 @@ blob:
     root: /var/lib/specula/blobs
   s3:
     bucket: ""
-    # Use the INTERNAL/VPC endpoint from inside the same cloud: same bytes, no public
-    # egress bill. Aliyun OSS: https://oss-<region>-internal.aliyuncs.com
+    # Prefer the PUBLIC endpoint unless the Pod network can reach the cloud
+    # VPC endpoint. Aliyun OSS `-internal` resolves to 100.115.x; overlay /
+    # Tailscale / cross-VPC nodes get TLS handshake timeouts (EOF) and every
+    # OCI push becomes BLOB_UPLOAD_INVALID / 500 on blob HEAD.
+    #   public:   https://oss-<region>.aliyuncs.com
+    #   internal: https://oss-<region>-internal.aliyuncs.com  (same VPC only)
     endpoint: ""
     region: ""
     # OSS/COS/OBS are virtual-host style (false). MinIO needs true.

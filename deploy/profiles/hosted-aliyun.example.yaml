@@ -82,15 +82,20 @@ cache:
   maxBytes: 500000000000 # 500 GB
 
 # ── Blobs: OSS (S3-compatible) ────────────────────────────────────────────────
-# Create a private Standard bucket in the SAME region as the cluster and use the
-# -internal endpoint (VPC, no egress charge). Server-side encryption "OSS-managed"
-# is free and transparent; do not use KMS (per-object KMS calls on a hot cache).
-# Scope the RAM user to this bucket rather than granting OSSFullAccess.
+# Create a private Standard bucket in the SAME region as the cluster. Prefer the
+# PUBLIC endpoint unless the Pod network can reach the cloud VPC endpoint —
+# Aliyun OSS `-internal` resolves to 100.115.x; overlay / Tailscale / cross-VPC
+# nodes get TLS handshake timeouts and every OCI push fails (BLOB_UPLOAD_INVALID).
+#   public:   https://oss-<region>.aliyuncs.com
+#   internal: https://oss-<region>-internal.aliyuncs.com  (same VPC only)
+# Server-side encryption "OSS-managed" is free and transparent; do not use KMS
+# (per-object KMS calls on a hot cache). Scope the RAM user to this bucket
+# rather than granting OSSFullAccess.
 blob:
   driver: s3
   s3:
     bucket: <bucket-name>
-    endpoint: https://oss-<region>-internal.aliyuncs.com
+    endpoint: https://oss-<region>.aliyuncs.com
     region: <region>
     usePathStyle: false # OSS/COS/OBS are virtual-host style; MinIO needs true
     accessKeyId: <ram-access-key-id>
