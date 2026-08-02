@@ -166,6 +166,11 @@ auth:
   # This sets the Secure flag on the session cookie.
   cookie_secure: false
 
+  # Optional break-glass Bearer for /api/v1/admin/orgs* (chorei SoT sync).
+  # Prefer SPECULA_AUTH__ADMIN_KEY from a secret manager. Empty = disabled;
+  # session system_role=admin still works.
+  admin_key: ""
+
 # ── Protocols ─────────────────────────────────────────────────────────────────
 # Each key is the protocol name used internally and in metrics/logs.
 # Supported: oci, pypi, npm, go, apt, helm, tarball, git

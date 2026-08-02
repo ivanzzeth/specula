@@ -547,6 +547,7 @@ func run() error {
 		Events:     eventStore,
 		Capacity:   capacity,
 		Settings:   resolver,
+		AdminKey:   cfg.Auth.AdminKey,
 	})
 	adminSrv.RegisterRoutes(mux)
 	log.Info("specula: mounted Admin API", "base", "/api/v1")

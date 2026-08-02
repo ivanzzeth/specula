@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/ivanzzeth/specula/internal/apikey"
 	"github.com/ivanzzeth/specula/internal/auth"
@@ -97,6 +98,11 @@ type Deps struct {
 	// encrypted configstore), backing /api/v1/admin/settings. Optional: when nil
 	// the settings endpoints return 503.
 	Settings SettingsResolver
+
+	// AdminKey is the optional break-glass Bearer token for system-admin org
+	// orchestration (chorei SoT sync). Empty disables the admin-key path;
+	// session system_role=admin still works. Mirrors saidbox SANDBOX_ADMIN_KEY.
+	AdminKey string
 }
 
 // CacheCapacity is the narrow slice of the cache manager used for capacity
@@ -137,6 +143,9 @@ type Server struct {
 
 	// runtime settings resolver (nil → the settings endpoints answer 503)
 	settings SettingsResolver
+
+	// break-glass Bearer for orchestrator admin org routes (empty = off)
+	adminKey string
 }
 
 // New constructs an admin Server from deps. The logger falls back to
@@ -171,6 +180,7 @@ func New(deps Deps) *Server {
 		capacity:  deps.Capacity,
 
 		settings: deps.Settings,
+		adminKey: strings.TrimSpace(deps.AdminKey),
 	}
 
 	// Opaque caches (git's bare-mirror root) must be measurable from the moment

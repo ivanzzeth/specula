@@ -70,6 +70,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("PUT /api/v1/admin/settings/{key}", adminOnly(s.handlePutSetting))
 	mux.Handle("DELETE /api/v1/admin/settings/{key}", adminOnly(s.handleDeleteSetting))
 
+	// System-admin org orchestration (chorei SoT): session admin OR AdminKey.
+	mux.Handle("GET /api/v1/admin/orgs", s.requireSystemAdmin(s.handleAdminListOrgs))
+	mux.Handle("POST /api/v1/admin/orgs", s.requireSystemAdmin(s.handleAdminCreateOrg))
+	mux.Handle("POST /api/v1/admin/orgs/{id}/keys", s.requireSystemAdmin(s.handleAdminCreateOrgKey))
+
 	// ── multi-tenant: PrincipalMiddleware (JWT or API key) ───────────────────
 	// principalMW resolves acl.Subject + active org and injects both into ctx.
 	principalMW := auth.PrincipalMiddleware(s.keys, s.orgs, s.tokens, s.users)

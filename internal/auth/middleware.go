@@ -16,6 +16,12 @@ func UserFromContext(ctx context.Context) (User, bool) {
 	return u, ok
 }
 
+// ContextWithUser returns a child context carrying u for UserFromContext.
+// Used by break-glass AdminKey auth to inject a synthetic system-admin User.
+func ContextWithUser(ctx context.Context, u User) context.Context {
+	return context.WithValue(ctx, contextKey{}, u)
+}
+
 // Middleware returns an http.Handler middleware that authenticates each
 // request via the session cookie or an Authorization: Bearer <token> header.
 //

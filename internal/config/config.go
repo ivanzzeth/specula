@@ -277,6 +277,12 @@ type AuthConfig struct {
 	// is generated on first start and must be kept stable across restarts /
 	// shared across HA replicas so issued tokens verify everywhere.
 	RegistryTokenKeyPath string `koanf:"registry_token_key_path"`
+
+	// AdminKey is an optional break-glass Bearer token for system-admin org
+	// orchestration endpoints (/api/v1/admin/orgs*). Empty disables that path.
+	// Prefer SPECULA_AUTH__ADMIN_KEY from a secret manager. Mirrors saidbox's
+	// SANDBOX_ADMIN_KEY — chorei holds this to sync orgs as Source of Truth.
+	AdminKey string `koanf:"admin_key"`
 }
 
 // ProtocolConfig holds per-protocol upstreams and verification policy.
