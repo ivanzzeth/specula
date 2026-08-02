@@ -56,9 +56,14 @@ ingress:
 
 # auth.configSecret must be base64 of exactly 32 raw bytes (openssl rand -base64 32).
 # Required for HA: encrypted runtime settings and shared JWT across replicas.
+#
+# adminKey: optional break-glass Bearer for system-admin org APIs
+# (POST/GET /api/v1/admin/orgs*). Prefer SPECULA_AUTH__ADMIN_KEY from a secret
+# manager; when set here it lands in the chart Secret → env (never ConfigMap).
 auth:
   configSecret: ""
   jwtSecret: ""
+  adminKey: ""
   cookieSecure: false
 
 # When "cn", the ConfigMap pins China-reachable OCI upstreams (DaoCloud / 1ms /

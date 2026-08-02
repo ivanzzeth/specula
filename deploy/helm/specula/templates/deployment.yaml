@@ -67,6 +67,13 @@ spec:
                   name: {{ include "specula.secretName" . }}
                   key: jwt-secret
             {{- end }}
+            {{- if .Values.auth.adminKey }}
+            - name: SPECULA_AUTH__ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "specula.secretName" . }}
+                  key: admin-key
+            {{- end }}
             {{- if .Values.auth.cookieSecure }}
             - name: SPECULA_AUTH__COOKIE_SECURE
               value: "true"

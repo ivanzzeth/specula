@@ -272,8 +272,14 @@ meta:
 # the runtime-settings store, which is what makes the auto-generated JWT secret
 # durable. Empty = ephemeral: every restart signs everyone out, and replicas do not
 # share sessions. A malformed value is a startup error, never a silent downgrade.
+#
+# adminKey: optional break-glass Bearer for system-admin org APIs (chorei SoT).
+# When set, stored in a dedicated Secret and injected as SPECULA_AUTH__ADMIN_KEY
+# (never written into the ConfigMap). Empty = admin org routes require a session
+# system admin only.
 auth:
   configSecret: ""
+  adminKey: ""
   cookieSecure: false
 
 cache:

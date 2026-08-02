@@ -68,7 +68,9 @@ spec:
           {{- $blobSecret := .Values.blob.s3.existingSecret | default $gen }}
           {{- $akKey := ternary (.Values.blob.s3.accessKeyIDKey | default "access-key-id") "access-key-id" (ne (.Values.blob.s3.existingSecret | default "") "") }}
           {{- $skKey := ternary (.Values.blob.s3.secretAccessKeyKey | default "secret-access-key") "secret-access-key" (ne (.Values.blob.s3.existingSecret | default "") "") }}
-          {{- if or $pgMeta $s3Creds }}
+          {{- $adminKey := .Values.auth.adminKey }}
+          {{- $authSecret := printf "%s-auth" (include "specula-bootstrap.fullname" .) }}
+          {{- if or $pgMeta $s3Creds $adminKey }}
           # Credentials come from Secrets as env vars: SPECULA_ env overrides the
           # config file, so nothing sensitive lands in a ConfigMap. The strict loader
           # means a missing key fails fast at startup instead of degrading silently.
@@ -91,6 +93,13 @@ spec:
                 secretKeyRef:
                   name: {{ $blobSecret }}
                   key: {{ $skKey }}
+            {{- end }}
+            {{- if $adminKey }}
+            - name: SPECULA_AUTH__ADMIN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $authSecret }}
+                  key: admin-key
             {{- end }}
           {{- end }}
           ports:
