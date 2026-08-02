@@ -73,6 +73,13 @@ data:
       config_secret: {{ .Values.auth.configSecret | quote }}
       cookie_secure: {{ .Values.auth.cookieSecure | default .Values.tls.enabled }}
 
+    {{- with .Values.egressProxy.url }}
+    # Last-resort proxy for official:true upstreams only (CN mirrors stay direct).
+    # Typical in-cluster: http://trust-proxy.trust-proxy.svc:21584 (mode=manual).
+    egress:
+      official_proxy: {{ . | quote }}
+    {{- end }}
+
     # NOTHING about protocols is written here by default.
     #
     # Specula serves every protocol it implements — oci, npm, pypi, go, apt, helm,

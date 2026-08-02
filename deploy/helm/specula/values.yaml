@@ -81,6 +81,12 @@ regionProfile: ""
 # `upstreams: []` is a validation error, not a way to disable: use enabled: false.
 protocolOverrides: {}
 
+# Last-resort proxy for official:true upstreams (CN mirrors stay direct).
+# egressProxy:
+#   url: http://trust-proxy.trust-proxy.svc:21584
+egressProxy:
+  url: ""
+
 # Blob storage: "s3" (MinIO subchart or external S3-compatible) OR "local" with shared PVC.
 blob:
   driver: s3

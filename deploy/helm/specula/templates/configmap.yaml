@@ -48,6 +48,11 @@ data:
     auth:
       cookie_secure: {{ .Values.auth.cookieSecure }}
 
+    {{- with .Values.egressProxy.url }}
+    egress:
+      official_proxy: {{ . | quote }}
+    {{- end }}
+
     # Git is omitted in HA: bare mirrors are node-local and not shared across replicas.
     protocols:
       {{- with .Values.protocolOverrides }}

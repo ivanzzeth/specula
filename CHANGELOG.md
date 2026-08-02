@@ -3,6 +3,16 @@
 All notable changes to Specula are documented here. The public library surface
 is `pkg/**` — see [docs/LIBRARY.md](docs/LIBRARY.md).
 
+## [0.12.12] — Official upstream egress proxy stamp — 2026-08-02
+
+### Added — `egress.official_proxy`
+
+Top-level config URL stamped onto every upstream with `official: true` after
+protocol defaults (CN mirrors stay direct). Helm charts expose
+`egressProxy.url` → ConfigMap `egress.official_proxy`. Use with an in-cluster
+HTTP CONNECT proxy (e.g. trust-proxy Service `:21584`) so Hub/origin fallback
+works from CN without rewriting the mirror chain.
+
 ## [0.12.10] — Git insteadOf private-repo credentials — 2026-08-01
 
 ### Fixed — private clones through Specula `insteadOf` no longer ask for Username on the proxy URL

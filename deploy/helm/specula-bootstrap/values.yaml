@@ -138,6 +138,19 @@ remoteRegistries: []
 # `upstreams: []` written here is an error, not a way to disable: use enabled: false.
 protocolOverrides: {}
 
+# ── Last-resort proxy for official origins (opt-in) ───────────────────────────
+# Stamps egress.official_proxy onto every upstream with official: true AFTER the
+# built-in China-first chain is applied — mirrors stay direct. Does NOT replace
+# protocolOverrides.oci.upstreams (that would wipe the mirror list).
+#
+# In-cluster trust-proxy (mode=manual is enough for Specula dials):
+#   egressProxy:
+#     url: http://trust-proxy.trust-proxy.svc:21584
+# Empty = off. The proxy must be reachable FROM Specula Pods (label one node
+# trust-proxy.io/gateway=true first so the DaemonSet has endpoints).
+egressProxy:
+  url: ""
+
 # ── git clone acceleration (opt-in; OFF by default) ───────────────────────────
 # Serve public `git clone` through Specula bare mirrors (github.com etc). This is
 # the ONE protocol NOT served from the built-in table by default: the git handler

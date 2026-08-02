@@ -106,41 +106,28 @@ persistence:
   enabled: false
 
 # ── Last-resort proxy for the official origin (optional) ─────────────────────
-# When every CN mirror fails on blobs — they redirect layers to CDNs
-# (image-mirror.r2.daocloud.vip, production.cloudfront.docker.com) a CN cluster often
-# cannot dial — the official origin is the only remaining path, and it needs a proxy.
+# When every CN mirror fails on blobs — they redirect layers to CDNs a CN cluster
+# often cannot dial — the official origin needs a proxy. Prefer the top-level
+# stamp (does NOT rewrite the Hub chain):
 #
-# Put the proxy on that ONE upstream. It sits last in the chain, so it is used only
-# after every mirror has failed: metered traffic paid for only when it is needed.
-# HTTPS_PROXY in the environment would work too and would route the mirror traffic
-# through the proxy as well, which is the bulk of the bytes and the expensive mistake.
+#   egressProxy:
+#     url: http://trust-proxy.trust-proxy.svc:21584
 #
-# NOTE: this key REPLACES the whole Hub chain, so list the mirrors too — otherwise
-# they are lost and every pull goes straight to the proxied origin. The list below is
-# the binary's built-in chain plus the proxy.
+# trust-proxy mode=manual is enough: Specula Pods dial the Service proxy port;
+# TUN is NOT required for Specula official-origin fallback. Label one node
+#   kubectl label node <n> trust-proxy.io/gateway=true
+# before enabling so the DaemonSet has endpoints.
 #
-# protocolOverrides:
-#   oci:
-#     upstreams:
-#       - name: daocloud
-#         base_url: https://docker.m.daocloud.io
-#         priority: 1
-#       - name: 1ms
-#         base_url: https://docker.1ms.run
-#         priority: 2
-#       - name: aliyun
-#         base_url: https://registry.aliyuncs.com
-#         priority: 3
-#       - name: docker-hub
-#         base_url: https://registry-1.docker.io
-#         priority: 10
-#         official: true
-#         proxy: http://<proxy-host>:3128     # or socks5://<host>:1080
+# Or put proxy: on ONE upstream via protocolOverrides (must restate the full
+# chain if you set upstreams). Prefer egressProxy.url.
 #
-# The proxy must be reachable FROM THE SPECULA POD (cluster network), not from your
-# laptop. Verify after applying:
-#   kubectl -n specula-boot logs deploy/boot-specula-bootstrap | grep -i proxy
+# The proxy must be reachable FROM THE SPECULA POD (cluster network), not from
+# your laptop. Verify after applying:
+#   kubectl -n specula-boot get cm boot-specula-bootstrap -o yaml | grep official_proxy
 #   # then pull something no mirror carries and watch it succeed via docker-hub
+
+egressProxy:
+  url: ""
 
 # ── Node integration — REQUIRED, do not turn this off ─────────────────────────
 # This is the entire point of deploying Specula into a CN cluster: the cluster's own

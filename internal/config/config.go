@@ -41,7 +41,22 @@ type Config struct {
 	Cache     CacheConfig               `koanf:"cache"`
 	Coalesce  CoalesceConfig            `koanf:"coalesce"`
 	Auth      AuthConfig                `koanf:"auth"`
+	Egress    EgressConfig              `koanf:"egress"`
 	Protocols map[string]ProtocolConfig `koanf:"protocols"`
+}
+
+// EgressConfig stamps a last-resort HTTP(S)/SOCKS proxy onto every upstream
+// marked official: true after protocol defaults are applied.
+//
+// Why a top-level key (not protocolOverrides.oci.upstreams): writing ANY
+// upstreams list replaces the built-in China-first chain. Operators only need
+// to name the proxy URL (typically trust-proxy in-cluster); mirrors stay direct.
+type EgressConfig struct {
+	// OfficialProxy routes official origins through this proxy:
+	//   egress:
+	//     official_proxy: http://trust-proxy.trust-proxy.svc:21584
+	// Empty = off. Does not override an upstream that already has proxy set.
+	OfficialProxy string `koanf:"official_proxy"`
 }
 
 // ServerConfig holds the single listen address and public identity.
@@ -858,6 +873,7 @@ func Load(path string) (*Config, error) {
 	}); err != nil {
 		return nil, err
 	}
+	applyOfficialEgressProxy(&cfg)
 
 	if err := Validate(&cfg); err != nil {
 		return nil, err

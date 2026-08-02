@@ -169,6 +169,17 @@ auth:
 # ── Protocols ─────────────────────────────────────────────────────────────────
 # Each key is the protocol name used internally and in metrics/logs.
 # Supported: oci, pypi, npm, go, apt, helm, tarball, git
+
+# ── Egress (optional) ────────────────────────────────────────────────────────
+# Stamp a last-resort proxy onto every upstream with official: true after the
+# built-in China-first chains are applied. CN mirrors stay direct.
+#
+#   egress:
+#     official_proxy: http://trust-proxy.trust-proxy.svc:21584
+#
+# Prefer this over rewriting protocols.*.upstreams (that replaces the whole
+# mirror list). Empty = off.
+
 protocols:
 
   # ── OCI ───────────────────────────────────────────────────────────────────

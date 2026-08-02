@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
 	"github.com/knadh/koanf/parsers/yaml"
@@ -139,4 +140,33 @@ func applyProtocolDefaults(cfg *Config, wroteUpstreams func(protocol string) boo
 		}
 	}
 	return nil
+}
+
+// applyOfficialEgressProxy stamps Egress.OfficialProxy onto every upstream with
+// Official=true whose Proxy is still empty. Runs after applyProtocolDefaults so
+// built-in chains receive the stamp without operators rewriting upstreams.
+func applyOfficialEgressProxy(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	proxy := strings.TrimSpace(cfg.Egress.OfficialProxy)
+	if proxy == "" {
+		return
+	}
+	for name, pc := range cfg.Protocols {
+		changed := false
+		for i := range pc.Upstreams {
+			if !pc.Upstreams[i].Official {
+				continue
+			}
+			if strings.TrimSpace(pc.Upstreams[i].Proxy) != "" {
+				continue // operator already pinned a per-upstream proxy
+			}
+			pc.Upstreams[i].Proxy = proxy
+			changed = true
+		}
+		if changed {
+			cfg.Protocols[name] = pc
+		}
+	}
 }

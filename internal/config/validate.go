@@ -110,6 +110,11 @@ func Validate(cfg *Config) error {
 		add("server.mode: must be \"online\", \"offline\", or empty, got %q", cfg.Server.Mode)
 	}
 
+	// ── Egress — official_proxy (stamped onto official upstreams at load) ──
+	if reason := upstreamProxyProblem(cfg.Egress.OfficialProxy); reason != "" {
+		add("egress.official_proxy: %s", reason)
+	}
+
 	// ── Storage — Blob ────────────────────────────────────────────────────
 	switch cfg.Storage.Blob.Driver {
 	case "local":
