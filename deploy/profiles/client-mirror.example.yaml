@@ -1,37 +1,54 @@
-# Specula — client cluster profile: point this cluster's nodes at a Specula hosted
-# somewhere else in the same VPC. Deploys ONLY the mirror DaemonSet.
+# Specula — client cluster profile: point this cluster's nodes at a Specula
+# hosted elsewhere. Deploys ONLY the mirror + integrate DaemonSets
+# (deployment.enabled=false). No Specula pods / PVC / Ingress on the client.
+#
+# Preferred path (chorei platform — third-party / tenant ACK):
+#
+#   chorei cluster specula client-wire <cluster> \
+#     --endpoint https://specula.example.com \
+#     --image registry.example.com/org/specula:v0.12.13 \
+#     --yes
+#
+# Manual helm (same values shape):
 #
 #   cp deploy/profiles/client-mirror.example.yaml specula-deploy-client.yaml
-#   $EDITOR specula-deploy-client.yaml       # set mirror.endpoint
-#   specula cluster install --values specula-deploy-client.yaml --wait
+#   $EDITOR specula-deploy-client.yaml       # set mirror.endpoint + image
+#   helm upgrade --install specula-client ./deploy/helm/specula-bootstrap \
+#     -n specula-client --create-namespace -f specula-deploy-client.yaml --wait
 #
-# Auto-adapts to node-pool scaling: it is a DaemonSet, so every worker that joins
-# gets its hosts.toml written, and the reconcile loop repairs drift every 5m. No
-# per-node manual step, ever.
+# Auto-adapts to node-pool scaling: DaemonSets write hosts.toml on every
+# worker; integrate repairs CRI config_path + drift every 5m.
 #
-# Traffic stays on the VPC: the endpoint below is the hosted Specula's INTERNAL
-# LoadBalancer address, so pulls never touch the public internet and are not billed
-# as egress.
+# Two endpoint modes (pick ONE):
+#
+# | Mode | endpoint | When |
+# |---|---|---|
+# | **Public HTTPS** | `https://specula.example.com` | Cross-account / third-party ACK; LE/system CA; skipVerify=false |
+# | **Intranet HTTP** | `http://10.0.0.0:7733` | Same VPC LB only; never skipVerify for plain http |
+#
+# Chicken-egg: the Specula *agent* image for the DaemonSets must already be
+# pullable before hosts.toml exists (public ACR/Hub or pull secret). Do not
+# DaoCloud-rewrite registry.k8s.io — after integrate, public charts pull via Specula.
 
 # No Specula here — this cluster only redirects to the hosted one.
 deployment:
   enabled: false
 
-# The hosted Specula's intranet address. On the hosting side, expose it with:
-#   service:
-#     type: LoadBalancer
-#     annotations:
-#       service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: intranet
-# then read the assigned IP:
-#   kubectl -n specula-boot get svc <release>-specula-bootstrap \
-#     -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
-#
-# Use a DNS name instead of a raw IP if you have private DNS — the IP can change if
-# the LoadBalancer is recreated, and every node's hosts.toml would need rewriting
-# (the DaemonSet does that automatically, but pulls fail in between).
+persistence:
+  enabled: false
+
+ingress:
+  enabled: false
+
+# Host clients use for `docker login` / private push UI (HTTPS public mode).
+registryPublicHost: specula.example.com
+
 mirror:
   enabled: true
-  endpoint: http://<hosted-specula-intranet-ip>:7733
+  # Public HTTPS (preferred for third-party):
+  endpoint: https://specula.example.com
+  # Intranet same-VPC alternative (uncomment instead of HTTPS):
+  # endpoint: http://10.0.0.0:7733
   certsDir: /etc/containerd/certs.d
   # k3s keeps its own certs.d; harmless when the path does not exist.
   k3sCertsDir: /var/lib/rancher/k3s/agent/etc/containerd/certs.d
@@ -42,21 +59,24 @@ mirror:
     - ghcr.io
     - quay.io
     - gcr.io
-  # true only for an HTTPS endpoint with a non-public CA. For plain http:// this
-  # MUST stay false — otherwise containerd dials TLS against an HTTP port.
+    - codeberg.org
+  # true ONLY for HTTPS with a private/non-public CA. Public LE → false.
+  # Plain http:// MUST stay false (containerd must not dial TLS to HTTP).
   skipVerify: false
 
-# The integrate DaemonSet additionally fixes the CRI config_path, which containerd
-# 2.2 needs before crictl/kubelet honour hosts.toml at all. Keep it on: it is the
-# difference between "hosts.toml written" and "hosts.toml actually used".
+# Fixes CRI config_path so kubelet/crictl honour hosts.toml (containerd 2.2+).
+# Full DefaultProtocols — never narrow to oci alone.
 integrate:
   enabled: true
-  # Full DefaultProtocols — never narrow to oci alone (chorei #23).
   protocols: "go,npm,pypi,oci,helm,git,apt,cargo,conda,hf"
+  includeClientProtocols: false
+  hold: true
   restartContainerd: once
   reconcileInterval: 5m
+  stampHostPath: /var/lib/specula
 
+# Must be pullable BEFORE hosts.toml exists (chicken-egg).
 image:
-  repository: <registry-vpc-host>/<namespace>/specula
-  tag: v0.11.1
+  repository: registry.example.com/org/specula
+  tag: v0.12.13
   pullPolicy: IfNotPresent
