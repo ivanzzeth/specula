@@ -142,15 +142,24 @@ egressProxy:
 # own nodes are deliberately excluded — and if you think that is you, re-read this
 # paragraph first.
 #
-# endpoint must be reachable FROM THE NODE. This profile exposes an internal
-# LoadBalancer and therefore has no NodePort, so the nodes dial the CLB address; that
-# same address serves every other cluster in the VPC.
+# endpoint must be reachable FROM THE NODE. Default (and cost-correct on ACK):
+# NodePort + loopback — same as chart defaults. Do NOT open a dedicated intranet
+# CLB for Specula on Alibaba Cloud (idle CLB instance fee); public admin/OCI
+# traffic goes through the shared Ingress Host (see ingress: above / registryPublicHost).
+# Cross-VPC / other-cluster clients: use Ingress FQDN or overlay — not a second CLB.
+# See docs/specs/aliyun-ack-networking-ha-cost.md.
 #
 # skipVerify must stay false for a plain http:// endpoint — skip_verify tells containerd
 # to speak TLS, and it would then dial TLS against an HTTP port.
+service:
+  type: NodePort
+  # Prefer chart default 30733; keep an already-allocated NodePort if migrating off CLB.
+  nodePort: 30733
+  annotations: {}
+
 mirror:
   enabled: true
-  endpoint: http://<internal-lb-ip>:7733
+  endpoint: http://127.0.0.1:30733
   skipVerify: false
 integrate:
   enabled: true

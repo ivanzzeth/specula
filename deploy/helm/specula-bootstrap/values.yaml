@@ -70,9 +70,11 @@ ingress:
 registryPublicHost: ""
 
 service:
-  # NodePort (default) keeps node→Specula traffic on localhost.
-  # LoadBalancer + an internal annotation exposes a stable VPC address for OTHER
-  # clusters. On Alibaba Cloud, intranet means no public IP and no egress bill:
+  # NodePort (default) keeps node→Specula traffic on localhost — preferred on
+  # Alibaba Cloud ACK (avoids a dedicated idle CLB). Public access: shared Ingress
+  # Host, not type=LoadBalancer. Intranet CLB only if another VPC peer must dial
+  # a stable RFC1918 VIP *and* you accept ~CLB/月 instance fee:
+  #   type: LoadBalancer
   #   annotations:
   #     service.beta.kubernetes.io/alibaba-cloud-loadbalancer-address-type: intranet
   type: NodePort

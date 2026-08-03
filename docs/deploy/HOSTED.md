@@ -337,9 +337,14 @@ for the full five minutes and then report a healthy install as failed — but it
 plainly that the cluster's nodes are not pointed at Specula, because that is the
 consequence you need to notice.
 
-## Letting other clusters in## Letting other clusters in
+## Letting other clusters in
 
-Expose a VPC address — no public IP, no egress bill:
+**Preferred (Aliyun / cost):** keep Specula as **NodePort** for *this* cluster's
+nodes (`http://127.0.0.1:<nodePort>`). Expose other clusters via the **shared
+Ingress** FQDN (or overlay), not a second CLB — idle CLB instance fees add up
+fast. See `docs/specs/aliyun-ack-networking-ha-cost.md` in chorei.
+
+**Optional (same-VPC only, accepts CLB idle fee):** intranet LoadBalancer:
 
 ```yaml
 service:
@@ -358,9 +363,9 @@ Then in each client cluster, deploy the node-side agent only — see
 It is a DaemonSet, so every worker that joins is covered automatically and the 5m
 reconcile repairs drift; there is no per-node manual step.
 
-Prefer a private DNS name over the raw LoadBalancer IP: the IP changes if the CLB is
-recreated, and although the DaemonSet rewrites `hosts.toml` automatically, pulls fail
-in between.
+Prefer a private DNS name over a raw LoadBalancer IP if you do use a CLB: the IP
+changes if the CLB is recreated, and pulls fail until mirror DaemonSets rewrite
+`hosts.toml`.
 
 ## First login
 
