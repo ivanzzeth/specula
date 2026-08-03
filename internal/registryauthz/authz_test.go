@@ -136,7 +136,26 @@ const (
 	testRepoName = "myorg/myapp"
 	testOwner    = "user:1"
 	memberEmail  = "member@example.com"
+
+	// A repo whose owner_user_id is a PUSH API key rather than a human — the
+	// shape every hosted repo actually has in production, because the row is
+	// created on first push with owner_user_id = the pushing key's subject.
+	testPushedRepoName = "myorg/pushed"
+	testPusherKeySubj  = "apikey:pusher"
 )
+
+// createKeyOwnedPrivateRepo adds a private repo owned by an API-key subject that
+// is NOT the caller under test, reproducing the production shape: a repo created
+// by a first push, so its owner is whichever credential happened to push first.
+func createKeyOwnedPrivateRepo(t *testing.T, repos *fakeRepoStore) {
+	t.Helper()
+	if _, err := repos.CreateRepo(
+		context.Background(), testOrgID, testPushedRepoName,
+		repo.VisibilityPrivate, testPusherKeySubj,
+	); err != nil {
+		t.Fatalf("CreateRepo(%s): %v", testPushedRepoName, err)
+	}
+}
 
 // newTokenSvc creates a registrytoken.Service backed by a freshly-generated RSA
 // key pair in a temp directory.
@@ -409,6 +428,262 @@ func TestGrantedActions_NonMemberUser_DeniedPrivate(t *testing.T) {
 	got := a.GrantedActions(context.Background(), p, testRepoName, []string{"pull"})
 	if len(got) != 0 {
 		t.Errorf("outsider pull on private repo: got %v, want []", got)
+	}
+}
+
+// ── org-role tenancy on same-org private repos ────────────────────────────────
+//
+// These tests pin the fix for a production outage: a hosted repo row is created
+// on FIRST PUSH with owner_user_id = the pushing credential's subject, so
+// whichever API key pushed first became the repo's permanent sole owner. Every
+// other credential in the SAME org — including the org's own admin key — then
+// got `access: null` from /token, and rotating the push key orphaned the repo
+// with no recovery path.
+//
+// The tenancy boundary is org membership + role, NOT first-pusher identity;
+// repos.owner_user_id is attribution. acl models a repo as private|public with
+// one owner and cannot express the org-RBAC ladder, so the registry surface
+// applies it here — the same axis internal/admin/repos.go:authorizeRepo already
+// applies to the WebUI, which is why the two surfaces used to disagree about the
+// very same repo.
+//
+// Ladder (registry action semantics, not repo administration):
+//   - pull  → viewer+ (any member of the owning org)
+//   - push/delete → editor+ (REGISTRY-DESIGN §2.3 already ties editor to "may
+//     mint push credentials", so editor is the content-write rung)
+
+// hasAll reports whether got contains every action in want (order-insensitive).
+func hasAll(got []string, want ...string) bool {
+	have := make(map[string]bool, len(got))
+	for _, g := range got {
+		have[g] = true
+	}
+	for _, w := range want {
+		if !have[w] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestGrantedActions_OrgAdminKey_PullsPrivateRepoOwnedByAnotherKey(t *testing.T) {
+	// THE LIVE CASE. Org "default" holds a private repo pushed (and therefore
+	// owned) by one API key; the org's own admin key — a DIFFERENT subject —
+	// must still be able to pull it. Before the fix /token returned
+	// `access: null` and every node pull 401/403'd.
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{Subject: "apikey:orgadmin", OrgID: testOrgID}
+	got := a.GrantedActions(context.Background(), p, testPushedRepoName, []string{"pull"})
+	if len(got) != 1 || got[0] != "pull" {
+		t.Errorf("org-admin key pull on key-owned private repo: got %v, want [pull]", got)
+	}
+}
+
+func TestGrantedActions_OrgAdminKey_PushesPrivateRepoOwnedByAnotherKey(t *testing.T) {
+	// The rotation half of the same bug: after the original push key is revoked,
+	// the org's admin key must be able to keep pushing the repo.
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{Subject: "apikey:orgadmin", OrgID: testOrgID}
+	got := a.GrantedActions(context.Background(), p, testPushedRepoName,
+		[]string{"pull", "push", "delete"})
+	if !hasAll(got, "pull", "push", "delete") {
+		t.Errorf("org-admin key on key-owned private repo: got %v, want pull+push+delete", got)
+	}
+}
+
+func TestGrantedActions_OrgEditorUser_PullsAndPushesPrivateRepoOwnedByKey(t *testing.T) {
+	// Password-user path: a member with role editor may both pull and push a
+	// private repo a teammate's key pushed first. (setupOrgAndRepo registers
+	// memberEmail as RoleEditor.)
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{Subject: "user:99", Email: memberEmail}
+	got := a.GrantedActions(context.Background(), p, testPushedRepoName,
+		[]string{"pull", "push"})
+	if !hasAll(got, "pull", "push") {
+		t.Errorf("org editor on key-owned private repo: got %v, want pull+push", got)
+	}
+}
+
+func TestGrantedActions_OrgViewerUser_PullsButCannotPushPrivateRepo(t *testing.T) {
+	// The ladder must still bite: a viewer reads their org's private repos but
+	// may not overwrite their content.
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	ctx := context.Background()
+	const viewerEmail = "viewer@example.com"
+	if err := orgs.AddOrgMember(ctx, &org.Member{
+		OrgID: testOrgID, Email: viewerEmail, Role: org.RoleViewer,
+	}); err != nil {
+		t.Fatalf("AddOrgMember: %v", err)
+	}
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{Subject: "user:100", Email: viewerEmail}
+	got := a.GrantedActions(ctx, p, testPushedRepoName, []string{"pull", "push", "delete"})
+	if len(got) != 1 || got[0] != "pull" {
+		t.Errorf("org viewer on key-owned private repo: got %v, want [pull]", got)
+	}
+}
+
+func TestGrantedActions_OrgAdminKey_SameOrgPublicRepoWritable(t *testing.T) {
+	// Same bug class on the public side: flipping a repo public must not lock
+	// the owning org out of pushing to it. acl's canWrite requires
+	// Visibility==Org, so before the fix ONLY the first pusher could push a
+	// public repo in their own org.
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	ctx := context.Background()
+	if err := repos.SetVisibility(ctx, testOrgID, testPushedRepoName, repo.VisibilityPublic); err != nil {
+		t.Fatalf("SetVisibility: %v", err)
+	}
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{Subject: "apikey:orgadmin", OrgID: testOrgID}
+	got := a.GrantedActions(ctx, p, testPushedRepoName, []string{"pull", "push"})
+	if !hasAll(got, "pull", "push") {
+		t.Errorf("org-admin key on same-org public repo: got %v, want pull+push", got)
+	}
+}
+
+// ── non-regressions: the org-role axis must widen NOTHING else ────────────────
+
+func TestGrantedActions_KeyOwnedPrivateRepo_AnonymousStillDenied(t *testing.T) {
+	// An anonymous caller has no org and therefore no role: private stays shut.
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{Anonymous: true}
+	got := a.GrantedActions(context.Background(), p, testPushedRepoName,
+		[]string{"pull", "push", "delete"})
+	if len(got) != 0 {
+		t.Errorf("anonymous on key-owned private repo: got %v, want []", got)
+	}
+}
+
+func TestGrantedActions_KeyOwnedPrivateRepo_CrossOrgKeyStillDenied(t *testing.T) {
+	// A key pinned to a DIFFERENT org is org-admin of that org, never of this
+	// one. Absent a resource_grant it must get nothing.
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	ctx := context.Background()
+	if err := orgs.CreateOrg(ctx, &org.Org{
+		ID: "org_other", Slug: "other", Status: org.StatusActive,
+	}); err != nil {
+		t.Fatalf("CreateOrg: %v", err)
+	}
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{Subject: "apikey:foreign", OrgID: "org_other"}
+	got := a.GrantedActions(ctx, p, testPushedRepoName, []string{"pull", "push", "delete"})
+	if len(got) != 0 {
+		t.Errorf("cross-org key on key-owned private repo: got %v, want []", got)
+	}
+}
+
+func TestGrantedActions_KeyOwnedPrivateRepo_NonMemberUserStillDenied(t *testing.T) {
+	// An authenticated user with no membership in the owning org resolves to no
+	// role and stays denied.
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{Subject: "user:99", Email: "outsider@example.com"}
+	got := a.GrantedActions(context.Background(), p, testPushedRepoName,
+		[]string{"pull", "push"})
+	if len(got) != 0 {
+		t.Errorf("non-member on key-owned private repo: got %v, want []", got)
+	}
+}
+
+func TestGrantedActions_KeyOwnedPrivateRepo_KeyScopeStillFilters(t *testing.T) {
+	// apikey.AllowsAction key-scope filtering runs BEFORE the org-role axis: a
+	// pull-only org-admin key must not gain push from its role.
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{
+		Subject:   "apikey:orgadmin-ro",
+		OrgID:     testOrgID,
+		KeyScopes: []string{"pull"},
+	}
+	got := a.GrantedActions(context.Background(), p, testPushedRepoName,
+		[]string{"pull", "push", "delete"})
+	if len(got) != 1 || got[0] != "pull" {
+		t.Errorf("pull-only org-admin key: got %v, want [pull]", got)
+	}
+}
+
+// TestOrgAdminKey_TokenToDataPlane_PullSucceeds walks the WHOLE path the live
+// outage travelled, not just the /token decision: mint the scope GrantedActions
+// hands out, then feed the resulting claims to the two data-plane chokepoints
+// (AuthorizeRead for the hosted pull seam, Authorize for the write chokepoint).
+//
+// This is the test that proves the fix reaches the node: /token granting pull is
+// worthless if the data plane still refuses the token it minted. Both those
+// checks trust the issued scope, so an empty scope — the `access: null` the org
+// admin key used to receive — is precisely what made every pull 401/403.
+func TestOrgAdminKey_TokenToDataPlane_PullSucceeds(t *testing.T) {
+	orgs, repos := setupOrgAndRepo(t)
+	createKeyOwnedPrivateRepo(t, repos)
+	a := registryauthz.New(orgs, repos)
+	svc := newTokenSvc(t)
+	ctx := context.Background()
+
+	const orgAdminKey = "apikey:orgadmin"
+	p := registrytoken.Principal{Subject: orgAdminKey, OrgID: testOrgID}
+
+	actions := a.GrantedActions(ctx, p, testPushedRepoName, []string{"pull"})
+	if len(actions) == 0 {
+		t.Fatal("/token granted no actions — the org admin key cannot even get a scope")
+	}
+
+	claimsCtx := ctxWithClaims(t, svc, orgAdminKey, []registrytoken.Access{
+		{Type: "repository", Name: testPushedRepoName, Actions: actions},
+	})
+
+	// Hosted pull seam (oci.HostedReadAuthz).
+	if err := a.AuthorizeRead(claimsCtx, testPushedRepoName); err != nil {
+		t.Errorf("AuthorizeRead with minted scope: got %v, want nil", err)
+	}
+	// Data-plane chokepoint (registry.Authorizer).
+	rp, err := a.Authorize(claimsCtx, testPushedRepoName, registrytoken.ActionPull)
+	if err != nil {
+		t.Fatalf("Authorize(pull) with minted scope: got %v, want nil", err)
+	}
+	if rp == nil || rp.Name != testPushedRepoName {
+		t.Errorf("Authorize returned wrong repo: %v", rp)
+	}
+	// The repo's attribution must be untouched — access changed, ownership did not.
+	if rp.OwnerUserID != testPusherKeySubj {
+		t.Errorf("owner_user_id = %q, want %q (attribution must not be rewritten)",
+			rp.OwnerUserID, testPusherKeySubj)
+	}
+}
+
+func TestGrantedActions_PublicRepo_AnonymousStillReadOnly(t *testing.T) {
+	// Public read for everyone stays; anonymous write stays refused.
+	orgs, repos := setupOrgAndRepo(t)
+	ctx := context.Background()
+	if err := repos.SetVisibility(ctx, testOrgID, testRepoName, repo.VisibilityPublic); err != nil {
+		t.Fatalf("SetVisibility: %v", err)
+	}
+	a := registryauthz.New(orgs, repos)
+
+	p := registrytoken.Principal{Anonymous: true}
+	got := a.GrantedActions(ctx, p, testRepoName, []string{"pull", "push", "delete"})
+	if len(got) != 1 || got[0] != "pull" {
+		t.Errorf("anonymous on public repo: got %v, want [pull]", got)
 	}
 }
 

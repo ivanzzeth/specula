@@ -106,6 +106,49 @@ func (a *Authz) subjectForOrg(ctx context.Context, p registrytoken.Principal, or
 	return acl.Subject{UserID: p.Subject}
 }
 
+// orgRoleOf returns the principal's effective role IN orgID — the org that owns
+// the repo being accessed — or "" when they hold none there.
+//
+// This mirrors internal/admin.Server.orgRoleOf so `docker pull` and the WebUI
+// reach the same answer for the same repo (they used to disagree: an org-pinned
+// key is org-admin on the Admin API but was owner-or-nothing at /token).
+//
+// An API key is org-admin within its PINNED org and nothing outside it — the
+// same rule auth.PrincipalMiddleware applies. A password user's role is their
+// org_members role. Anonymous holds no role anywhere.
+func (a *Authz) orgRoleOf(ctx context.Context, p registrytoken.Principal, orgID string) string {
+	if p.Anonymous || p.Subject == "" || orgID == "" {
+		return ""
+	}
+	if p.OrgID != "" {
+		if p.OrgID != orgID {
+			return "" // key pinned to a different tenant
+		}
+		return org.RoleAdmin
+	}
+	if a.orgs == nil || p.Email == "" {
+		return ""
+	}
+	m, err := a.orgs.GetOrgMember(ctx, orgID, p.Email)
+	if err != nil || m == nil {
+		return ""
+	}
+	return org.NormalizeRole(m.Role)
+}
+
+// roleNeededFor is the org-role rung that substitutes for repo ownership on a
+// registry action: reading an org's own private content needs mere membership
+// (viewer+), writing its content needs editor+ (REGISTRY-DESIGN §2.3 already
+// ties editor to "may mint push credentials", so editor is the content-write
+// rung). This is content access, NOT repo administration — flipping visibility
+// or deleting the repo row still requires admin+ via the Admin API.
+func roleNeededFor(needWrite bool) string {
+	if needWrite {
+		return org.RoleEditor
+	}
+	return org.RoleViewer
+}
+
 // resourceFor resolves the acl.Resource for a repo name in orgID. An existing
 // hosted repo maps via repo.ToACLResource; a not-yet-created repo is modelled as
 // an org-writable resource so an org-write member can create/push it (a
@@ -135,6 +178,7 @@ func (a *Authz) GrantedActions(ctx context.Context, p registrytoken.Principal, r
 	}
 	resource := a.resourceFor(ctx, orgID, repoName)
 	subject := a.subjectForOrg(ctx, p, orgID)
+	role := a.orgRoleOf(ctx, p, orgID)
 
 	var grantedOrgs []string
 	var rp *repo.Repo
@@ -149,11 +193,20 @@ func (a *Authz) GrantedActions(ctx context.Context, p registrytoken.Principal, r
 	for _, action := range requested {
 		// API-key principals are further constrained by per-key scopes
 		// (pull/push). Password users have empty KeyScopes and skip this gate.
+		// This runs BEFORE the authorization decision so a key's scope can only
+		// ever narrow what its org role would otherwise permit.
 		if len(p.KeyScopes) > 0 && !apikey.AllowsAction(p.KeyScopes, action) {
 			continue
 		}
 		needWrite := action != registrytoken.ActionPull
-		if acl.CanAccessGranted(resource, subject, needWrite, grantedOrgs) == nil {
+		// repo.Authorize applies acl (owner / public / cross-org grant) AND the
+		// org-role ladder, so a repo's org — not whichever credential pushed it
+		// first — decides access. Same decision the Admin API routes through.
+		if repo.Authorize(resource, subject, needWrite, grantedOrgs, repo.OrgRoleGrant{
+			OrgID: orgID,
+			Have:  role,
+			Need:  roleNeededFor(needWrite),
+		}) == nil {
 			granted = append(granted, action)
 			continue
 		}

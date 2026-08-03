@@ -99,23 +99,19 @@ func (s *Server) orgRoleOf(r *http.Request, orgID string) string {
 }
 
 // authorizeRepo decides whether the caller may read (needWrite=false) or
-// administer (needWrite=true) a hosted repo, on two deliberate axes:
+// administer (needWrite=true) a hosted repo.
 //
-//  1. acl.CanAccessGranted — the authoritative per-resource decision: system
-//     admin, the repo's owner, public read, and cross-org grants. This is the
-//     same chokepoint the registry data plane uses, so the WebUI can never show
-//     a repo that `docker pull` would refuse (or vice versa).
+// The decision itself lives in repo.Authorize — the SAME function the registry
+// /token scope authorizer routes through, which is load-bearing: when the two
+// surfaces each rolled their own answer they disagreed about the very same repo
+// (an org-pinned key could PATCH a repo here while /token returned
+// `access: null` for a pull on it). This handler only maps the HTTP request onto
+// the acl subject, the caller's org role, and the rung that role must reach.
 //
-//  2. The org role ladder — a repo belongs to an org, and administering an org's
-//     repos is an org-RBAC concern, not a per-resource one. acl models a repo as
-//     private|public with a single owner, so without this axis an org admin
-//     could not flip the visibility of a repo a teammate pushed, and org members
-//     could not see their own org's private repos in the UI. Read needs viewer+;
-//     write needs admin+ (matching the members API and REGISTRY-DESIGN §5.1's
-//     "visibility toggle (owner/admin)").
-//
-// Neither axis is an inlined visibility check: axis 1 delegates entirely to acl,
-// and axis 2 is org membership, which acl does not model.
+// The rung differs from the registry's on purpose: this endpoint ADMINISTERS a
+// repo (flip visibility, delete the row, delete tags), so a write needs admin+
+// per REGISTRY-DESIGN §5.1's "visibility toggle (owner/admin)", whereas pushing
+// CONTENT through the registry needs only editor+.
 //
 // It reports ok=false having already written the response.
 func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, orgID string, rp *repo.Repo, needWrite bool) bool {
@@ -125,19 +121,18 @@ func (s *Server) authorizeRepo(w http.ResponseWriter, r *http.Request, orgID str
 	if s.grants != nil && rp != nil {
 		granted = s.grants.GrantedOrgs(grantResourceTypeRepo, rp.ID)
 	}
-	if acl.CanAccessGranted(rp.ToACLResource(), subject, needWrite, granted) == nil {
-		return true
-	}
-	if s.grantAllowsRepo(r, rp, needWrite) {
-		return true
-	}
-
-	role := s.orgRoleOf(r, orgID)
 	need := org.RoleViewer
 	if needWrite {
 		need = org.RoleAdmin
 	}
-	if role != "" && org.AtLeast(role, need) {
+	if repo.Authorize(rp.ToACLResource(), subject, needWrite, granted, repo.OrgRoleGrant{
+		OrgID: orgID,
+		Have:  s.orgRoleOf(r, orgID),
+		Need:  need,
+	}) == nil {
+		return true
+	}
+	if s.grantAllowsRepo(r, rp, needWrite) {
 		return true
 	}
 
