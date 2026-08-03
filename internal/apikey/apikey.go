@@ -23,7 +23,7 @@ import (
 
 // DefaultOrgID is the fallback org for keys created without an explicit org.
 // It is defined as org.DefaultOrgID so the two are equal by construction: the
-// bootstrap default org is "org_default" and any fallback-created resource must
+// bootstrap default org is "default" and any fallback-created resource must
 // land there, never in a non-existent org (which would look like a cross-org
 // leak).
 const DefaultOrgID = org.DefaultOrgID

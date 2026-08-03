@@ -35,7 +35,13 @@ const (
 	// DefaultOrgID is the organization the first registered user owns and into
 	// which any legacy/un-scoped data is backfilled. apikey.DefaultOrgID MUST
 	// equal this value (enforced by construction in the apikey package).
-	DefaultOrgID = "org_default"
+	// DefaultOrgID is intentionally identical to DefaultOrgSlug ("default") —
+	// a prior revision used the distinct id "org_default", which let a repo
+	// get pushed twice under the same org (once addressed by id, once by
+	// slug — see admin/repos.go:repoNameCandidates); migrations
+	// 0012_default_org_id_align.sql (sqlite) / 012_default_org_id_align.sql
+	// (postgres) rewrite any pre-existing "org_default" rows.
+	DefaultOrgID = "default"
 	// DefaultOrgName / DefaultOrgSlug are the default organization's display
 	// name and slug.
 	DefaultOrgName = "Default"
