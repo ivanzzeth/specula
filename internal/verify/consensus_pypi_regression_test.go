@@ -196,14 +196,91 @@ func TestPypiPackageFromFilename_WheelAndSdist(t *testing.T) {
 		// Unrecognised
 		{"notapackage", "", false},
 		{"", "", false},
+
+		// ── Regression: sdist project names containing internal hyphens ──
+		//
+		// PEP 427 escapes every "-_." run in a wheel's {distribution} field to
+		// a single "_", so a wheel's name segment is guaranteed dash-free and
+		// splitting at the FIRST "-" is safe. Sdist filenames use the raw,
+		// un-escaped PyPI project name, which frequently contains literal
+		// hyphens. Splitting at the first "-" then truncates the name (e.g.
+		// "alibabacloud" instead of "alibabacloud-tea"), building the WRONG
+		// /simple/<name>/ index URL — which 404s identically on every
+		// configured mirror (same code, same wrong URL) and surfaces as
+		// "polled 0 mirrors responded", indistinguishable at the symptom
+		// level from the earlier index-truncation bug (Q1) despite being a
+		// completely different defect. Reported in production for the
+		// alibabacloud-tea==0.4.3 build dependency of an sdist-only install.
+		{"alibabacloud-tea-0.4.3.tar.gz", "alibabacloud-tea", true},
+		{"scikit-learn-1.3.0.tar.gz", "scikit-learn", true},
+		{"typing-extensions-4.9.0.tar.gz", "typing-extensions", true},
+		{"python-dateutil-2.8.2.tar.gz", "python-dateutil", true},
+		// The wheel form of a hyphenated project name is unaffected (PEP 427
+		// escaping already turns the hyphen into "_" in the filename itself)
+		// — confirms wheels never had this defect, only sdist/egg.
+		{"alibabacloud_tea-0.4.3-py2.py3-none-any.whl", "alibabacloud-tea", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.filename, func(t *testing.T) {
-			got, ok := pypiPackageFromFilename(tc.filename)
+			got, ok := PyPIPackageFromFilename(tc.filename)
 			assert.Equal(t, tc.wantOK, ok)
 			if tc.wantOK {
 				assert.Equal(t, tc.wantPackage, got)
 			}
 		})
 	}
+}
+
+// TestFetchPyPISHA256_HyphenatedSdistName_UsesFullPackageName is the RED test
+// for the sdist hyphenated-name bug reported in production as a second,
+// distinct "polled 0" failure on alibabacloud-tea==0.4.3 AFTER the Q1
+// index-truncation fix (and the root-cause A/B fixes above) were already
+// live — proving this is a genuinely different defect with an identical
+// outward symptom.
+//
+// Before the fix: PyPIPackageFromFilename splits at the FIRST "-", extracting
+// "alibabacloud" instead of "alibabacloud-tea". fetchPyPISHA256 then requests
+// <base>/simple/alibabacloud/ — a 404 (wrong or unrelated project) on every
+// mirror, since all mirrors run the same code. This test's fake server
+// records the requested path and only serves the alibabacloud-tea index at
+// the CORRECT path, so it fails before the fix and passes after.
+func TestFetchPyPISHA256_HyphenatedSdistName_UsesFullPackageName(t *testing.T) {
+	const expectedHex = "ec8053d0aa8d43ebe1deb632d5c5404339b39ec9a18a0707d57765838418504a"
+	const sdistFilename = "alibabacloud-tea-0.4.3.tar.gz"
+
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Path != "/simple/alibabacloud-tea/" {
+			// Simulates the real mirror behaviour: any other project path
+			// (e.g. the truncated "/simple/alibabacloud/") is a 404.
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		body := fmt.Sprintf(`<!DOCTYPE html><html><body>
+<a href="/packages/ab/cd/%s#sha256=%s">%s</a>
+</body></html>`, sdistFilename, expectedHex, sdistFilename)
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	f := NewHTTPMirrorDigestFetcher(5 * time.Second)
+	mirror := ConsensusMirror{Name: "aliyun", BaseURL: srv.URL}
+
+	// Production ref: Name is the hash-directory path, Version is the sdist
+	// filename with a hyphenated project name.
+	ref := artifact.ArtifactRef{
+		Protocol: "pypi",
+		Name:     "ab/cd/hash...path",
+		Version:  sdistFilename,
+		Mutable:  false,
+	}
+
+	got, err := f.FetchDigest(t.Context(), mirror, ref)
+
+	require.NoError(t, err, "must succeed when the full hyphenated project name is used")
+	assert.Equal(t, "/simple/alibabacloud-tea/", gotPath,
+		"URL must use the full un-truncated sdist project name, not the text before the first hyphen")
+	assert.Equal(t, "sha256:"+expectedHex, got)
 }

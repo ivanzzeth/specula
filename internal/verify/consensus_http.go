@@ -151,7 +151,7 @@ func (f *HTTPMirrorDigestFetcher) fetchPyPISHA256(ctx context.Context, base stri
 	}
 	// Root-cause A: extract the PEP 503-normalised package name from the filename
 	// so the correct /simple/<name>/ index URL is built.
-	pkgName, ok := pypiPackageFromFilename(filename)
+	pkgName, ok := PyPIPackageFromFilename(filename)
 	if !ok {
 		return "", fmt.Errorf("consensus: pypi: cannot extract package name from filename %q", filename)
 	}
@@ -199,23 +199,49 @@ func (f *HTTPMirrorDigestFetcher) fetchPyPISHA256(ctx context.Context, base stri
 	return "sha256:" + strings.ToLower(hex), nil
 }
 
-// pypiPackageFromFilename extracts the PEP 503-normalised package name from a
+// PyPIPackageFromFilename extracts the PEP 503-normalised package name from a
 // wheel (PEP 427) or sdist filename.
 //
 // Wheel:  {distribution}-{version}(-{build})?-{python}-{abi}-{platform}.whl
 // Sdist:  {distribution}-{version}.tar.gz | .zip | .tar.bz2 | .tar.xz | .egg
 //
+// The name/version split direction depends on the archive type:
+//
+//   - Wheel: PEP 427 requires build backends to escape every run of "-_." in
+//     the {distribution} field to a single "_", so the distribution segment
+//     is guaranteed dash-free. Splitting at the FIRST "-" is therefore always
+//     correct and unambiguous.
+//   - Sdist/egg: the filename uses the raw, un-escaped PyPI project name,
+//     which for many real packages contains literal hyphens (e.g.
+//     "alibabacloud-tea-0.4.3.tar.gz", "scikit-learn-1.3.0.tar.gz"). Splitting
+//     at the first "-" truncates the name (e.g. "alibabacloud" instead of
+//     "alibabacloud-tea"), which then 404s identically on every mirror and
+//     surfaces as "polled 0" — a different bug from the index-truncation one.
+//     PEP 440 canonical version strings never contain a literal "-" (pre/post/
+//     dev/local segments use ".", "a"/"b"/"rc", or "+"), so the LAST "-" is
+//     the unambiguous name/version boundary regardless of hyphens in the name.
+//
 // PEP 503 normalisation: lowercase, collapse runs of [-_.] to a single "-".
-func pypiPackageFromFilename(filename string) (string, bool) {
+func PyPIPackageFromFilename(filename string) (string, bool) {
 	base := filename
+	isWheel := false
 	for _, ext := range []string{".whl", ".tar.gz", ".tar.bz2", ".tar.xz", ".zip", ".egg"} {
 		if strings.HasSuffix(base, ext) {
 			base = base[:len(base)-len(ext)]
+			isWheel = ext == ".whl"
 			break
 		}
 	}
-	// First component before the first "-" separator is the distribution name.
-	idx := strings.IndexByte(base, '-')
+	// Wheel: first "-" (PEP 427 escaping guarantees a dash-free name field).
+	// Sdist/egg/unrecognised: last "-" (PEP 440 versions never contain "-",
+	// so it unambiguously separates a possibly-hyphenated name from the
+	// version even when the name itself has internal hyphens).
+	var idx int
+	if isWheel {
+		idx = strings.IndexByte(base, '-')
+	} else {
+		idx = strings.LastIndexByte(base, '-')
+	}
 	if idx <= 0 {
 		return "", false
 	}

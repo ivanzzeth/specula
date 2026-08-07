@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/ivanzzeth/specula/internal/artifact"
@@ -95,13 +96,14 @@ type ConsensusConfig struct {
 type ConsensusVerifier struct {
 	cfg     ConsensusConfig
 	fetcher MirrorDigestFetcher
+	log     *slog.Logger
 }
 
 // NewConsensusVerifier constructs a ConsensusVerifier from its runtime config
 // and an injected per-mirror digest fetcher (nil is allowed for wiring skeletons
 // but makes Verify fail closed).
 func NewConsensusVerifier(cfg ConsensusConfig, fetcher MirrorDigestFetcher) *ConsensusVerifier {
-	return &ConsensusVerifier{cfg: cfg, fetcher: fetcher}
+	return &ConsensusVerifier{cfg: cfg, fetcher: fetcher, log: slog.Default()}
 }
 
 // Compile-time assertion that ConsensusVerifier satisfies Verifier.
@@ -109,6 +111,16 @@ var _ Verifier = (*ConsensusVerifier)(nil)
 
 func (v *ConsensusVerifier) Name() string        { return "consensus" }
 func (v *ConsensusVerifier) Tier() artifact.Tier { return artifact.TierConsensus }
+
+// logf emits a DEBUG-level structured log line for per-mirror poll outcomes.
+// Guards against a nil logger (e.g. a ConsensusVerifier value constructed
+// directly in a test without going through NewConsensusVerifier).
+func (v *ConsensusVerifier) logf(ctx context.Context, msg string, args ...any) {
+	if v.log == nil {
+		return
+	}
+	v.log.DebugContext(ctx, msg, args...)
+}
 
 // mirrorFetchResult is the outcome of a single parallel mirror fetch.
 type mirrorFetchResult struct {
@@ -182,6 +194,17 @@ func (v *ConsensusVerifier) Verify(ctx context.Context, ref artifact.ArtifactRef
 	)
 	for i := 0; i < total; i++ {
 		r := <-resultCh
+		// Log every individual mirror outcome (success or error) at DEBUG so an
+		// aggregate "0 responded" is diagnosable after the fact: which mirror,
+		// which error (timeout/404/parse/etc). Without this, verifyCASQuorum's
+		// polled==0 message is the ONLY trace left — it names the count but not
+		// the cause, which is exactly what made this class of incident slow to
+		// root-cause (see consensus_http.go PyPIPackageFromFilename).
+		if r.err != nil {
+			v.logf(ctx, "consensus: mirror poll failed", "mirror", r.mirror.Name, "base_url", r.mirror.BaseURL, "origin", r.isOrigin, "ref", refKey(ref), "err", r.err)
+		} else {
+			v.logf(ctx, "consensus: mirror poll ok", "mirror", r.mirror.Name, "origin", r.isOrigin, "ref", refKey(ref), "digest", r.digest)
+		}
 		if r.isOrigin {
 			if r.err == nil {
 				originReachable = true

@@ -3,6 +3,9 @@ package verify
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -234,6 +237,112 @@ func TestConsensusVerifier_QuorumNotMet_AllDown(t *testing.T) {
 	assert.True(t, res.Retryable, "polled==0 must be marked Retryable — it's an inconclusive infra failure, not a disagreement")
 	assert.Contains(t, res.Message, "could not reach ANY")
 	assert.NotContains(t, res.Message, "disagreements:", "polled==0 message must not use the disagreement wording")
+}
+
+// TestConsensusVerifier_QuorumNotMet_MixedPartialFailure covers the "middle"
+// state between TooFewAgree (all mirrors responded, just disagree) and
+// AllDown (nobody responded at all): SOME mirrors are unreachable and SOME
+// respond but disagree. polled must count only the mirrors that actually
+// answered (never the down ones), and the message must use the genuine
+// "quorum not met" / disagreements wording — NOT the polled==0 "could not
+// reach ANY" wording, since 2 of the 4 mirrors DID respond.
+func TestConsensusVerifier_QuorumNotMet_MixedPartialFailure(t *testing.T) {
+	fetcher := newFakeFetcher(map[string]mirrorResponse{
+		"m1": {digest: goodDigest},                  // agrees
+		"m2": {digest: otherDigest},                 // responds but disagrees
+		"m3": {err: errors.New("dial timeout")},     // unreachable
+		"m4": {err: errors.New("connection reset")}, // unreachable
+	})
+	cfg := ConsensusConfig{
+		Quorum:  2,
+		Mirrors: mirrors("m1", "m2", "m3", "m4"),
+	}
+	v := NewConsensusVerifier(cfg, fetcher)
+
+	res, err := v.Verify(context.Background(), immutableRef(goodDigest), artWith(goodDigest))
+
+	require.NoError(t, err)
+	assert.Equal(t, artifact.StatusFail, res.Status)
+	assert.Equal(t, artifact.TierConsensus, res.Tier)
+	assert.False(t, res.Retryable, "polled > 0 (2 of 4 responded) — this is a genuine quorum shortfall, not an infra hiccup")
+	assert.Contains(t, res.Message, "quorum not met")
+	assert.Contains(t, res.Message, "1/4", "only the 2 mirrors that answered count toward polled; 1 of them agreed")
+	assert.Contains(t, res.Message, "polled 2", "polled must exclude the 2 unreachable mirrors")
+	assert.Contains(t, res.Message, "m2="+otherDigest, "the disagreeing mirror must be named")
+	assert.NotContains(t, res.Message, "could not reach ANY", "2 mirrors DID respond — must not use the polled==0 wording")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-mirror poll observability (DEBUG logging)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// memHandler is a minimal slog.Handler that records every log record's
+// message and attributes as a single formatted line, for assertion.
+type memHandler struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (h *memHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *memHandler) Handle(_ context.Context, r slog.Record) error {
+	var b strings.Builder
+	b.WriteString(r.Message)
+	r.Attrs(func(a slog.Attr) bool {
+		b.WriteString(" ")
+		b.WriteString(a.Key)
+		b.WriteString("=")
+		b.WriteString(a.Value.String())
+		return true
+	})
+	h.mu.Lock()
+	h.lines = append(h.lines, b.String())
+	h.mu.Unlock()
+	return nil
+}
+func (h *memHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
+func (h *memHandler) WithGroup(name string) slog.Handler       { return h }
+func (h *memHandler) snapshot() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]string, len(h.lines))
+	copy(out, h.lines)
+	return out
+}
+
+// TestConsensusVerifier_PerMirrorPollLogged_AllDown is the regression test for
+// the observability gap that made the alibabacloud-tea "polled 0" incident
+// slow to root-cause: verifyCASQuorum's polled==0 message names the COUNT of
+// mirrors that failed but not WHY each one failed (timeout vs 404 vs parse
+// error vs wrong URL). Without per-mirror visibility, "0 responded" is a dead
+// end. This test asserts that each individual mirror's error is logged at
+// DEBUG, so a future incident can be diagnosed from logs alone instead of by
+// guesswork.
+func TestConsensusVerifier_PerMirrorPollLogged_AllDown(t *testing.T) {
+	h := &memHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	fetcher := newFakeFetcher(map[string]mirrorResponse{
+		"aliyun":  {err: errors.New("404 Not Found: /simple/alibabacloud/")},
+		"tencent": {err: errors.New("404 Not Found: /simple/alibabacloud/")},
+	})
+	cfg := ConsensusConfig{
+		Quorum:  1,
+		Mirrors: mirrors("aliyun", "tencent"),
+	}
+	// NewConsensusVerifier must pick up slog.Default() at construction time.
+	v := NewConsensusVerifier(cfg, fetcher)
+
+	res, err := v.Verify(context.Background(), immutableRef(goodDigest), artWith(goodDigest))
+	require.NoError(t, err)
+	assert.Equal(t, artifact.StatusFail, res.Status)
+
+	lines := h.snapshot()
+	joined := strings.Join(lines, "\n")
+	assert.Contains(t, joined, "aliyun", "aliyun's individual poll outcome must be logged")
+	assert.Contains(t, joined, "tencent", "tencent's individual poll outcome must be logged")
+	assert.Contains(t, joined, "404 Not Found", "the actual per-mirror error must be logged, not swallowed")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -641,9 +641,8 @@ func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef
 // --------------------------------------------------------------------------
 
 // extractProjectFromFile parses the distribution name from a wheel or sdist
-// filename using the PEP 427 / PEP 625 naming conventions: the project name
-// is the first '-'-delimited component of the basename (before the version).
-// The result is PEP 503-normalised so it can be compared to h.privateNames.
+// filename using the PEP 427 / PEP 625 naming conventions. The result is
+// PEP 503-normalised so it can be compared to h.privateNames.
 //
 // Examples:
 //
@@ -651,24 +650,24 @@ func (h *Handler) extendMutableTTL(ctx context.Context, ref artifact.ArtifactRef
 //	"Flask-2.3.0.tar.gz"                       → "flask"
 //	"Django-4.0-py3-none-any.whl"              → "django"
 //	"my_lib-0.1.0.whl"                         → "my-lib"
+//	"alibabacloud-tea-0.4.3.tar.gz"            → "alibabacloud-tea"
 //
 // Returns "" when the filename does not follow the convention (no '-').
+//
+// This delegates to verify.PyPIPackageFromFilename — the ONE implementation
+// of "extract PyPI project name from filename" (per the repo's one-logic-
+// one-implementation rule). It used to reimplement the same first-'-'-split
+// parsing inline, which carried the identical bug that also broke the
+// consensus tier: for sdist/egg filenames the raw, un-escaped project name
+// can itself contain hyphens (e.g. "alibabacloud-tea"), and splitting at the
+// FIRST '-' truncates it — silently weakening this dependency-confusion
+// guard for every hyphenated private-package name, not just consensus URLs.
 func extractProjectFromFile(file string) string {
-	// Strip recognised archive extensions (longest suffix wins).
-	base := file
-	for _, ext := range []string{
-		".whl", ".tar.gz", ".tar.bz2", ".tar.xz", ".zip", ".egg",
-	} {
-		if strings.HasSuffix(base, ext) {
-			base = base[:len(base)-len(ext)]
-			break
-		}
-	}
-	idx := strings.IndexByte(base, '-')
-	if idx <= 0 {
+	name, ok := verify.PyPIPackageFromFilename(file)
+	if !ok {
 		return ""
 	}
-	return normalizeProject(base[:idx])
+	return name
 }
 
 // serveBytes returns a reader for the artifact's bytes plus the entry they

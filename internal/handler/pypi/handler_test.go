@@ -299,6 +299,12 @@ func TestExtractProjectFromFile(t *testing.T) {
 		{"Django-4.0-py3-none-any.whl", "django"},
 		{"my_lib-0.1.0.whl", "my-lib"},
 		{"my_lib-0.1.0.tar.gz", "my-lib"},
+		// Regression: sdist project names with internal hyphens (PEP 427 only
+		// escapes hyphens to "_" in WHEEL filenames; sdist filenames use the
+		// raw project name verbatim). Splitting at the first "-" instead of
+		// the last used to truncate this to "alibabacloud", weakening the
+		// dependency-confusion guard for every hyphenated private package.
+		{"alibabacloud-tea-0.4.3.tar.gz", "alibabacloud-tea"},
 		// No separator — can't extract.
 		{"noversion.whl", ""},
 	}
