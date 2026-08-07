@@ -235,6 +235,27 @@ func (v *ConsensusVerifier) verifyCASQuorum(
 	}
 
 	if agree < quorum {
+		if polled == 0 {
+			// NOT ONE mirror could even be consulted — every FetchDigest call
+			// errored (network/timeout/parse failure). This is NOT a security
+			// signal: nobody voted "disagree", nobody voted at all. Conflating
+			// it with a genuine quorum-not-met (mirrors reached, digests
+			// mismatch) turns an infrastructure hiccup into a false security
+			// rejection — and, from the caller's side, an inscrutable "502
+			// upstream fetch failed" for an upstream that was never at fault.
+			// Still fail closed (a FAIL that cannot be explained is not a
+			// PASS), but mark it Retryable so the caller/operator can tell
+			// "we don't know" apart from "we checked and it disagrees".
+			return artifact.Result{
+				Status:    artifact.StatusFail,
+				Tier:      artifact.TierConsensus,
+				Retryable: true,
+				Message: fmt.Sprintf(
+					"consensus: could not reach ANY of %d configured mirrors for %s (need %d to agree; 0 responded) — inconclusive infrastructure failure of the consensus check itself, NOT a digest disagreement; retry may succeed",
+					len(v.cfg.Mirrors), refKey(ref), quorum,
+				),
+			}, nil
+		}
 		disagreeStr := strings.Join(disagreements, ", ")
 		if disagreeStr == "" {
 			disagreeStr = "none"
@@ -286,6 +307,22 @@ func (v *ConsensusVerifier) verifyContentIDQuorum(
 		}
 	}
 	if len(candidates) == 0 {
+		if len(votes) == 0 {
+			// Same reasoning as verifyCASQuorum's polled==0 branch: nobody
+			// could be consulted at all, so there is nothing to disagree
+			// about. Fail closed, but mark Retryable so this inconclusive
+			// infrastructure state is not mistaken for a real split/poison
+			// signal.
+			return artifact.Result{
+				Status:    artifact.StatusFail,
+				Tier:      artifact.TierConsensus,
+				Retryable: true,
+				Message: fmt.Sprintf(
+					"consensus: could not reach ANY of %d configured mirrors for %s (need %d to agree; 0 responded) — inconclusive infrastructure failure of the consensus check itself, NOT a content-id disagreement; retry may succeed",
+					len(v.cfg.Mirrors), refKey(ref), quorum,
+				),
+			}, nil
+		}
 		detail := make([]string, 0, len(votes))
 		for _, r := range votes {
 			detail = append(detail, fmt.Sprintf("%s=%s", r.mirror.Name, r.digest))

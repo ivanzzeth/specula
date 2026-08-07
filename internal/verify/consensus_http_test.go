@@ -9,9 +9,11 @@ package verify
 //     other protocols get an error (they must not claim consensus they didn't check)
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -389,6 +391,104 @@ func TestHTTPMirrorDigestFetcher_PyPI_ServerError(t *testing.T) {
 
 	_, err := f.FetchDigest(t.Context(), mirror, ref)
 	require.Error(t, err)
+}
+
+// TestHTTPMirrorDigestFetcher_PyPI_LargeIndexPastOldCap_Success reproduces the
+// production incident: a real PEP 503 simple-index page for a prolific,
+// multi-platform package (pydantic-core) runs well past the OLD 4 MiB
+// maxIndexBytes cap (measured ~7.7 MB), with the target release's <a> anchor
+// listed near the end (PyPI orders entries chronologically, oldest first).
+//
+// Under the old io.ReadAll(io.LimitReader(resp.Body, maxIndexBytes)) code,
+// this page would have been silently truncated before the anchor and every
+// mirror would report "not found" — deterministically producing a
+// consensus "polled 0" quorum failure across ALL configured mirrors despite
+// every mirror actually having the file. This test builds a synthetic page
+// past the old 4 MiB cap with the real target anchor near the end and
+// asserts the fix (32 MiB maxPyPIIndexBytes cap + streaming tokenizer scan)
+// finds it.
+func TestHTTPMirrorDigestFetcher_PyPI_LargeIndexPastOldCap_Success(t *testing.T) {
+	const pkgName = "pydantic-core"
+	const filename = "pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+
+	var buf bytes.Buffer
+	buf.WriteString("<!DOCTYPE html><html><body>\n")
+	// Pad with filler <a> entries (older releases) until well past the OLD
+	// 4 MiB cap, mimicking PyPI's chronological (oldest-first) ordering —
+	// the entry we want is appended LAST, after the padding.
+	filler := `<a href="/packages/pydantic_core-0.0.1-cp38-cp38-manylinux_2_17_x86_64.whl#sha256=` +
+		strings.Repeat("0", 64) + `">pydantic_core-0.0.1-cp38-cp38-manylinux_2_17_x86_64.whl</a>` + "\n"
+	for buf.Len() < maxIndexBytes+3<<20 { // > old 4 MiB cap by 3 MiB
+		buf.WriteString(filler)
+	}
+	fmt.Fprintf(&buf, `<a href="/packages/%s#sha256=%s">%s</a>`+"\n", filename, pypiTestHex, filename)
+	buf.WriteString("</body></html>")
+
+	require.Greater(t, buf.Len(), maxIndexBytes, "synthetic page must exceed the old 4 MiB cap")
+	require.Less(t, buf.Len(), maxPyPIIndexBytes, "synthetic page must stay under the new 32 MiB cap")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+
+	f := NewHTTPMirrorDigestFetcher(10 * time.Second)
+	mirror := ConsensusMirror{Name: "test", BaseURL: srv.URL}
+	ref := artifact.ArtifactRef{
+		Protocol: "pypi",
+		Name:     pkgName,
+		Version:  filename,
+		Mutable:  false,
+	}
+
+	got, err := f.FetchDigest(t.Context(), mirror, ref)
+	require.NoError(t, err, "a page past the OLD 4 MiB cap must still be scanned successfully under the fix")
+	assert.Equal(t, "sha256:"+pypiTestHex, got)
+}
+
+// TestHTTPMirrorDigestFetcher_PyPI_IndexExceedsNewCap_TruncatedError asserts
+// that when a page exceeds even the new maxPyPIIndexBytes cap without a match
+// being found, the resulting error is DISTINCTLY worded from the
+// genuinely-not-found case (TestHTTPMirrorDigestFetcher_PyPI_FileNotInIndex) —
+// callers/operators must be able to tell "we scanned everything, it's not
+// there" apart from "we gave up scanning before we could tell".
+func TestHTTPMirrorDigestFetcher_PyPI_IndexExceedsNewCap_TruncatedError(t *testing.T) {
+	const filename = "pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+
+	// Build the full oversized body up front (not written incrementally
+	// against the live connection) — the fetcher is expected to stop reading
+	// once its cap is hit, and a handler that keeps blocking on further
+	// Write calls after the client stops reading is a self-inflicted test
+	// hang, not a signal about the fetcher itself.
+	var buf bytes.Buffer
+	buf.WriteString("<!DOCTYPE html><html><body>\n")
+	filler := `<a href="/packages/pydantic_core-0.0.1-cp38-cp38-manylinux_2_17_x86_64.whl#sha256=` +
+		strings.Repeat("0", 64) + `">pydantic_core-0.0.1-cp38-cp38-manylinux_2_17_x86_64.whl</a>` + "\n"
+	for buf.Len() < maxPyPIIndexBytes+1<<20 { // > new 32 MiB cap, target NEVER written
+		buf.WriteString(filler)
+	}
+	buf.WriteString("</body></html>")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(buf.Bytes())
+	}))
+	defer srv.Close()
+
+	f := NewHTTPMirrorDigestFetcher(30 * time.Second)
+	mirror := ConsensusMirror{Name: "test", BaseURL: srv.URL}
+	ref := artifact.ArtifactRef{
+		Protocol: "pypi",
+		Name:     "pydantic-core",
+		Version:  filename,
+		Mutable:  false,
+	}
+
+	_, err := f.FetchDigest(t.Context(), mirror, ref)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "truncated", "exceeding the cap must be reported distinctly from a genuine not-found")
+	assert.Contains(t, err.Error(), "inconclusive")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

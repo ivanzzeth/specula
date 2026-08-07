@@ -137,6 +137,22 @@ type Result struct {
 	Status  Status // pass | warn | fail
 	Tier    Tier   // tier actually reached
 	Message string // human-readable detail (verifier name, reason)
+
+	// Retryable marks a StatusFail (or StatusWarn) that reflects an
+	// INCONCLUSIVE / infrastructure condition — e.g. a consensus check that
+	// could not reach a single mirror to form an opinion — rather than a
+	// definitive negative verdict (a mirror that WAS reached and disagreed).
+	//
+	// It does NOT soften the outcome: a retryable FAIL is still a FAIL, the
+	// artifact is still not promoted or served (verifiers must fail closed on
+	// "I don't know" exactly as they do on "no"). Retryable only tells a
+	// caller/operator that repeating the exact same request may produce a
+	// different, more complete result, so a transient infrastructure hiccup
+	// is not mistaken for a permanent security rejection (or vice versa).
+	//
+	// Zero value (false) is the safe default for every existing verifier and
+	// every StatusPass/StatusSkip result.
+	Retryable bool
 }
 
 // CacheEntry is the authoritative record for an immutable, verified artifact in

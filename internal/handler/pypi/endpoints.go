@@ -334,7 +334,7 @@ func (h *Handler) serveMutable(w http.ResponseWriter, r *http.Request, ref artif
 	newEntry, storeErr := h.fetchBodyAndStore(ctx, ref, body, umeta)
 	if storeErr != nil {
 		h.log.Error("pypi: store mutable index", "ref", ref, "err", storeErr)
-		writeError(w, http.StatusBadGateway, "failed to cache upstream response")
+		writeFetchError(w, storeErr)
 		return
 	}
 	// Cache miss: the body was fetched from an upstream and stored.
@@ -410,7 +410,7 @@ func (h *Handler) serveImmutable(w http.ResponseWriter, r *http.Request, ref art
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
-		writeError(w, http.StatusBadGateway, "upstream fetch failed")
+		writeFetchError(w, err)
 		return
 	}
 	if entry == nil {

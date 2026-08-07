@@ -6,6 +6,7 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -100,6 +101,34 @@ func TestConsensusVerifier_NPMContentID_PoisonedMirror(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, artifact.StatusFail, res.Status)
 	assert.Contains(t, res.Message, "quorum not met")
+}
+
+func TestConsensusVerifier_NPMContentID_AllMirrorsDown(t *testing.T) {
+	// Same distinction as TestConsensusVerifier_QuorumNotMet_AllDown in the
+	// CAS path: 0 mirrors polled must be reported as an inconclusive
+	// infrastructure failure (Retryable=true, distinct wording), never
+	// conflated with TestConsensusVerifier_NPMContentID_PoisonedMirror's
+	// genuine polled>0 disagreement above.
+	body := []byte("all-down-test-body")
+	art, _ := writeContentIDArtifact(t, body)
+
+	fetcher := newFakeFetcher(map[string]mirrorResponse{
+		"m1": {err: errors.New("connection refused")},
+		"m2": {err: errors.New("connection refused")},
+	})
+	v := NewConsensusVerifier(ConsensusConfig{
+		Quorum:       2,
+		Mirrors:      mirrors("m1", "m2"),
+		IdentityMode: IdentityContentID,
+	}, fetcher)
+
+	res, err := v.Verify(context.Background(), npmTarballRef(), art)
+	require.NoError(t, err)
+	assert.Equal(t, artifact.StatusFail, res.Status)
+	assert.Equal(t, artifact.TierConsensus, res.Tier)
+	assert.True(t, res.Retryable, "polled==0 must be Retryable")
+	assert.Contains(t, res.Message, "could not reach ANY")
+	assert.NotContains(t, res.Message, "content-id quorum not met", "polled==0 message must not use the disagreement wording")
 }
 
 func TestConsensusVerifier_NPMContentID_BodyMismatch(t *testing.T) {

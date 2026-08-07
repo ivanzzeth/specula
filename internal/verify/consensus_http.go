@@ -57,6 +57,28 @@ var _ MirrorDigestFetcher = (*HTTPMirrorDigestFetcher)(nil)
 // path must stay cheap — it is metadata, not a blob).
 const maxIndexBytes = 4 << 20 // 4 MiB
 
+// maxPyPIIndexBytes is a PyPI-specific, larger cap than maxIndexBytes.
+//
+// A PEP 503 simple-index page lists EVERY historical release of a package —
+// every sdist and every per-platform/per-ABI/per-Python-version wheel — in
+// chronological (oldest-first) order, all on one page. For a prolific,
+// multi-platform package this is not "small metadata": a real production
+// pull of pydantic-core's index page measured ~7.7 MB, with the most recent
+// release's anchor sitting past the 4 MiB mark. Under the old shared
+// maxIndexBytes cap, io.ReadAll(io.LimitReader(...)) truncated the body
+// silently (no error) before the target entry, and pep503DigestForFile then
+// legitimately reported "not found" for a file that WAS listed on the page —
+// indistinguishable from a genuine absence. Every mirror serves the same
+// near-complete, similarly-ordered index, so this was not one flaky mirror:
+// it deterministically zeroed out the vote count for every mirror at once,
+// producing a "polled 0" consensus failure that looked like an infrastructure
+// outage but was actually a parsing cap.
+//
+// 32 MiB comfortably covers realistic index sizes for even the most
+// prolific PyPI packages while still bounding memory against a hostile or
+// pathological mirror response.
+const maxPyPIIndexBytes = 32 << 20 // 32 MiB
+
 // FetchDigest returns the content identity the mirror advertises for ref, using a
 // single metadata request. See the type doc for per-protocol behaviour.
 func (f *HTTPMirrorDigestFetcher) FetchDigest(ctx context.Context, mirror ConsensusMirror, ref artifact.ArtifactRef) (string, error) {
@@ -148,12 +170,30 @@ func (f *HTTPMirrorDigestFetcher) fetchPyPISHA256(ctx context.Context, base stri
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("consensus: pypi GET %s returned HTTP %d", url, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxIndexBytes))
+	// Stream-scan rather than buffer-then-parse: a full PEP 503 index page for
+	// a prolific package can run into the tens of MB (see maxPyPIIndexBytes),
+	// and the entry we want is usually near the END (chronological order).
+	// html.NewTokenizer processes incrementally without holding the whole DOM
+	// in memory, and pep503ScanForFile returns as soon as it finds a match —
+	// so the common case (recent release, near the end of a large page) still
+	// only pays for reading up to that point, not for a second buffering pass.
+	lr := &io.LimitedReader{R: resp.Body, N: maxPyPIIndexBytes}
+	hex, found, err := pep503ScanForFile(lr, filename)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("consensus: pypi index for %s: %w", pkgName, err)
 	}
-	hex, found := pep503DigestForFile(body, filename)
 	if !found {
+		if lr.N <= 0 {
+			// The cap was reached before a match (or before EOF) was found.
+			// This is DIFFERENT from "the file is genuinely not in the
+			// index": it means the scan was cut short and we cannot say
+			// whether the entry exists further on. Report it distinctly so
+			// it is not mistaken for "PyPI doesn't have this file".
+			return "", fmt.Errorf(
+				"consensus: pypi index for %s exceeds %d byte scan cap before finding sha256 for file %q — index truncated, result inconclusive",
+				pkgName, maxPyPIIndexBytes, filename,
+			)
+		}
 		return "", fmt.Errorf("consensus: pypi index for %s has no sha256 for file %q", pkgName, filename)
 	}
 	return "sha256:" + strings.ToLower(hex), nil
@@ -204,41 +244,69 @@ func pypiPackageFromFilename(filename string) (string, bool) {
 	return result, true
 }
 
-// pep503DigestForFile parses a PEP 503 simple-index HTML page using
-// golang.org/x/net/html and returns the sha256 hex advertised for the given
-// filename. Per PEP 503 the sha256 is in the URL fragment of an <a> element:
+// pep503DigestForFile parses a PEP 503 simple-index HTML page and returns the
+// sha256 hex advertised for the given filename. Per PEP 503 the sha256 is in
+// the URL fragment of an <a> element:
 //
 //	<a href="…/<filename>#sha256=<64-hex-chars>">…</a>
 //
-// Using a real HTML parser rather than regex/string-splitting ensures we
-// handle any valid HTML that a PyPI-compatible server might emit, including
-// whitespace variations, entity encoding, and attribute ordering.
+// This is a thin, byte-slice-compatible wrapper over pep503ScanForFile (the
+// single canonical parsing implementation — see its doc comment) kept for
+// callers/tests that already hold the full page in memory. It intentionally
+// swallows the distinction between "genuinely not found" and "scan error"
+// (both report found=false) since callers using this entrypoint already
+// bypassed the streaming/cap machinery that makes that distinction
+// meaningful.
 func pep503DigestForFile(body []byte, filename string) (string, bool) {
-	doc, err := html.Parse(bytes.NewReader(body))
-	if err != nil {
-		return "", false
-	}
-	return walkHTMLForDigest(doc, filename)
+	hex, found, _ := pep503ScanForFile(bytes.NewReader(body), filename)
+	return hex, found
 }
 
-// walkHTMLForDigest recursively walks the HTML node tree looking for <a>
-// elements whose href references filename with a sha256 fragment.
-func walkHTMLForDigest(n *html.Node, filename string) (string, bool) {
-	if n.Type == html.ElementNode && n.Data == "a" {
-		for _, a := range n.Attr {
-			if a.Key == "href" {
-				if hex, ok := extractSHA256FromHref(a.Val, filename); ok {
-					return hex, true
+// pep503ScanForFile incrementally tokenizes a PEP 503 simple-index HTML
+// stream (via golang.org/x/net/html's html.NewTokenizer, NOT html.Parse) and
+// returns the sha256 hex advertised for filename as soon as a matching <a>
+// tag is found — without ever buffering the full page or building a DOM
+// tree. This is the single canonical parser for PEP 503 pages; both the
+// production streaming fetch path (fetchPyPISHA256) and the legacy
+// byte-slice wrapper (pep503DigestForFile) route through it so there is
+// exactly one implementation of "how to read a PEP 503 page", per the
+// project's one-logic-one-implementation rule.
+//
+// Using a real (streaming) HTML tokenizer rather than regex/string-splitting
+// still handles any valid HTML a PyPI-compatible server might emit —
+// whitespace variations, entity encoding, attribute ordering — while keeping
+// memory bounded to the current token rather than the whole document.
+//
+// err is non-nil only for a genuine tokenizer error other than normal EOF; a
+// clean end-of-stream with no match is reported as ("", false, nil).
+func pep503ScanForFile(r io.Reader, filename string) (hex string, found bool, err error) {
+	z := html.NewTokenizer(r)
+	for {
+		tt := z.Next()
+		switch tt {
+		case html.ErrorToken:
+			if tokErr := z.Err(); tokErr != io.EOF {
+				return "", false, tokErr
+			}
+			return "", false, nil
+		case html.StartTagToken, html.SelfClosingTagToken:
+			name, hasAttr := z.TagName()
+			if !hasAttr || string(name) != "a" {
+				continue
+			}
+			for {
+				key, val, more := z.TagAttr()
+				if string(key) == "href" {
+					if h, ok := extractSHA256FromHref(string(val), filename); ok {
+						return h, true, nil
+					}
+				}
+				if !more {
+					break
 				}
 			}
 		}
 	}
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		if hex, ok := walkHTMLForDigest(c, filename); ok {
-			return hex, true
-		}
-	}
-	return "", false
 }
 
 // extractSHA256FromHref splits an href on '#', checks the path suffix matches

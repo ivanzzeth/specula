@@ -28,6 +28,7 @@
 package pypi
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -366,4 +367,55 @@ func writeError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(message + "\n"))
+}
+
+// writeFetchError reports a cache-miss fetch failure honestly.
+//
+// Before this helper existed, EVERY cache-miss failure — a genuinely
+// unreachable upstream, AND a verify-on-write policy rejection (maturity
+// gate, checksum/tofu/consensus tier failure) — collapsed into the same
+// generic "502 upstream fetch failed". That message actively misleads: the
+// client (and the human reading its output) has no way to tell "the network
+// is broken" apart from "the artifact was rejected by policy, and here is
+// exactly why" without SSHing into the server and grepping its logs.
+//
+// cache.AsVerifyError unwraps the typed error the verify-on-write chain
+// already produces (internal/cache/errors.go — built for exactly this,
+// previously never called from any handler). When present, the response:
+//
+//   - Names the tier that rejected the artifact and repeats its message
+//     verbatim, so the true reason travels with the HTTP response instead of
+//     staying server-side.
+//   - Uses 503 Service Unavailable + Retry-After when Result.Retryable is
+//     true (e.g. a consensus check that could not reach ANY mirror — an
+//     inconclusive infrastructure condition, not a policy verdict), and 502
+//     Bad Gateway when it is false (a definitive rejection: mirrors were
+//     reached and disagreed, or a policy gate said no).
+//
+// This never changes WHETHER the request is rejected — only how honestly
+// that rejection is reported. A non-VerifyError falls back to the original
+// generic upstream-fetch message unchanged.
+func writeFetchError(w http.ResponseWriter, err error) {
+	ve, ok := cache.AsVerifyError(err)
+	if !ok {
+		writeError(w, http.StatusBadGateway, "upstream fetch failed")
+		return
+	}
+	msg := fmt.Sprintf("specula: verification rejected (tier=%s, retryable=%t): %s",
+		ve.Result.Tier, ve.Result.Retryable, ve.Result.Message)
+	if ve.Result.Retryable {
+		// Inconclusive infrastructure condition — the same request may
+		// succeed if retried once the underlying condition clears (e.g. a
+		// mirror comes back up). 503 + Retry-After tells the caller (and
+		// well-behaved HTTP clients / proxies) this is a "try again", not a
+		// permanent verdict.
+		w.Header().Set("Retry-After", "30")
+		writeError(w, http.StatusServiceUnavailable, msg)
+		return
+	}
+	// Definitive rejection: mirrors were reached and disagreed, or a policy
+	// gate rejected the artifact outright. Still a Bad Gateway from the
+	// client's point of view (Specula would not serve it), but now the body
+	// says which tier rejected it and why instead of a generic message.
+	writeError(w, http.StatusBadGateway, msg)
 }

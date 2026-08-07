@@ -132,6 +132,24 @@ func (e *errPypiStoreCacheManager) Store(_ context.Context, _ artifact.ArtifactR
 	return nil, errors.New("simulated disk full on Store")
 }
 
+// ── verifyErrPypiStoreCacheManager — Store rejects with a *cache.VerifyError ──
+//
+// Distinct from errPypiStoreCacheManager (plain error, still funnelled through
+// writeFetchError's fallback branch into the old generic "upstream fetch
+// failed" 502 — proving the honesty fix is additive, not a blanket rewrite).
+// This fake reproduces exactly what the real verify-on-write pipeline returns
+// on a policy/tier rejection (internal/cache/cache.go:390) so the test can
+// prove writeFetchError (internal/handler/pypi/pypi.go) turns that structured
+// error into a self-explanatory HTTP response instead of swallowing it.
+type verifyErrPypiStoreCacheManager struct {
+	pypiTestCache
+	result artifact.Result
+}
+
+func (e *verifyErrPypiStoreCacheManager) Store(_ context.Context, ref artifact.ArtifactRef, _ *artifact.Artifact) (*artifact.CacheEntry, error) {
+	return nil, &cache.VerifyError{Ref: ref, Result: e.result}
+}
+
 // ── errPypiPutMutableMetaStore — PutMutable always returns an error ───────────
 
 type errPypiPutMutableMetaStore struct {
@@ -534,6 +552,96 @@ func TestPypiServeImmutableFromCache_ServeError_500(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+// ── Tests: serveImmutable VerifyError honesty (writeFetchError) ───────────────
+//
+// These exercise the exact code path the user cited (serveImmutable's fetch
+// branch, endpoints.go ~line 413: `writeFetchError(w, err)`). Before
+// writeFetchError existed, both a genuinely broken upstream AND a policy
+// rejection collapsed into the same generic "502 upstream fetch failed" —
+// indistinguishable from the HTTP response alone. These tests prove the two
+// Retryable variants are now reported honestly and differently.
+
+func TestPypiServeImmutable_VerifyErrorRetryable_503WithRetryAfter(t *testing.T) {
+	// Mirrors a consensus check that could not reach ANY mirror: inconclusive
+	// infrastructure failure, not a digest disagreement — Retryable=true.
+	cm := &verifyErrPypiStoreCacheManager{
+		pypiTestCache: *newPypiTestCache(),
+		result: artifact.Result{
+			Status:    artifact.StatusFail,
+			Tier:      artifact.TierConsensus,
+			Retryable: true,
+			Message:   "consensus: could not reach ANY of 3 configured mirrors for pydantic-core (need 2; 0 responded)",
+		},
+	}
+	whlBytes := bytes.Repeat([]byte("WHL"), 32)
+	upSrv := fakePyPIServer(t, nil, map[string][]byte{
+		"flask-2.0-py3-none-any.whl": whlBytes,
+	})
+	defer upSrv.Close()
+
+	h := NewHandler(cm,
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{{Name: "pypi", BaseURL: upSrv.URL}}),
+		WithQuarantineDir(t.TempDir()),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/packages/ab/cd/flask-2.0-py3-none-any.whl")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode,
+		"a Retryable VerifyError must map to 503, not the old generic 502")
+	assert.Equal(t, "30", resp.Header.Get("Retry-After"))
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "consensus")
+	assert.Contains(t, string(body), "could not reach ANY")
+	assert.NotContains(t, string(body), "upstream fetch failed",
+		"the old generic message must be replaced by the tier-specific one")
+}
+
+func TestPypiServeImmutable_VerifyErrorNotRetryable_502WithTierAndMessage(t *testing.T) {
+	// Mirrors a genuine policy rejection: mirrors were reached and disagreed
+	// (or a maturity gate said no) — a definitive verdict, Retryable=false.
+	cm := &verifyErrPypiStoreCacheManager{
+		pypiTestCache: *newPypiTestCache(),
+		result: artifact.Result{
+			Status:    artifact.StatusFail,
+			Tier:      artifact.TierConsensus,
+			Retryable: false,
+			Message:   "consensus: quorum not met for pydantic-core: 1/3 mirrors agreed (need 2; polled 3; disagreements: m2)",
+		},
+	}
+	whlBytes := bytes.Repeat([]byte("WHL"), 32)
+	upSrv := fakePyPIServer(t, nil, map[string][]byte{
+		"flask-2.0-py3-none-any.whl": whlBytes,
+	})
+	defer upSrv.Close()
+
+	h := NewHandler(cm,
+		WithUpstream(upstream.NewClient(), []upstream.Upstream{{Name: "pypi", BaseURL: upSrv.URL}}),
+		WithQuarantineDir(t.TempDir()),
+	)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/packages/ab/cd/flask-2.0-py3-none-any.whl")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode,
+		"a non-Retryable VerifyError stays 502 — the rejection is definitive, not retryable")
+	assert.Empty(t, resp.Header.Get("Retry-After"),
+		"a definitive rejection must not invite an automatic retry")
+
+	body, _ := io.ReadAll(resp.Body)
+	assert.Contains(t, string(body), "quorum not met")
+	assert.Contains(t, string(body), "disagreements: m2")
+	assert.NotContains(t, string(body), "upstream fetch failed",
+		"the old generic message must be replaced by the tier-specific one")
 }
 
 // ── Tests: serveFile dep-confusion guard ──────────────────────────────────────

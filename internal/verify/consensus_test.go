@@ -210,7 +210,12 @@ func TestConsensusVerifier_QuorumNotMet_TooFewAgree(t *testing.T) {
 }
 
 func TestConsensusVerifier_QuorumNotMet_AllDown(t *testing.T) {
-	// All mirrors unreachable → 0 agree, quorum=1 → FAIL.
+	// All mirrors unreachable → 0 polled, 0 agree, quorum=1 → FAIL, but this
+	// is an INCONCLUSIVE infrastructure failure (nobody disagreed — nobody
+	// answered), not a genuine digest mismatch. It must be reported with
+	// distinct wording and Retryable=true, never conflated with a real
+	// "polled > 0, mirrors disagree" quorum failure (see
+	// TestConsensusVerifier_QuorumNotMet_TooFewAgree below for that case).
 	fetcher := newFakeFetcher(map[string]mirrorResponse{
 		"m1": {err: errors.New("connection refused")},
 		"m2": {err: errors.New("connection refused")},
@@ -226,7 +231,9 @@ func TestConsensusVerifier_QuorumNotMet_AllDown(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, artifact.StatusFail, res.Status)
 	assert.Equal(t, artifact.TierConsensus, res.Tier)
-	assert.Contains(t, res.Message, "quorum not met")
+	assert.True(t, res.Retryable, "polled==0 must be marked Retryable — it's an inconclusive infra failure, not a disagreement")
+	assert.Contains(t, res.Message, "could not reach ANY")
+	assert.NotContains(t, res.Message, "disagreements:", "polled==0 message must not use the disagreement wording")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
