@@ -216,7 +216,13 @@ func run() error {
 		return err
 	}
 
-	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Level comes from config (log.level) or, during an incident,
+	// SPECULA_LOG__LEVEL. It used to be hardcoded to Info, which made every
+	// DEBUG statement in the tree unreachable — including the per-mirror
+	// consensus poll results that exist precisely so an aggregate
+	// "0 of N mirrors responded" can be attributed to a mirror and an error.
+	logLevel := cfg.Log.SlogLevel()
+	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 	slog.SetDefault(log)
 
 	fmt.Fprint(os.Stdout, banner)
@@ -224,7 +230,8 @@ func run() error {
 		"version", version.Version,
 		"commit", version.Commit,
 		"config", configPath,
-		"listen", cfg.EffectiveListenAddr())
+		"listen", cfg.EffectiveListenAddr(),
+		"log_level", logLevel.String())
 
 	for _, h := range config.UpgradeHints(cfg) {
 		log.Warn(h.Message, "section", h.Section)

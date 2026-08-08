@@ -37,6 +37,7 @@ const EnvPrefix = "SPECULA_"
 // Config is the root configuration model.
 type Config struct {
 	Server    ServerConfig              `koanf:"server"`
+	Log       LogConfig                 `koanf:"log"`
 	Storage   StorageConfig             `koanf:"storage"`
 	Cache     CacheConfig               `koanf:"cache"`
 	Coalesce  CoalesceConfig            `koanf:"coalesce"`
