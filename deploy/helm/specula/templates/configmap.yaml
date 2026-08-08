@@ -58,14 +58,52 @@ data:
       {{- with .Values.protocolOverrides }}
       {{- toYaml . | nindent 6 }}
       {{- end }}
-      # regionProfile=cn writes NOTHING here: the binary already defaults to the
-      # China-first table in internal/config/example.yaml — mirror chains for oci,
-      # npm, pypi, go, apt, cargo, conda and hf, per-protocol TTLs, verification
-      # tiers, and the OCI remote_registries allowlist. Restating it in the chart
-      # only produced a second copy to drift from, and the copy was already behind.
+      # regionProfile=cn used to write NOTHING here on the theory that the binary's
+      # internal China-first table (internal/config/example.yaml) already covers
+      # oci/npm/pypi/go/apt/cargo/conda/hf. In HA mode that default did not reach
+      # the data plane for cargo/conda/hf (404s, live 2026-07) — those three are
+      # now pinned explicitly below so a CN upgrade always enables them regardless
+      # of what the binary's compiled-in default currently contains.
       #
       # Anything else goes through protocolOverrides (a raw passthrough);
       # `enabled: false` switches a protocol off.
+{{- if eq .Values.regionProfile "cn" }}
+      cargo:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: rsproxy-cn
+            base_url: https://rsproxy.cn
+            priority: 1
+        cargo:
+          dl_upstreams:
+            - name: rsproxy-cn-static
+              base_url: https://rsproxy.cn
+              priority: 1
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
+      conda:
+        mutable_ttl_seconds: 300
+        upstreams:
+          - name: tuna-anaconda
+            base_url: https://mirrors.tuna.tsinghua.edu.cn/anaconda
+            priority: 1
+        verification:
+          tiers: [checksum, tofu]
+          quorum: 1
+          tofu: enforce
+      hf:
+        mutable_ttl_seconds: 120
+        upstreams:
+          - name: hf-mirror
+            base_url: https://hf-mirror.com
+            priority: 1
+        verification:
+          tiers: [tofu, checksum]
+          quorum: 1
+          tofu: enforce
+{{- end }}
 {{- if ne .Values.regionProfile "cn" }}
       # Outside China the defaults are wrong in one specific way: they try CN mirrors
       # first. These entries are therefore a deliberate override, not a copy of a
