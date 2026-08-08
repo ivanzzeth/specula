@@ -379,8 +379,12 @@ func TestIntegrateCondaChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	if !strings.Contains(s, "http://127.0.0.1:7732/conda/conda-forge") {
-		t.Fatalf("missing channel:\n%s", s)
+	// Specula must be reachable for conda — but as a custom_channels location,
+	// not as a `channels:` entry: that block is copied verbatim into the
+	// committed environment.yml by `conda env export`. See
+	// TestIntegrateCondaKeepsMirrorOutOfEnvironmentYML for the full reasoning.
+	if !strings.Contains(s, "conda-forge: http://127.0.0.1:7732/conda") {
+		t.Fatalf("conda-forge must resolve to Specula via custom_channels:\n%s", s)
 	}
 	r2 := integrateConda(home, "http://127.0.0.1:7732", false, nil)
 	if r2.Action != "already" {
@@ -410,5 +414,78 @@ func TestIntegrateHFEnvEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "HF_ENDPOINT=") || !strings.Contains(string(b), "http://127.0.0.1:7732/hf") {
 		t.Fatalf("missing HF_ENDPOINT:\n%s", b)
+	}
+}
+
+// Pointing npm at a mirror must NOT leak that mirror into package-lock.json.
+//
+// npm records the registry it downloaded from in every `resolved` URL, so a
+// developer whose ~/.npmrc points at Specula produces a lockfile pinned to
+// `http://127.0.0.1:<port>/npm/...`. It keeps working on THAT machine, and on
+// any build whose docker layer cache still holds node_modules, so it commits
+// and reviews cleanly — then fails for everyone else the moment the cache
+// misses: `npm ci` honours `resolved` verbatim, gets ECONNREFUSED for every
+// package, and npm reports only the useless "Exit handler never called!".
+//
+// That is not hypothetical: 48 such URLs reached a downstream repo's main and
+// broke its release build hours later, far from the commit that caused it.
+// Integrating a mirror is Specula's action, so keeping the mirror out of the
+// consumer's lockfile is Specula's responsibility — a downstream fix (patching
+// the Dockerfile, or scrubbing the lockfile in a pre-commit hook) would have to
+// be re-invented by every project that ever runs `specula integrate`.
+//
+// `omit-lockfile-registry-resolved=true` is npm's own switch for this: it omits
+// the `resolved` field entirely, keeping `version` + `integrity` (so integrity
+// checking is NOT weakened) and letting each machine resolve through whatever
+// registry it has configured.
+func TestIntegrateNPMKeepsMirrorOutOfLockfile(t *testing.T) {
+	home := t.TempDir()
+	r := integrateNPM(home, "http://127.0.0.1:7732", false)
+	if r.Action != "added" {
+		t.Fatalf("%+v", r)
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".npmrc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(b); !strings.Contains(s, "omit-lockfile-registry-resolved=true") {
+		t.Fatalf("npmrc points at a mirror without suppressing lockfile `resolved` URLs;\n"+
+			"every lockfile written on this machine will be pinned to the mirror:\n%s", s)
+	}
+}
+
+// The switch must survive re-running integrate, and must not be duplicated.
+func TestIntegrateNPMOmitFlagIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	integrateNPM(home, "http://127.0.0.1:7732", false)
+	integrateNPM(home, "http://127.0.0.1:7732", false)
+	b, err := os.ReadFile(filepath.Join(home, ".npmrc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(b), "omit-lockfile-registry-resolved"); n != 1 {
+		t.Fatalf("want exactly 1 omit-lockfile-registry-resolved line, got %d:\n%s", n, string(b))
+	}
+}
+
+// A user who deliberately set the flag to something else keeps their value —
+// integrate adds what is missing, it does not overwrite decisions.
+func TestIntegrateNPMRespectsExistingOmitSetting(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".npmrc")
+	if err := os.WriteFile(path, []byte("omit-lockfile-registry-resolved=false\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	integrateNPM(home, "http://127.0.0.1:7732", false)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if !strings.Contains(s, "omit-lockfile-registry-resolved=false") {
+		t.Fatalf("overwrote an explicit user setting: %s", s)
+	}
+	if n := strings.Count(s, "omit-lockfile-registry-resolved"); n != 1 {
+		t.Fatalf("want exactly 1 such line, got %d:\n%s", n, s)
 	}
 }

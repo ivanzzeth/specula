@@ -55,6 +55,21 @@ func auditPipRisks(home string) []Result {
 			Path:     path,
 		})
 	}
+	// pip itself never records an index anywhere, but pip-tools reads THIS file
+	// and echoes index-url into the requirements.txt it generates — a committed
+	// file. That is the npm `resolved` bug in another ecosystem: it installs fine
+	// here and fails on every machine that is not this one. pip-tools has no
+	// user-level config and no env var for the suppressing flags, so ~/.config
+	// gives Specula nowhere to fix it — naming the exact flag is the fix we can
+	// ship.
+	if idx != "" && !looksLikePublicPyPI(idx) {
+		out = append(out, Result{
+			Protocol: "pypi",
+			Action:   "risk",
+			Detail:   leakWarning("pypi"),
+			Path:     path,
+		})
+	}
 	return out
 }
 

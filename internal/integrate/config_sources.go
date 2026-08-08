@@ -67,25 +67,34 @@ func aptArchiveFromConfig(cfg *config.Config) string {
 	return name
 }
 
-func condaChannelsFromConfig(cfg *config.Config, base string) []string {
-	base = strings.TrimRight(base, "/")
+// condaChannelNamesFromConfig returns the allowlisted channel NAMES.
+//
+// Names, not URLs, are what belongs in ~/.condarc's `channels:` list: `conda env
+// export` copies that block verbatim into the committed environment.yml, so a
+// URL there pins the project to this machine's Specula. The mirror goes in
+// `custom_channels` instead (see integrateConda).
+func condaChannelNamesFromConfig(cfg *config.Config) []string {
 	if cfg == nil {
-		return []string{base + "/conda/conda-forge"}
+		return []string{"conda-forge"}
 	}
 	proto, ok := cfg.Protocols["conda"]
 	if !ok || proto.Conda == nil || len(proto.Conda.Channels) == 0 {
-		return []string{base + "/conda/conda-forge"}
+		return []string{"conda-forge"}
 	}
-	channels := make([]string, 0, len(proto.Conda.Channels))
+	names := make([]string, 0, len(proto.Conda.Channels))
 	for _, ch := range proto.Conda.Channels {
-		name := strings.TrimSpace(ch.Name)
-		if name == "" {
-			continue
+		if name := strings.TrimSpace(ch.Name); name != "" {
+			names = append(names, name)
 		}
-		channels = append(channels, base+"/conda/"+name)
 	}
-	if len(channels) == 0 {
-		return []string{base + "/conda/conda-forge"}
+	if len(names) == 0 {
+		return []string{"conda-forge"}
 	}
-	return channels
+	return names
 }
+
+// NOTE: there is deliberately no condaChannelsFromConfig returning per-channel
+// mirror URLs. Those belonged in ~/.condarc's `channels:` list, which
+// `conda env export` copies verbatim into the committed environment.yml —
+// pinning the project to one machine's Specula. The names go in `channels:`,
+// the mirror goes in `custom_channels`.

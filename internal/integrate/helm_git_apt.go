@@ -9,15 +9,25 @@ import (
 	"github.com/ivanzzeth/specula/internal/config"
 )
 
+// `helm repo add` is itself safe — repositories.yaml is machine state. The leak
+// comes later: `helm dependency update` writes the RESOLVED repository URL into
+// Chart.lock, which IS committed. Verified against the live binary that the
+// "@alias" spelling gives no protection — `repository: "@specula-bitnami"` and
+// the literal Specula URL produced identical Chart.lock entries pointing at the
+// mirror. Helm has no flag to suppress it (no equivalent of npm's omit key), so
+// the only honest fix is upstream URLs in Chart.yaml plus redirection below the
+// URL layer. Saying that here, at the moment the repos are added, is what stops
+// a poisoned Chart.lock from reaching main before anyone learns the rule.
 func integrateHelm(addr string, dryRun bool, cfg *config.Config) Result {
 	base := strings.TrimRight(addr, "/")
 	repos := helmReposFromConfig(cfg)
+	chartLockNote := leakNote("helm")
 	if dryRun {
 		var names []string
 		for _, r := range repos {
 			names = append(names, r.name)
 		}
-		return Result{Action: "added", Detail: "would helm repo add " + strings.Join(names, ","), Path: "helm"}
+		return Result{Action: "added", Detail: "would helm repo add " + strings.Join(names, ",") + "; " + chartLockNote, Path: "helm"}
 	}
 	if _, err := exec.LookPath("helm"); err != nil {
 		return Result{Action: "skipped", Detail: "helm binary not found"}
@@ -41,9 +51,9 @@ func integrateHelm(addr string, dryRun bool, cfg *config.Config) Result {
 		added = append(added, r.name)
 	}
 	if len(added) == 0 {
-		return Result{Action: "already", Detail: "helm repos already present", Path: "helm"}
+		return Result{Action: "already", Detail: "helm repos already present; " + chartLockNote, Path: "helm"}
 	}
-	return Result{Action: "added", Detail: "helm repo add " + strings.Join(added, ","), Path: "helm"}
+	return Result{Action: "added", Detail: "helm repo add " + strings.Join(added, ",") + "; " + chartLockNote, Path: "helm"}
 }
 
 func integrateApt(addr, caFile string, dryRun, skipRoot bool, cfg *config.Config) Result {

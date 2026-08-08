@@ -82,11 +82,14 @@ func TestAptArchiveFromConfig(t *testing.T) {
 	}
 }
 
-func TestCondaChannelsFromConfig(t *testing.T) {
-	base := "http://127.0.0.1:7732"
-	ch := condaChannelsFromConfig(nil, base)
-	if len(ch) != 1 || ch[0] != base+"/conda/conda-forge" {
-		t.Fatalf("%v", ch)
+// ~/.condarc lists channels by NAME; the Specula location lives in
+// custom_channels. A helper that builds per-channel mirror URLs is exactly the
+// shape that leaks into environment.yml, so it no longer exists — see
+// TestIntegrateCondaKeepsMirrorOutOfEnvironmentYML.
+func TestCondaChannelNamesFromConfig(t *testing.T) {
+	names := condaChannelNamesFromConfig(nil)
+	if len(names) != 1 || names[0] != "conda-forge" {
+		t.Fatalf("%v", names)
 	}
 	cfg := &config.Config{
 		Protocols: map[string]config.ProtocolConfig{
@@ -100,12 +103,15 @@ func TestCondaChannelsFromConfig(t *testing.T) {
 			},
 		},
 	}
-	ch = condaChannelsFromConfig(cfg, base)
-	if len(ch) != 2 {
-		t.Fatalf("got %v", ch)
+	names = condaChannelNamesFromConfig(cfg)
+	if len(names) != 2 || names[0] != "conda-forge" || names[1] != "bioconda" {
+		t.Fatalf("want the channel names, got %v", names)
 	}
-	if !strings.Contains(ch[0], "/conda/conda-forge") || !strings.Contains(ch[1], "/conda/bioconda") {
-		t.Fatalf("channels: %v", ch)
+	// Names only — an entry carrying a host would end up in environment.yml.
+	for _, n := range names {
+		if strings.Contains(n, "://") {
+			t.Fatalf("channel entry must be a bare name, got %q", n)
+		}
 	}
 }
 
@@ -132,8 +138,20 @@ func TestIntegrateCondaMultiChannelFromConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	if !strings.Contains(s, "http://127.0.0.1:7732/conda/conda-forge") || !strings.Contains(s, "http://127.0.0.1:7732/conda/bioconda") {
-		t.Fatalf("missing channels:\n%s", s)
+	// Every allowlisted channel must resolve to Specula — but by NAME, via
+	// custom_channels. Listing the URLs under `channels:` instead would put this
+	// machine's address into every environment.yml exported here, since
+	// `conda env export` copies that block verbatim into a committed file.
+	for _, name := range []string{"conda-forge", "bioconda"} {
+		if !strings.Contains(s, "\n  - "+name+"\n") {
+			t.Fatalf("channel %q must be listed by name:\n%s", name, s)
+		}
+		if !strings.Contains(s, "  "+name+": http://127.0.0.1:7732/conda\n") {
+			t.Fatalf("channel %q must map to Specula via custom_channels:\n%s", name, s)
+		}
+	}
+	if strings.Contains(s, "channels:\n  - http://") {
+		t.Fatalf("mirror URL must not appear in the channels list:\n%s", s)
 	}
 }
 
