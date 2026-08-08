@@ -68,6 +68,24 @@ server:
 #   # Redis-free HA alternative (requires storage.meta.driver=postgres):
 #   # lock_driver: postgres
 
+# ── Logging ───────────────────────────────────────────────────────────────────
+log:
+  # debug | info | warn | error. Default info.
+  #
+  # debug turns on the per-mirror consensus poll results — which mirror answered
+  # with what, and the exact error for the ones that did not. Without it, a
+  # consensus failure only reports the aggregate ("0 of 2 mirrors responded"),
+  # which names the count but not the cause. That is precisely the state in
+  # which an oversized packument (a parsing cap) is indistinguishable from a
+  # mirror outage.
+  #
+  # Raise it WITHOUT editing this file (no redeploy of a ConfigMap):
+  #   SPECULA_LOG__LEVEL=debug
+  #
+  # An unrecognised value falls back to info rather than silencing the daemon —
+  # a typo made while chasing an incident should not cost you the logs you had.
+  level: info
+
 # ── Storage ───────────────────────────────────────────────────────────────────
 storage:
   blob:

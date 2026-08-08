@@ -79,6 +79,39 @@ const maxIndexBytes = 4 << 20 // 4 MiB
 // pathological mirror response.
 const maxPyPIIndexBytes = 32 << 20 // 32 MiB
 
+// maxNPMPackumentBytes is the npm counterpart of maxPyPIIndexBytes, and exists
+// for exactly the same reason — the PyPI fix above was never carried across to
+// npm, so the identical bug stayed live on this path.
+//
+// An npm packument lists EVERY published version of a package in one JSON
+// document, oldest-first, and the FULL form embeds each version's README and
+// metadata. Measured against the live registries: react's full packument is
+// ~6.9 MB. Under the old shared 4 MiB maxIndexBytes cap, io.LimitReader
+// truncated the JSON mid-document; json.Unmarshal then failed and every mirror
+// was recorded as "no dist.integrity for version X". Because all mirrors serve
+// the same oversized document, this zeroed the vote count for all of them at
+// once — surfacing as "0 of 2 mirrors responded", which reads like an outage
+// but was a parsing cap. Observed as `npm ci` failing every tarball with
+// HTTP 502 "tarball failed integrity verification".
+//
+// Requesting the abbreviated packument (see acceptNPMAbbreviated) cuts react to
+// ~2.9 MB, but that is a request, not a guarantee: mirrors may ignore the
+// Accept header (huaweicloud returns the full 6.9 MB document regardless). So
+// the cap must accommodate full packuments on its own.
+//
+// The number is NOT a parsing limit — the parser streams, so peak memory is one
+// version entry regardless of document size (see
+// npmIntegrityFromPackumentStream). It is only a stop against a stream that
+// never ends. Sized well above the worst real observation (vite full: ~38.9 MB
+// from a mirror that ignores the Accept header) so that a badly-behaved mirror
+// cannot be silently excluded from the quorum.
+const maxNPMPackumentBytes = 256 << 20 // 256 MiB
+
+// acceptNPMAbbreviated is npm's abbreviated-packument media type. It carries
+// dist.integrity (all we need) without the per-version README bulk, and the
+// registry falls back to the full document if it does not understand it.
+const acceptNPMAbbreviated = "application/vnd.npm.install-v1+json, application/json"
+
 // FetchDigest returns the content identity the mirror advertises for ref, using a
 // single metadata request. See the type doc for per-protocol behaviour.
 func (f *HTTPMirrorDigestFetcher) FetchDigest(ctx context.Context, mirror ConsensusMirror, ref artifact.ArtifactRef) (string, error) {
@@ -378,7 +411,11 @@ func (f *HTTPMirrorDigestFetcher) fetchNPMIntegrity(ctx context.Context, base st
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Accept", "application/json")
+	// Ask for the abbreviated packument: same dist.integrity, without the
+	// per-version README bulk (react: ~6.9 MB → ~2.9 MB). Registries that do
+	// not understand it fall back to the full document, which is why the cap
+	// below must still accommodate full packuments.
+	req.Header.Set("Accept", acceptNPMAbbreviated)
 	resp, err := f.client.Do(req)
 	if err != nil {
 		return "", err
@@ -387,15 +424,113 @@ func (f *HTTPMirrorDigestFetcher) fetchNPMIntegrity(ctx context.Context, base st
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("consensus: npm GET %s returned HTTP %d", url, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxIndexBytes))
+	// STREAM the document instead of buffering it.
+	//
+	// A mirror is free to ignore the Accept header above: huaweicloud returns
+	// vite's FULL packument (~38.9 MB) where the mirrors that honour it send
+	// ~2.2 MB. Buffering meant the byte cap had to cover the worst-behaved
+	// mirror — i.e. that mirror got to dictate everyone's memory ceiling, and
+	// falling short of it made the mirror unable to vote, which silently
+	// lowered the effective quorum.
+	//
+	// Streaming decouples the two: peak memory is one version entry, so the cap
+	// is only a guard against a genuinely hostile stream, not a parsing limit.
+	counted := &countingReader{r: io.LimitReader(resp.Body, maxNPMPackumentBytes)}
+	integrity, err := npmIntegrityFromPackumentStream(counted, ver)
 	if err != nil {
-		return "", err
+		// Hitting the guard looks like a mid-document EOF to the decoder. Say
+		// "truncated" rather than "malformed": the first is our own limit, the
+		// second blames the mirror for bytes it may well have sent correctly.
+		if counted.n >= maxNPMPackumentBytes {
+			return "", fmt.Errorf(
+				"consensus: npm packument for %s exceeds %d byte stream guard before version %q could be resolved — packument truncated, result inconclusive",
+				ref.Name, maxNPMPackumentBytes, ver)
+		}
+		return "", fmt.Errorf("consensus: npm packument for %s: %w", ref.Name, err)
 	}
-	integrity, ok := npmIntegrityFromPackument(body, ver)
-	if !ok {
+	if integrity == "" {
 		return "", fmt.Errorf("consensus: npm packument for %s has no dist.integrity for version %q", ref.Name, ver)
 	}
 	return integrity, nil
+}
+
+// countingReader tracks how many bytes were consumed, so a decode failure at
+// exactly the stream guard can be attributed to the guard rather than reported
+// as a malformed document.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// npmIntegrityFromPackumentStream scans versions[ver].dist.integrity without
+// holding the whole document in memory, and stops as soon as it finds the
+// target version.
+//
+// Returns ("", nil) when the document parsed fine but the version is absent —
+// kept distinct from an error so consensus can tell "this mirror says no such
+// version" (a real vote) apart from "this mirror could not be read" (an
+// infrastructure failure). Conflating those two is what made an oversized
+// packument look like a mirror outage.
+func npmIntegrityFromPackumentStream(r io.Reader, version string) (string, error) {
+	dec := json.NewDecoder(r)
+
+	// Walk to the "versions" object without materialising anything else.
+	if _, err := dec.Token(); err != nil { // opening '{'
+		return "", fmt.Errorf("malformed packument: %w", err)
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return "", fmt.Errorf("malformed packument: %w", err)
+		}
+		key, _ := keyTok.(string)
+		if key != "versions" {
+			// Skip this whole value (README, times, dist-tags, …).
+			var discard json.RawMessage
+			if err := dec.Decode(&discard); err != nil {
+				return "", fmt.Errorf("malformed packument: %w", err)
+			}
+			continue
+		}
+
+		if _, err := dec.Token(); err != nil { // '{' of versions
+			return "", fmt.Errorf("malformed versions object: %w", err)
+		}
+		for dec.More() {
+			verTok, err := dec.Token()
+			if err != nil {
+				return "", fmt.Errorf("malformed versions object: %w", err)
+			}
+			verKey, _ := verTok.(string)
+
+			// Decode only the entry we actually want; skip the rest whole.
+			if verKey != version {
+				var discard json.RawMessage
+				if err := dec.Decode(&discard); err != nil {
+					return "", fmt.Errorf("malformed version entry %q: %w", verKey, err)
+				}
+				continue
+			}
+			var entry struct {
+				Dist struct {
+					Integrity string `json:"integrity"`
+				} `json:"dist"`
+			}
+			if err := dec.Decode(&entry); err != nil {
+				return "", fmt.Errorf("malformed version entry %q: %w", verKey, err)
+			}
+			return strings.TrimSpace(entry.Dist.Integrity), nil
+		}
+		// "versions" existed but did not contain the target.
+		return "", nil
+	}
+	return "", nil
 }
 
 // npmPackumentPath encodes a package name for the registry packument URL.
@@ -407,29 +542,6 @@ func npmPackumentPath(name string) string {
 		}
 	}
 	return name
-}
-
-// npmIntegrityFromPackument extracts versions[version].dist.integrity.
-func npmIntegrityFromPackument(packument []byte, version string) (string, bool) {
-	var doc struct {
-		Versions map[string]struct {
-			Dist struct {
-				Integrity string `json:"integrity"`
-			} `json:"dist"`
-		} `json:"versions"`
-	}
-	if err := json.Unmarshal(packument, &doc); err != nil || doc.Versions == nil {
-		return "", false
-	}
-	entry, ok := doc.Versions[version]
-	if !ok {
-		return "", false
-	}
-	integrity := strings.TrimSpace(entry.Dist.Integrity)
-	if integrity == "" {
-		return "", false
-	}
-	return integrity, true
 }
 
 // fetchCargoChecksum GETs the sparse-index document for the crate and returns
@@ -456,9 +568,22 @@ func (f *HTTPMirrorDigestFetcher) fetchCargoChecksum(ctx context.Context, base s
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("consensus: cargo GET %s returned HTTP %d", url, resp.StatusCode)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxIndexBytes))
+	// Read one byte past the cap so "exactly at the limit" stays distinguishable
+	// from "overran it".
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxIndexBytes+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > maxIndexBytes {
+		// Same distinction the npm and PyPI paths make: truncated (we never got
+		// to look) must not be reported as absent (we looked, it is not there).
+		// The cap is NOT raised here — the largest real sparse index measured
+		// ~1.3 MB (aws-sdk-ec2) against a 4 MiB cap, and NDJSON carries no
+		// README bulk that could close that gap. What was missing was only the
+		// ability to tell the two failures apart.
+		return "", fmt.Errorf(
+			"consensus: cargo index for %s exceeds %d byte scan cap before version %q could be resolved — index truncated, result inconclusive",
+			ref.Name, maxIndexBytes, ref.Version)
 	}
 	cksum, ok := cargoChecksumFromIndex(body, ref.Version)
 	if !ok {
